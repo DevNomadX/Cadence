@@ -1,0 +1,6 @@
+{
+  "name": "Cadence",
+  "description": "A minimal music player crafted with Material 3 Expressive themes, morphing organic shapes, spring motion, and tactile audio playback.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
