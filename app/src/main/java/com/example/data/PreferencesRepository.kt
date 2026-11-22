@@ -55,7 +55,7 @@ data class PlaybackPreferences(
     val lastTrackId: String? = null,
     val lastPositionMs: Long = 0L,
     val sortOrder: LibrarySortOrder = LibrarySortOrder.DATE_ADDED_DESC,
-    val minTrackDurationSec: Int = 0
+    val minTrackDurationSec: Int = PreferencesRepository.DEFAULT_MIN_TRACK_DURATION_SEC
 )
 
 @Immutable
@@ -72,7 +72,7 @@ data class UserPreferences(
     val lastTrackId: String? = null,
     val lastPositionMs: Long = 0L,
     val sortOrder: LibrarySortOrder = LibrarySortOrder.DATE_ADDED_DESC,
-    val minTrackDurationSec: Int = 0,
+    val minTrackDurationSec: Int = PreferencesRepository.DEFAULT_MIN_TRACK_DURATION_SEC,
     val gaplessPlaybackEnabled: Boolean = true,
     val crossfadeDurationSec: Int = 0,
     val pauseOnHeadphoneDisconnect: Boolean = true,
@@ -142,7 +142,7 @@ class PreferencesRepository(private val context: Context) {
             lastTrackId = prefs[Keys.LAST_TRACK_ID],
             lastPositionMs = (prefs[Keys.LAST_POSITION_MS] ?: 0L).coerceAtLeast(0L),
             sortOrder = LibrarySortOrder.fromId(prefs[Keys.SORT_ORDER]),
-            minTrackDurationSec = (prefs[Keys.MIN_TRACK_DURATION_SEC] ?: 0).coerceIn(0, 300)
+            minTrackDurationSec = (prefs[Keys.MIN_TRACK_DURATION_SEC] ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300)
         )
     }.distinctUntilChanged()
 
@@ -160,7 +160,7 @@ class PreferencesRepository(private val context: Context) {
             lastTrackId = prefs[Keys.LAST_TRACK_ID],
             lastPositionMs = (prefs[Keys.LAST_POSITION_MS] ?: 0L).coerceAtLeast(0L),
             sortOrder = LibrarySortOrder.fromId(prefs[Keys.SORT_ORDER]),
-            minTrackDurationSec = (prefs[Keys.MIN_TRACK_DURATION_SEC] ?: 0).coerceIn(0, 300),
+            minTrackDurationSec = (prefs[Keys.MIN_TRACK_DURATION_SEC] ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300),
             gaplessPlaybackEnabled = prefs[Keys.GAPLESS_PLAYBACK] ?: true,
             crossfadeDurationSec = (prefs[Keys.CROSSFADE_SEC] ?: 0).coerceIn(0, 10),
             pauseOnHeadphoneDisconnect = prefs[Keys.PAUSE_ON_HEADPHONE_DISCONNECT] ?: true,
@@ -171,7 +171,7 @@ class PreferencesRepository(private val context: Context) {
     }.distinctUntilChanged()
 
     suspend fun getMinTrackDurationSec(): Int =
-        (context.cadenceDataStore.data.first()[Keys.MIN_TRACK_DURATION_SEC] ?: 0).coerceIn(0, 300)
+        (context.cadenceDataStore.data.first()[Keys.MIN_TRACK_DURATION_SEC] ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300)
 
     suspend fun isLegacyMigrationDone(): Boolean =
         context.cadenceDataStore.data.first()[Keys.LEGACY_MIGRATED] ?: false
@@ -245,5 +245,9 @@ class PreferencesRepository(private val context: Context) {
             prefs[Keys.LAST_TRACK_ID] = trackId
             prefs[Keys.LAST_POSITION_MS] = positionMs.coerceAtLeast(0L)
         }
+    }
+
+    companion object {
+        const val DEFAULT_MIN_TRACK_DURATION_SEC = 60
     }
 }

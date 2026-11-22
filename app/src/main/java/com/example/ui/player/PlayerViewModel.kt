@@ -60,7 +60,8 @@ data class NowPlayingUiState(
     val isPreparing: Boolean = false,
     val playbackSpeed: Float = 1.0f,
     val shuffleEnabled: Boolean = false,
-    val repeatMode: RepeatMode = RepeatMode.ALL
+    val repeatMode: RepeatMode = RepeatMode.ALL,
+    val isInitialLibraryLoaded: Boolean = true
 )
 
 @Immutable
@@ -103,7 +104,8 @@ data class LibraryUiState(
     val sortOrder: LibrarySortOrder = LibrarySortOrder.DATE_ADDED_DESC,
     val searchQuery: String = "",
     val drillDown: LibraryDrillDown? = null,
-    val drillDownTracks: StableList<Track> = StableList()
+    val drillDownTracks: StableList<Track> = StableList(),
+    val isInitialLibraryLoaded: Boolean = true
 )
 
 class PlayerViewModel(application: Application) : AndroidViewModel(application) {
@@ -145,7 +147,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     val minTrackDurationSecState: StateFlow<Int> = preferencesRepo.playbackPreferencesFlow
         .map { it.minTrackDurationSec }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), 0)
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000L),
+            PreferencesRepository.DEFAULT_MIN_TRACK_DURATION_SEC
+        )
 
     private var sleepTimerJob: Job? = null
     private var playlistObserveJob: Job? = null
@@ -195,9 +201,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         playbackController.playbackState,
         preferencesRepo.playbackPreferencesFlow
     ) { allTracks, playback, prefs ->
+        val minDurMs = prefs.minTrackDurationSec * 1000L
+        val eligibleTracks = if (minDurMs > 0L) allTracks.filter { it.durationMs >= minDurMs } else allTracks
         val trackMap = allTracks.associateBy { it.id }
 
-        val queue = playback.queueTrackIds.mapNotNull { trackMap[it] }.ifEmpty { allTracks }
+        val queue = playback.queueTrackIds.mapNotNull { trackMap[it] }.ifEmpty { eligibleTracks }
         val currentTrack = playback.currentTrackId?.let { trackMap[it] }
             ?: prefs.lastTrackId?.let { trackMap[it] }
             ?: queue.firstOrNull()
@@ -217,14 +225,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             isPreparing = playback.isPreparing,
             playbackSpeed = if (playback.isConnected) playback.playbackSpeed else prefs.playbackSpeed,
             shuffleEnabled = if (playback.isConnected) playback.shuffleEnabled else prefs.shuffleEnabled,
-            repeatMode = if (playback.isConnected) playback.repeatMode else prefs.repeatMode
+            repeatMode = if (playback.isConnected) playback.repeatMode else prefs.repeatMode,
+            isInitialLibraryLoaded = true
         )
     }
         .flowOn(Dispatchers.Default)
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000L),
-            initialValue = NowPlayingUiState()
+            initialValue = NowPlayingUiState(isInitialLibraryLoaded = false)
         )
 
     private data class FilterInputs(
@@ -327,14 +336,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             sortOrder = inputs.sortOrder,
             searchQuery = inputs.searchQuery,
             drillDown = inputs.drillDown,
-            drillDownTracks = drillTracks.toStableList()
+            drillDownTracks = drillTracks.toStableList(),
+            isInitialLibraryLoaded = true
         )
     }
         .flowOn(Dispatchers.Default)
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000L),
-            initialValue = LibraryUiState()
+            initialValue = LibraryUiState(isInitialLibraryLoaded = false)
         )
 
     init {

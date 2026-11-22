@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -21,6 +22,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.AudioFocusBehavior
@@ -41,10 +44,12 @@ import com.example.data.db.PlaylistTrackEntity
 import com.example.data.db.TrackEntity
 import com.example.data.library.ArtworkCacheManager
 import com.example.data.library.LibraryRepository
+import com.example.data.library.ScanState
 import com.example.data.toStableList
 import com.example.playback.CadencePlaybackService
 import com.example.playback.MediaItemMapper
 import com.example.playback.PlaybackProgress
+import com.example.ui.FullScreenScanningView
 import com.example.ui.player.LibraryDrillDown
 import com.example.ui.player.LibraryUiState
 import com.example.ui.player.NowPlayingUiState
@@ -590,6 +595,8 @@ class CadenceValidationTest {
         assertFalse(audio.pauseOnHeadphoneDisconnect)
         assertEquals(AudioFocusBehavior.PAUSE, audio.audioFocusBehavior)
 
+        assertEquals(60, repo.getMinTrackDurationSec())
+
         repo.setShuffleEnabled(true)
         repo.setRepeatMode(RepeatMode.ONE)
         repo.setPlaybackSpeed(1.25f)
@@ -605,6 +612,71 @@ class CadenceValidationTest {
         assertEquals(30, playback.minTrackDurationSec)
         assertEquals("local_1", playback.lastTrackId)
         assertEquals(42_500L, playback.lastPositionMs)
+    }
+
+    @Test
+    fun `LibraryScreen track row cards maintain uniform compact height even with very long artist names`() {
+        val shortTrack = Track(
+            id = "short_row",
+            title = "Amber Solstice",
+            artist = "Klara Lind",
+            album = "Warm Horizon",
+            durationMs = 185_000L
+        )
+        val longTrack = Track(
+            id = "long_row",
+            title = "Tum Ho (From Rockstar Original Motion Picture Soundtrack)",
+            artist = "Mohit Chauhan, Suzanne D'Mello, A. R. Rahman, Irshad Kamil",
+            album = "Rockstar",
+            durationMs = 316_000L
+        )
+        val tracks = listOf(shortTrack, longTrack)
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                LibraryScreen(
+                    uiState = LibraryUiState(
+                        allTracks = tracks.toStableList(),
+                        displayedTracks = tracks.toStableList(),
+                        category = LibraryCategory.SONGS
+                    ),
+                    currentTrackId = null,
+                    isPlaying = false,
+                    artworkShape = ExpressiveArtworkShape.SCALLOP,
+                    onSelectTrack = { _, _ -> },
+                    onPlayTracks = { _, _ -> },
+                    onToggleFavorite = {},
+                    onSearchChange = {},
+                    onCategoryChange = {},
+                    onSortChange = {},
+                    onOpenDrillDown = {},
+                    onCloseDrillDown = {},
+                    onImportFiles = {},
+                    onAddFolder = {},
+                    onScanDevice = {},
+                    onRescanFolders = {},
+                    onPlayNext = {},
+                    onAddToQueue = {},
+                    onAddTrackToPlaylist = { _, _ -> },
+                    onRemoveTrackFromPlaylist = { _, _ -> },
+                    onCreatePlaylist = { _, _ -> },
+                    onRenamePlaylist = { _, _ -> },
+                    onDeletePlaylist = {},
+                    onPlayPlaylist = { _, _ -> },
+                    onRemoveTrack = {}
+                )
+            }
+        }
+
+        val shortHeight = composeRule.onNodeWithTag("track_row_short_row").getUnclippedBoundsInRoot().height.value
+        val longHeight = composeRule.onNodeWithTag("track_row_long_row").getUnclippedBoundsInRoot().height.value
+        assertEquals(
+            "All track rows must share an identical compact height regardless of artist/title length",
+            shortHeight,
+            longHeight,
+            1.5f
+        )
+        assertTrue("Track row card height should stay compact (<= 80dp), got ${longHeight}dp", longHeight <= 80f)
     }
 
     // --- 5. ArtworkCacheManager Safety & Deduplication ---
@@ -780,5 +852,142 @@ class CadenceValidationTest {
             "BackHandler must disable at root so predictive back-to-home can run",
             backDispatcher!!.hasEnabledCallbacks()
         )
+    }
+
+    // --- 9. Cold-Start Loading Guard, Header Compact Import Button & Full-Screen Scanner ---
+
+    @Test
+    fun `cold-start loading guard suppresses empty onboarding flash until Room emits`() {
+        var loaded by mutableStateOf(false)
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                NowPlayingScreen(
+                    uiState = NowPlayingUiState(
+                        currentTrack = null,
+                        queueTracks = StableList(),
+                        isInitialLibraryLoaded = loaded
+                    ),
+                    themePrefs = ThemePreferences(),
+                    progressFlow = MutableStateFlow(PlaybackProgress()),
+                    sleepTimerFlow = MutableStateFlow(SleepTimerState()),
+                    playlists = StableList(),
+                    onTogglePlayPause = {},
+                    onNext = {},
+                    onPrevious = {},
+                    onSeek = {},
+                    onToggleShuffle = {},
+                    onCycleRepeat = {},
+                    onToggleFavorite = {},
+                    onCycleSpeed = {},
+                    onMatchMood = {},
+                    onOpenSettings = {},
+                    onAddFolder = {},
+                    onScanDevice = {},
+                    onSelectQueueIndex = {},
+                    onMoveQueueItem = { _, _ -> },
+                    onRemoveQueueItem = {},
+                    onClearQueue = {},
+                    onSaveQueueAsPlaylist = {},
+                    onAddCurrentToPlaylist = {},
+                    onCreatePlaylistWithCurrent = {},
+                    onPlayNextCurrent = {},
+                    onAddCurrentToQueue = {},
+                    onSelectSleepTimer = {}
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("initial_loading_placeholder").assertExists()
+        composeRule.onNodeWithTag("empty_now_playing_art").assertDoesNotExist()
+
+        loaded = true
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("empty_now_playing_art").assertIsDisplayed()
+    }
+
+    @Test
+    fun `LibraryScreen hides empty card before Room loads and uses compact circular import icon button`() {
+        var loaded by mutableStateOf(false)
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                LibraryScreen(
+                    uiState = LibraryUiState(
+                        allTracks = StableList(),
+                        displayedTracks = StableList(),
+                        category = LibraryCategory.SONGS,
+                        isInitialLibraryLoaded = loaded
+                    ),
+                    currentTrackId = null,
+                    isPlaying = false,
+                    artworkShape = ExpressiveArtworkShape.SCALLOP,
+                    onSelectTrack = { _, _ -> },
+                    onPlayTracks = { _, _ -> },
+                    onToggleFavorite = {},
+                    onSearchChange = {},
+                    onCategoryChange = {},
+                    onSortChange = {},
+                    onOpenDrillDown = {},
+                    onCloseDrillDown = {},
+                    onImportFiles = {},
+                    onAddFolder = {},
+                    onScanDevice = {},
+                    onRescanFolders = {},
+                    onPlayNext = {},
+                    onAddToQueue = {},
+                    onAddTrackToPlaylist = { _, _ -> },
+                    onRemoveTrackFromPlaylist = { _, _ -> },
+                    onCreatePlaylist = { _, _ -> },
+                    onRenamePlaylist = { _, _ -> },
+                    onDeletePlaylist = {},
+                    onPlayPlaylist = { _, _ -> },
+                    onRemoveTrack = {}
+                )
+            }
+        }
+
+        // Before initial Room load completes, no empty card flash
+        composeRule.onNodeWithTag("library_empty_card").assertDoesNotExist()
+
+        // Compact circular import icon button (48dp x 48dp) leaves ample width for "Your Sound"
+        val importBounds = composeRule.onNodeWithTag("import_audio_button").getUnclippedBoundsInRoot()
+        assertEquals(48f, importBounds.width.value, 2f)
+        assertEquals(48f, importBounds.height.value, 2f)
+
+        val titleBounds = composeRule.onNodeWithTag("library_header_title").getUnclippedBoundsInRoot()
+        assertTrue(
+            "Header title must have generous horizontal width (>= 140dp) so 'Your Sound' never truncates",
+            titleBounds.width.value >= 140f
+        )
+
+        loaded = true
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("library_empty_card").assertIsDisplayed()
+    }
+
+    @Test
+    fun `FullScreenScanningView displays folder badge progress bar and file counter`() {
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.COBALT, appearanceMode = AppearanceMode.DARK) {
+                FullScreenScanningView(
+                    scanState = ScanState(
+                        isScanning = true,
+                        currentFolderName = "FLAC Lossless",
+                        currentFileName = "04 - Horizon Drift.flac",
+                        scannedCount = 25,
+                        totalCount = 100,
+                        addedCount = 24,
+                        statusLabel = "Scanning FLAC Lossless (25/100)…"
+                    ),
+                    artworkShape = ExpressiveArtworkShape.SCALLOP
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("full_screen_scanning_view").assertIsDisplayed()
+        composeRule.onNodeWithTag("scanning_folder_badge").assertIsDisplayed()
+        composeRule.onNodeWithTag("scanning_progress_bar").assertIsDisplayed()
+        composeRule.onNodeWithTag("scanning_counter_text").assertTextContains("25 / 100 files · 24 added")
+        composeRule.onNodeWithTag("scanning_detail_text").assertTextContains("04 - Horizon Drift.flac")
     }
 }

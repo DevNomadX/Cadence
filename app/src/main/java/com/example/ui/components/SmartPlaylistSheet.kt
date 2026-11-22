@@ -361,6 +361,7 @@ fun SmartPlaylistSheetContent(
                                 isPlaying = false,
                                 animateScale = false,
                                 decodeSizePx = 96,
+                                shapeOverride = FastListThumbnailShape,
                                 modifier = Modifier.size(40.dp)
                             )
                             Column(modifier = Modifier.weight(1f)) {

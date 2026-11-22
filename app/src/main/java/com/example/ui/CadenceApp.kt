@@ -8,6 +8,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode as AnimRepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -38,6 +44,7 @@ import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -47,6 +54,7 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
@@ -65,11 +73,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -78,7 +89,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.R
 import com.example.data.StableList
 import com.example.data.Track
+import com.example.data.library.ScanState
 import com.example.ui.components.ExpressiveArtworkFrame
+import com.example.ui.components.FastListThumbnailShape
 import com.example.ui.components.ambientAuraBackdrop
 import com.example.ui.player.PlayerViewModel
 import com.example.ui.screens.LibraryScreen
@@ -87,7 +100,11 @@ import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.CadenceTheme
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.LocalPerformanceMode
+import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 enum class CadenceTab(
     val route: String,
@@ -281,15 +298,19 @@ fun CadenceApp(
         ) {
             val useNavigationRail = maxWidth >= 720.dp
 
-            Scaffold(
-                containerColor = Color.Transparent,
-                contentWindowInsets = WindowInsets.safeDrawing,
-                snackbarHost = {
-                    SnackbarHost(
-                        hostState = snackbarHostState,
-                        modifier = Modifier.padding(bottom = if (useNavigationRail) 12.dp else 8.dp)
-                    )
-                },
+            CadenceScanGate(
+                scanStateFlow = viewModel.scanState,
+                artworkShape = themePrefs.artworkShape
+            ) {
+                Scaffold(
+                    containerColor = Color.Transparent,
+                    contentWindowInsets = WindowInsets.safeDrawing,
+                    snackbarHost = {
+                        SnackbarHost(
+                            hostState = snackbarHostState,
+                            modifier = Modifier.padding(bottom = if (useNavigationRail) 12.dp else 8.dp)
+                        )
+                    },
                 bottomBar = {
                     if (!useNavigationRail && !showSettings) {
                         Column(
@@ -448,6 +469,7 @@ fun CadenceApp(
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -616,6 +638,7 @@ private fun FloatingMiniPlayerPill(
                 isPlaying = isPlaying,
                 animateScale = false,
                 decodeSizePx = 128,
+                shapeOverride = FastListThumbnailShape,
                 modifier = Modifier.size(44.dp)
             )
             Column(modifier = Modifier.weight(1f)) {
@@ -741,7 +764,7 @@ private fun FloatingExpressiveNavDock(
 
 @Composable
 private fun CadenceSnackbarObserver(
-    snackbarFlow: kotlinx.coroutines.flow.StateFlow<String?>,
+    snackbarFlow: StateFlow<String?>,
     snackbarHostState: SnackbarHostState,
     onShown: () -> Unit
 ) {
@@ -750,6 +773,223 @@ private fun CadenceSnackbarObserver(
         message?.let { msg ->
             snackbarHostState.showSnackbar(msg)
             onShown()
+        }
+    }
+}
+
+/**
+ * Isolated scanning gate so progress ticks never recompose [CadenceApp] or the [Scaffold].
+ * While a folder/device scan is active, detaches the live Library/NowPlaying tree completely
+ * and renders [FullScreenScanningView] until the Room batch inserts finish cleanly.
+ */
+@Composable
+private fun CadenceScanGate(
+    scanStateFlow: StateFlow<ScanState>,
+    artworkShape: ExpressiveArtworkShape,
+    content: @Composable () -> Unit
+) {
+    val isScanningFlow = remember(scanStateFlow) {
+        scanStateFlow.map { it.isScanning }.distinctUntilChanged()
+    }
+    val isScanning by isScanningFlow.collectAsStateWithLifecycle(initialValue = scanStateFlow.value.isScanning)
+    val performanceMode = LocalPerformanceMode.current
+
+    if (performanceMode) {
+        if (isScanning) {
+            FullScreenScanningHost(
+                scanStateFlow = scanStateFlow,
+                artworkShape = artworkShape
+            )
+        } else {
+            content()
+        }
+    } else {
+        AnimatedContent(
+            targetState = isScanning,
+            transitionSpec = { fadeIn() togetherWith fadeOut() },
+            label = "cadence_scan_gate"
+        ) { scanning ->
+            if (scanning) {
+                FullScreenScanningHost(
+                    scanStateFlow = scanStateFlow,
+                    artworkShape = artworkShape
+                )
+            } else {
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+private fun FullScreenScanningHost(
+    scanStateFlow: StateFlow<ScanState>,
+    artworkShape: ExpressiveArtworkShape
+) {
+    val scanState by scanStateFlow.collectAsStateWithLifecycle()
+    FullScreenScanningView(
+        scanState = scanState,
+        artworkShape = artworkShape
+    )
+}
+
+@Composable
+internal fun FullScreenScanningView(
+    scanState: ScanState,
+    artworkShape: ExpressiveArtworkShape,
+    modifier: Modifier = Modifier
+) {
+    val performanceMode = LocalPerformanceMode.current
+    // Absorb back presses gracefully while indexing batch writes so the scan finishes intact
+    BackHandler(enabled = true) {}
+
+    val pulseScale = if (performanceMode) {
+        1f
+    } else {
+        val transition = rememberInfiniteTransition(label = "scan_emblem_pulse")
+        transition.animateFloat(
+            initialValue = 0.96f,
+            targetValue = 1.04f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1200, easing = FastOutSlowInEasing),
+                repeatMode = AnimRepeatMode.Reverse
+            ),
+            label = "scan_scale"
+        ).value
+    }
+
+    val counterText = when {
+        scanState.totalCount > 0 ->
+            "${scanState.scannedCount} / ${scanState.totalCount} files · ${scanState.addedCount} added"
+        scanState.scannedCount > 0 ->
+            "${scanState.scannedCount} scanned · ${scanState.addedCount} added"
+        else -> stringResource(R.string.scanning_discovering)
+    }
+
+    val detailText = when {
+        scanState.currentFileName.isNotBlank() -> scanState.currentFileName
+        scanState.statusLabel.isNotBlank() -> scanState.statusLabel
+        else -> stringResource(R.string.scanning_library_subtitle)
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = 28.dp)
+            .testTag("full_screen_scanning_view"),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 380.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Surface(
+                shape = artworkShape.toComposeShape(),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier
+                    .size(116.dp)
+                    .let { if (pulseScale != 1f) it.scale(pulseScale) else it }
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (scanState.currentFolderName.isNotBlank()) {
+                            Icons.Rounded.FolderOpen
+                        } else {
+                            Icons.Rounded.LibraryMusic
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            Text(
+                text = stringResource(R.string.scanning_library_title),
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = TextAlign.Center
+            )
+
+            if (scanState.currentFolderName.isNotBlank()) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.testTag("scanning_folder_badge")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.FolderOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = scanState.currentFolderName,
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            val progress = scanState.progressFraction
+            if (progress != null) {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    strokeCap = StrokeCap.Round,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .testTag("scanning_progress_bar")
+                )
+            } else {
+                LinearProgressIndicator(
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    strokeCap = StrokeCap.Round,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .testTag("scanning_progress_bar")
+                )
+            }
+
+            Text(
+                text = counterText,
+                style = MaterialTheme.typography.labelLarge.copy(fontFamily = MonoFontFamily),
+                color = MaterialTheme.colorScheme.primary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.testTag("scanning_counter_text")
+            )
+
+            Text(
+                text = detailText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("scanning_detail_text")
+            )
         }
     }
 }

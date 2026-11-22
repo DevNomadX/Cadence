@@ -175,6 +175,7 @@ fun QueueSheetContent(
                             isPlaying = isCurrent && isPlaying,
                             animateScale = false,
                             decodeSizePx = 144,
+                            shapeOverride = FastListThumbnailShape,
                             modifier = Modifier.size(46.dp)
                         )
                         Column(modifier = Modifier.weight(1f)) {
@@ -285,6 +286,7 @@ fun TrackActionsSheetContent(
                 isPlaying = false,
                 animateScale = false,
                 decodeSizePx = 144,
+                shapeOverride = FastListThumbnailShape,
                 modifier = Modifier.size(52.dp)
             )
             Column(modifier = Modifier.weight(1f)) {

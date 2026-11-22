@@ -59,6 +59,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -432,11 +433,14 @@ fun MorphingPlayPauseButton(
 }
 
 /**
- * Displays track artwork clipped into the selected Material 3 Expressive organic shape.
- * Low-end optimized:
- * - Uses non-subcomposing Coil AsyncImage (zero nested SubcomposeLayout in LazyColumn rows)
- * - Skips animateFloatAsState allocation & elevation shadow layers when animateScale == false or in Performance Mode
- * - Disables crossfade on compact thumbnails (<= 160px) or in Performance Mode
+ * Hardware-accelerated convex shape for compact scrolling list thumbnails (Library, Queue,
+ * Playlists, Mini-Player) so low-end GPUs never allocate per-row stencil-buffer clip paths.
+ */
+val FastListThumbnailShape: Shape = RoundedCornerShape(14.dp)
+
+/**
+ * Displays track artwork clipped into the selected Material 3 Expressive organic shape
+ * (or [shapeOverride] such as [FastListThumbnailShape] for scrolling LazyColumn rows).
  */
 @Composable
 fun ExpressiveArtworkFrame(
@@ -445,10 +449,11 @@ fun ExpressiveArtworkFrame(
     isPlaying: Boolean,
     modifier: Modifier = Modifier,
     animateScale: Boolean = true,
-    decodeSizePx: Int = 512
+    decodeSizePx: Int = 512,
+    shapeOverride: Shape? = null
 ) {
     val performanceMode = LocalPerformanceMode.current
-    val shape = artworkShape.toComposeShape()
+    val shape = shapeOverride ?: artworkShape.toComposeShape()
     val shouldScale = animateScale && !performanceMode
     val scale = if (shouldScale) {
         animateFloatAsState(

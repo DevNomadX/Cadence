@@ -43,7 +43,6 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -90,6 +89,7 @@ import com.example.data.toStableMap
 import com.example.ui.components.AddToPlaylistSheetContent
 import com.example.ui.components.AudioPulseBars
 import com.example.ui.components.ExpressiveArtworkFrame
+import com.example.ui.components.FastListThumbnailShape
 import com.example.ui.components.ImportSourcesSheetContent
 import com.example.ui.components.PlaylistNameDialog
 import com.example.ui.components.SmartPlaylistSheetContent
@@ -193,9 +193,9 @@ fun LibraryScreen(
                 start = 20.dp,
                 end = 20.dp,
                 top = 12.dp,
-                bottom = 148.dp
+                bottom = 180.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             if (uiState.drillDown != null) {
                 val drill = uiState.drillDown
@@ -323,86 +323,95 @@ fun LibraryScreen(
                 }
             } else {
                 item(key = "header", contentType = "library_header") {
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = stringResource(R.string.library_title),
-                                style = MaterialTheme.typography.displaySmall,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-                            Text(
-                                text = stringResource(R.string.library_subtitle),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            FilledTonalIconButton(
-                                onClick = onOpenSmartMix,
-                                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                ),
+                            Text(
+                                text = stringResource(R.string.library_title),
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = MaterialTheme.colorScheme.onBackground,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier
-                                    .size(48.dp)
-                                    .testTag("smart_mix_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.AutoAwesome,
-                                    contentDescription = stringResource(R.string.smart_mix_button),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
+                                    .weight(1f)
+                                    .padding(end = 8.dp)
+                                    .testTag("library_header_title")
+                            )
 
-                            FilledTonalIconButton(
-                                onClick = onOpenSettings,
-                                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                    contentColor = MaterialTheme.colorScheme.onSurface
-                                ),
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .testTag("library_settings_button")
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Settings,
-                                    contentDescription = stringResource(R.string.action_settings),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
+                                FilledTonalIconButton(
+                                    onClick = onOpenSmartMix,
+                                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                    ),
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("smart_mix_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.AutoAwesome,
+                                        contentDescription = stringResource(R.string.smart_mix_button),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
 
-                            Button(
-                                onClick = onOpenImportSheet,
-                                shape = CircleShape,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                ),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                                modifier = Modifier
-                                    .height(48.dp)
-                                    .testTag("import_audio_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Add,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(Modifier.size(4.dp))
-                                Text(
-                                    text = "Import",
-                                    style = MaterialTheme.typography.labelLarge
-                                )
+                                FilledTonalIconButton(
+                                    onClick = onOpenSettings,
+                                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        contentColor = MaterialTheme.colorScheme.onSurface
+                                    ),
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("library_settings_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Settings,
+                                        contentDescription = stringResource(R.string.action_settings),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+
+                                FilledTonalIconButton(
+                                    onClick = onOpenImportSheet,
+                                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    ),
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("import_audio_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Add,
+                                        contentDescription = stringResource(R.string.action_import_audio),
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
                             }
                         }
+
+                        Text(
+                            text = stringResource(R.string.library_subtitle),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("library_header_subtitle")
+                        )
                     }
                 }
 
@@ -608,7 +617,7 @@ fun LibraryScreen(
                                     onMoreClick = onOpenTrackMenu
                                 )
                             }
-                        } else {
+                        } else if (uiState.isInitialLibraryLoaded) {
                             item(key = "empty_tracks", contentType = "empty_card") {
                                 val isEmptyFreshSongs = uiState.category == LibraryCategory.SONGS && uiState.searchQuery.isBlank()
                                 val msg = when {
@@ -648,7 +657,7 @@ fun LibraryScreen(
                             }
                         }
 
-                        if (uiState.playlists.isEmpty()) {
+                        if (uiState.playlists.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_playlists", contentType = "empty_card") {
                                 LibraryEmptyCard(
                                     title = null,
@@ -658,7 +667,7 @@ fun LibraryScreen(
                                     onImportClick = {}
                                 )
                             }
-                        } else {
+                        } else if (uiState.playlists.isNotEmpty()) {
                             items(
                                 items = uiState.playlists,
                                 key = { it.id },
@@ -678,7 +687,7 @@ fun LibraryScreen(
                     }
 
                     LibraryCategory.ALBUMS -> {
-                        if (uiState.albums.isEmpty()) {
+                        if (uiState.albums.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_albums", contentType = "empty_card") {
                                 LibraryEmptyCard(
                                     title = null,
@@ -688,7 +697,7 @@ fun LibraryScreen(
                                     onImportClick = onOpenImportSheet
                                 )
                             }
-                        } else {
+                        } else if (uiState.albums.isNotEmpty()) {
                             items(
                                 items = uiState.albums,
                                 key = { it.key },
@@ -708,7 +717,7 @@ fun LibraryScreen(
                     }
 
                     LibraryCategory.ARTISTS -> {
-                        if (uiState.artists.isEmpty()) {
+                        if (uiState.artists.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_artists", contentType = "empty_card") {
                                 LibraryEmptyCard(
                                     title = null,
@@ -718,7 +727,7 @@ fun LibraryScreen(
                                     onImportClick = onOpenImportSheet
                                 )
                             }
-                        } else {
+                        } else if (uiState.artists.isNotEmpty()) {
                             items(
                                 items = uiState.artists,
                                 key = { it.key },
@@ -738,7 +747,7 @@ fun LibraryScreen(
                     }
 
                     LibraryCategory.FOLDERS -> {
-                        if (uiState.folders.isEmpty()) {
+                        if (uiState.folders.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_folders", contentType = "empty_card") {
                                 LibraryEmptyCard(
                                     title = null,
@@ -748,7 +757,7 @@ fun LibraryScreen(
                                     onImportClick = onOpenImportSheet
                                 )
                             }
-                        } else {
+                        } else if (uiState.folders.isNotEmpty()) {
                             items(
                                 items = uiState.folders,
                                 key = { it.key },
@@ -768,7 +777,7 @@ fun LibraryScreen(
                     }
 
                     LibraryCategory.GENRES -> {
-                        if (uiState.genres.isEmpty()) {
+                        if (uiState.genres.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_genres", contentType = "empty_card") {
                                 LibraryEmptyCard(
                                     title = null,
@@ -778,7 +787,7 @@ fun LibraryScreen(
                                     onImportClick = {}
                                 )
                             }
-                        } else {
+                        } else if (uiState.genres.isNotEmpty()) {
                             items(
                                 items = uiState.genres,
                                 key = { it.key },
@@ -1020,18 +1029,18 @@ private fun LibraryTrackRow(
     val moreAction = remember(track, onMoreClick) { { onMoreClick(track) } }
 
     Surface(
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(22.dp),
         color = if (isCurrent) activeColor else idleColor,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(22.dp))
             .clickable(onClick = clickAction)
             .testTag("track_row_${track.id}")
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 14.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
+                .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -1041,12 +1050,13 @@ private fun LibraryTrackRow(
                 isPlaying = isCurrent && isPlaying,
                 animateScale = false,
                 decodeSizePx = 160,
-                modifier = Modifier.size(56.dp)
+                shapeOverride = FastListThumbnailShape,
+                modifier = Modifier.size(52.dp)
             )
 
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
                     text = track.title,
@@ -1057,14 +1067,16 @@ private fun LibraryTrackRow(
                         MaterialTheme.colorScheme.onSurface
                     },
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Text(
-                        text = track.artist,
+                        text = track.artist.ifBlank { "Unknown Artist" },
                         style = MaterialTheme.typography.bodySmall,
                         color = if (isCurrent) {
                             MaterialTheme.colorScheme.onPrimaryContainer
@@ -1072,7 +1084,9 @@ private fun LibraryTrackRow(
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     Text(
                         text = "· ${formatDuration(track.durationMs)}",
@@ -1081,7 +1095,9 @@ private fun LibraryTrackRow(
                             MaterialTheme.colorScheme.onPrimaryContainer
                         } else {
                             MaterialTheme.colorScheme.outline
-                        }
+                        },
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -1090,36 +1106,41 @@ private fun LibraryTrackRow(
                 AudioPulseBars(
                     isPlaying = isPlaying,
                     tint = MaterialTheme.colorScheme.primary,
-                    barHeight = 16.dp
+                    barHeight = 15.dp
                 )
             }
 
-            IconButton(
-                onClick = favAction,
-                modifier = Modifier.size(40.dp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                Icon(
-                    imageVector = if (track.isFavorite) Icons.Rounded.Favorite else Icons.Outlined.FavoriteBorder,
-                    contentDescription = stringResource(R.string.action_favorite),
-                    tint = if (track.isFavorite) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+                IconButton(
+                    onClick = favAction,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Icon(
+                        imageVector = if (track.isFavorite) Icons.Rounded.Favorite else Icons.Outlined.FavoriteBorder,
+                        contentDescription = stringResource(R.string.action_favorite),
+                        tint = if (track.isFavorite) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
 
-            IconButton(
-                onClick = moreAction,
-                modifier = Modifier.size(40.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.MoreVert,
-                    contentDescription = stringResource(R.string.action_more_options),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
+                IconButton(
+                    onClick = moreAction,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.MoreVert,
+                        contentDescription = stringResource(R.string.action_more_options),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
     }
@@ -1143,9 +1164,9 @@ private fun GroupCollectionRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (group.coverTrack != null) {
                 ExpressiveArtworkFrame(
@@ -1154,13 +1175,14 @@ private fun GroupCollectionRow(
                     isPlaying = false,
                     animateScale = false,
                     decodeSizePx = 160,
-                    modifier = Modifier.size(56.dp)
+                    shapeOverride = FastListThumbnailShape,
+                    modifier = Modifier.size(52.dp)
                 )
             } else {
                 Surface(
-                    shape = artworkShape.toComposeShape(),
+                    shape = FastListThumbnailShape,
                     color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.size(56.dp)
+                    modifier = Modifier.size(52.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
@@ -1174,13 +1196,14 @@ private fun GroupCollectionRow(
 
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
                     text = group.title,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
@@ -1188,6 +1211,7 @@ private fun GroupCollectionRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
             }
@@ -1195,7 +1219,9 @@ private fun GroupCollectionRow(
             Text(
                 text = formatDuration(group.totalDurationMs),
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
-                color = MaterialTheme.colorScheme.outline
+                color = MaterialTheme.colorScheme.outline,
+                maxLines = 1,
+                softWrap = false
             )
         }
     }
@@ -1230,7 +1256,7 @@ private fun PlaylistRowCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 14.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
+                .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -1241,20 +1267,21 @@ private fun PlaylistRowCard(
                     isPlaying = false,
                     animateScale = false,
                     decodeSizePx = 160,
-                    modifier = Modifier.size(56.dp)
+                    shapeOverride = FastListThumbnailShape,
+                    modifier = Modifier.size(52.dp)
                 )
             } else {
                 Surface(
-                    shape = artworkShape.toComposeShape(),
+                    shape = FastListThumbnailShape,
                     color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.size(56.dp)
+                    modifier = Modifier.size(52.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.PlaylistPlay,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(26.dp)
                         )
                     }
                 }
@@ -1262,19 +1289,23 @@ private fun PlaylistRowCard(
 
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
                     text = playlist.name,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = "${playlist.trackCount} track${if (playlist.trackCount == 1) "" else "s"}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 

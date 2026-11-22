@@ -103,4 +103,7 @@
     <string name="smart_mix_button">Smart Mix</string>
     <string name="smart_mix_title">Local Smart Mix</string>
     <string name="smart_mix_subtitle">Offline mood, tempo &amp; history intelligence</string>
+    <string name="scanning_library_title">Scanning Music Library</string>
+    <string name="scanning_library_subtitle">Indexing metadata &amp; artwork locally</string>
+    <string name="scanning_discovering">Discovering audio files…</string>
 </resources>

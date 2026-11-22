@@ -152,7 +152,13 @@ fun NowPlayingScreen(
         val isWide = maxWidth >= 640.dp
         val isCompactHeight = maxHeight < 680.dp
 
-        if (currentTrack == null) {
+        if (currentTrack == null && !uiState.isInitialLibraryLoaded) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("initial_loading_placeholder")
+            )
+        } else if (currentTrack == null) {
             EmptyNowPlayingContent(
                 artworkShape = themePrefs.artworkShape,
                 onOpenSettings = onOpenSettings,
