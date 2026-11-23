@@ -128,6 +128,14 @@ class LibraryRepository(
         trackDao.recordPlay(trackId, System.currentTimeMillis())
     }
 
+    suspend fun recordTrackCompletion(trackId: String) = withContext(Dispatchers.IO) {
+        trackDao.recordCompletedPlay(trackId, System.currentTimeMillis())
+    }
+
+    suspend fun recordTrackSkip(trackId: String) = withContext(Dispatchers.IO) {
+        trackDao.recordSkip(trackId)
+    }
+
     suspend fun removeTrack(trackId: String) = withContext(Dispatchers.IO) {
         trackDao.deleteTrackById(trackId)
     }

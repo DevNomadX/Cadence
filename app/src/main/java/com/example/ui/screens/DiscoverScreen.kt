@@ -15,21 +15,28 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Insights
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Waves
@@ -68,9 +75,12 @@ import com.example.data.Track
 import com.example.data.formatDuration
 import com.example.data.intelligence.DiscoverCategory
 import com.example.data.intelligence.DiscoverSection
+import com.example.data.intelligence.DiscoverTuneConfig
+import com.example.data.intelligence.ListeningInsights
 import com.example.data.toStableMap
 import com.example.ui.components.AudioPulseBars
 import com.example.ui.components.ExpressiveArtworkFrame
+import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
 import com.example.ui.components.FastListThumbnailShape
 import com.example.ui.components.SmartPlaylistSheetContent
 import com.example.ui.player.DiscoverUiState
@@ -80,6 +90,7 @@ import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.util.Locale
 
 private val IdleSmartMixFlow: StateFlow<SmartPlaylistUiState> = MutableStateFlow(SmartPlaylistUiState())
 
@@ -100,13 +111,29 @@ fun DiscoverScreen(
     smartPlaylistFlow: StateFlow<SmartPlaylistUiState> = IdleSmartMixFlow,
     currentTrackTitle: String = "",
     onGenerateSmartPlaylist: (String?, Boolean) -> Unit = { _, _ -> },
+    onUpdateTuneConfig: (DiscoverTuneConfig) -> Unit = {},
+    onResetTuneConfig: () -> Unit = {},
+    onGenerateTunedSmartPlaylist: ((String?, Boolean, String?, Float) -> Unit)? = null,
+    listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
     var showSmartMixSheet by remember { mutableStateOf(false) }
 
-    val onOpenSmartMixTuner = remember(onGenerateSmartPlaylist) {
+    val triggerTunedGeneration = remember(onGenerateTunedSmartPlaylist, onGenerateSmartPlaylist, onUpdateTuneConfig) {
+        { mood: String?, seed: Boolean, energy: String?, balance: Float ->
+            if (onGenerateTunedSmartPlaylist != null) {
+                onGenerateTunedSmartPlaylist(mood, seed, energy, balance)
+            } else {
+                onUpdateTuneConfig(DiscoverTuneConfig(mood, energy, balance))
+                onGenerateSmartPlaylist(mood, seed)
+            }
+        }
+    }
+
+    val onOpenSmartMixTuner = remember(triggerTunedGeneration, uiState.tuneConfig) {
         {
-            onGenerateSmartPlaylist(null, false)
+            val cfg = uiState.tuneConfig
+            triggerTunedGeneration(cfg.selectedMood, false, cfg.energyFilter, cfg.discoveryBalance)
             showSmartMixSheet = true
         }
     }
@@ -131,6 +158,7 @@ fun DiscoverScreen(
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .widthIn(max = 720.dp)
@@ -241,7 +269,7 @@ fun DiscoverScreen(
                     contentType = { _, section ->
                         when (section.category) {
                             DiscoverCategory.SMART_MIX -> "discover_smart_mix"
-                            DiscoverCategory.FORGOTTEN_FAVORITES -> "discover_compact_stack"
+                            DiscoverCategory.MADE_FOR_YOU -> "discover_hero_mix"
                             else -> "discover_carousel"
                         }
                     }
@@ -258,43 +286,52 @@ fun DiscoverScreen(
 
                     when (section.category) {
                         DiscoverCategory.MADE_FOR_YOU -> {
-                            DiscoverCarouselSection(
+                            DiscoverTunableHeroSection(
                                 section = section,
                                 icon = Icons.Rounded.AutoAwesome,
                                 containerColor = heroCardSurface,
                                 cardColor = cardSurface,
                                 activeCardColor = activeTrackSurface,
+                                tuneConfig = uiState.tuneConfig,
+                                tuneButtonTestTag = "discover_tune_daily_mix_button",
                                 currentTrackId = currentTrackId,
                                 isPlaying = isPlaying,
                                 artworkShape = artworkShape,
                                 onPlayAll = onPlayAll,
+                                onTuneMix = onOpenSmartMixTuner,
+                                onResetTune = onResetTuneConfig,
                                 onSavePlaylist = onSaveSection,
                                 onTrackClick = onTrackClick
                             )
                         }
 
                         DiscoverCategory.SMART_MIX -> {
-                            DiscoverSmartMixSection(
+                            DiscoverTunableHeroSection(
                                 section = section,
+                                icon = Icons.Rounded.GraphicEq,
                                 containerColor = smartCardSurface,
                                 cardColor = cardSurface,
                                 activeCardColor = activeTrackSurface,
+                                tuneConfig = uiState.tuneConfig,
+                                tuneButtonTestTag = "discover_tune_smart_mix_button",
                                 currentTrackId = currentTrackId,
                                 isPlaying = isPlaying,
                                 artworkShape = artworkShape,
                                 onPlayAll = onPlayAll,
                                 onTuneMix = onOpenSmartMixTuner,
+                                onResetTune = onResetTuneConfig,
                                 onSavePlaylist = onSaveSection,
                                 onTrackClick = onTrackClick
                             )
                         }
 
                         DiscoverCategory.FORGOTTEN_FAVORITES -> {
-                            DiscoverCompactStackSection(
+                            DiscoverCarouselSection(
                                 section = section,
                                 icon = Icons.Rounded.Favorite,
-                                containerColor = cardSurface,
-                                activeRowColor = activeTrackSurface,
+                                containerColor = Color.Transparent,
+                                cardColor = cardSurface,
+                                activeCardColor = activeTrackSurface,
                                 currentTrackId = currentTrackId,
                                 isPlaying = isPlaying,
                                 artworkShape = artworkShape,
@@ -353,6 +390,17 @@ fun DiscoverScreen(
                         }
                     }
                 }
+
+                // Local Listening Insights Card (100% offline stats)
+                if (uiState.insights.totalTrackCount > 0) {
+                    item(key = "discover_listening_insights", contentType = "discover_insights") {
+                        ListeningInsightsCard(
+                            insights = uiState.insights,
+                            cardSurface = cardSurface,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -372,6 +420,8 @@ fun DiscoverScreen(
                 output = smartState.output,
                 isGenerating = smartState.isGenerating,
                 selectedMood = smartState.selectedMood,
+                selectedEnergy = smartState.energyFilter,
+                discoveryBalance = smartState.discoveryBalance,
                 seedFromCurrent = smartState.seedFromCurrent,
                 currentTrackTitle = currentTrackTitle.ifBlank {
                     uiState.allTracks.firstOrNull { it.id == currentTrackId }?.title ?: "Current Track"
@@ -379,13 +429,48 @@ fun DiscoverScreen(
                 trackLookup = trackLookup,
                 artworkShape = artworkShape,
                 onSelectMood = { mood ->
-                    onGenerateSmartPlaylist(mood, smartState.seedFromCurrent)
+                    triggerTunedGeneration(
+                        mood,
+                        smartState.seedFromCurrent,
+                        smartState.energyFilter,
+                        smartState.discoveryBalance
+                    )
+                },
+                onSelectEnergy = { energy ->
+                    triggerTunedGeneration(
+                        smartState.selectedMood,
+                        smartState.seedFromCurrent,
+                        energy,
+                        smartState.discoveryBalance
+                    )
+                },
+                onChangeDiscoveryBalance = { balance ->
+                    triggerTunedGeneration(
+                        smartState.selectedMood,
+                        smartState.seedFromCurrent,
+                        smartState.energyFilter,
+                        balance
+                    )
+                },
+                onResetTune = {
+                    onResetTuneConfig()
+                    triggerTunedGeneration(null, smartState.seedFromCurrent, null, 0.5f)
                 },
                 onToggleSeedFromCurrent = { seed ->
-                    onGenerateSmartPlaylist(smartState.selectedMood, seed)
+                    triggerTunedGeneration(
+                        smartState.selectedMood,
+                        seed,
+                        smartState.energyFilter,
+                        smartState.discoveryBalance
+                    )
                 },
                 onRegenerate = {
-                    onGenerateSmartPlaylist(smartState.selectedMood, smartState.seedFromCurrent)
+                    triggerTunedGeneration(
+                        smartState.selectedMood,
+                        smartState.seedFromCurrent,
+                        smartState.energyFilter,
+                        smartState.discoveryBalance
+                    )
                 },
                 onPlaySmartPlaylist = { tracks ->
                     showSmartMixSheet = false
@@ -609,16 +694,20 @@ private fun DiscoverCarouselSection(
 }
 
 @Composable
-private fun DiscoverSmartMixSection(
+private fun DiscoverTunableHeroSection(
     section: DiscoverSection,
+    icon: ImageVector,
     containerColor: Color,
     cardColor: Color,
     activeCardColor: Color,
+    tuneConfig: DiscoverTuneConfig,
+    tuneButtonTestTag: String,
     currentTrackId: String?,
     isPlaying: Boolean,
     artworkShape: ExpressiveArtworkShape,
     onPlayAll: () -> Unit,
     onTuneMix: () -> Unit,
+    onResetTune: () -> Unit,
     onSavePlaylist: () -> Unit,
     onTrackClick: (Track) -> Unit
 ) {
@@ -638,13 +727,13 @@ private fun DiscoverSmartMixSection(
         ) {
             DiscoverSectionHeader(
                 section = section,
-                icon = Icons.Rounded.GraphicEq,
+                icon = icon,
                 onPlayAll = onPlayAll,
                 onSavePlaylist = onSavePlaylist,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
 
-            // Secondary action strip: Tune mood/seed & inspect local intelligence JSON
+            // Interactive Tune Mix strip: adjust mood, energy, and Familiar <-> Fresh balance
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -654,13 +743,21 @@ private fun DiscoverSmartMixSection(
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    color = if (tuneConfig.isCustomized) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    contentColor = if (tuneConfig.isCustomized) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
                     modifier = Modifier
                         .height(36.dp)
                         .clip(CircleShape)
                         .clickable(onClick = onTuneMix)
-                        .testTag("discover_tune_smart_mix_button")
+                        .testTag(tuneButtonTestTag)
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp),
@@ -673,11 +770,47 @@ private fun DiscoverSmartMixSection(
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = stringResource(R.string.discover_tune_mix),
+                            text = if (tuneConfig.isCustomized) {
+                                buildTuneSummaryLabel(tuneConfig)
+                            } else {
+                                stringResource(R.string.discover_tune_mix)
+                            },
                             style = MaterialTheme.typography.labelMedium,
                             maxLines = 1,
-                            softWrap = false
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
                         )
+                    }
+                }
+
+                if (tuneConfig.isCustomized) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .height(36.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onResetTune)
+                            .testTag("discover_reset_tune_${section.category.id}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = stringResource(R.string.discover_reset_tune),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = stringResource(R.string.discover_reset_tune),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }
@@ -689,7 +822,7 @@ private fun DiscoverSmartMixSection(
             ) {
                 itemsIndexed(
                     items = section.tracks,
-                    key = { index, track -> "smart_${index}_${track.id}" },
+                    key = { index, track -> "hero_${section.category.id}_${index}_${track.id}" },
                     contentType = { _, _ -> "discover_song_card" }
                 ) { _, track ->
                     DiscoverSongCard(
@@ -708,135 +841,204 @@ private fun DiscoverSmartMixSection(
     }
 }
 
+private fun buildTuneSummaryLabel(config: DiscoverTuneConfig): String {
+    val parts = buildList {
+        config.selectedMood?.let { mood ->
+            add(
+                mood.replace('_', ' ')
+                    .split(' ')
+                    .joinToString(" ") { w -> w.replaceFirstChar { it.titlecase(Locale.US) } }
+            )
+        }
+        config.energyFilter?.let { e ->
+            add("${e.replaceFirstChar { it.titlecase(Locale.US) }} Energy")
+        }
+        if (config.balanceLabel != "Balanced") {
+            add(config.balanceLabel)
+        }
+    }
+    return if (parts.isEmpty()) "Tuned" else parts.joinToString(" · ")
+}
+
 @Composable
-private fun DiscoverCompactStackSection(
-    section: DiscoverSection,
-    icon: ImageVector,
-    containerColor: Color,
-    activeRowColor: Color,
-    currentTrackId: String?,
-    isPlaying: Boolean,
-    artworkShape: ExpressiveArtworkShape,
-    onPlayAll: () -> Unit,
-    onSavePlaylist: () -> Unit,
-    onTrackClick: (Track) -> Unit
+private fun ListeningInsightsCard(
+    insights: ListeningInsights,
+    cardSurface: Color,
+    modifier: Modifier = Modifier
 ) {
-    Column(
-        modifier = Modifier
+    val tileSurface = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(cardSurface, 0.94f)
+    val totalListeningFormatted = remember(insights.totalListeningMs) {
+        formatListeningHoursMinutes(insights.totalListeningMs)
+    }
+
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = cardSurface,
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .testTag("discover_section_${section.category.id}"),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .testTag("discover_listening_insights_card")
     ) {
-        DiscoverSectionHeader(
-            section = section,
-            icon = icon,
-            onPlayAll = onPlayAll,
-            onSavePlaylist = onSavePlaylist
-        )
-
-        val previewTracks = remember(section.tracks) { section.tracks.take(5) }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            previewTracks.forEach { track ->
-                val isCurrent = track.id == currentTrackId
-                val clickAction = remember(track, onTrackClick) { { onTrackClick(track) } }
-                val cue = section.trackCues[track.id].orEmpty()
-
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (isCurrent) activeRowColor else containerColor,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable(onClick = clickAction)
-                        .testTag("discover_card_${section.category.id}_${track.id}")
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.size(34.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        ExpressiveArtworkFrame(
-                            track = track,
-                            artworkShape = artworkShape,
-                            isPlaying = isCurrent && isPlaying,
-                            animateScale = false,
-                            decodeSizePx = 144,
-                            shapeOverride = FastListThumbnailShape,
-                            modifier = Modifier.size(48.dp)
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.Insights,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
                         )
-
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = track.title.ifBlank { "Untitled Track" },
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (isCurrent) {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = track.artist.ifBlank { "Unknown Artist" },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (isCurrent) {
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                Text(
-                                    text = "· ${formatDuration(track.durationMs)}",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
-                                    color = MaterialTheme.colorScheme.outline,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                            }
-                        }
-
-                        if (isCurrent) {
-                            AudioPulseBars(
-                                isPlaying = isPlaying,
-                                tint = MaterialTheme.colorScheme.primary,
-                                barHeight = 14.dp
-                            )
-                        } else if (cue.isNotBlank()) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh
-                            ) {
-                                Text(
-                                    text = cue,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
                     }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.discover_insights_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = stringResource(R.string.discover_insights_subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    InsightMetricTile(
+                        icon = Icons.Rounded.AutoAwesome,
+                        label = "Top Mood",
+                        value = insights.topMood.ifBlank { "Balanced" },
+                        subvalue = insights.topGenre.ifBlank { "Local library" },
+                        tileSurface = tileSurface,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("insight_top_mood")
+                    )
+                    InsightMetricTile(
+                        icon = Icons.Rounded.Person,
+                        label = "Top Artist",
+                        value = insights.topArtist.ifBlank { "Various" },
+                        subvalue = "${insights.completedPlaysTotal} full listens",
+                        tileSurface = tileSurface,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("insight_top_artist")
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    InsightMetricTile(
+                        icon = Icons.Rounded.Schedule,
+                        label = "Listening Time",
+                        value = totalListeningFormatted,
+                        subvalue = "${insights.totalTrackCount} tracks indexed",
+                        tileSurface = tileSurface,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("insight_listening_time")
+                    )
+                    InsightMetricTile(
+                        icon = Icons.Rounded.HighQuality,
+                        label = "Hi-Fi Library",
+                        value = "${insights.hiFiPercentage}%",
+                        subvalue = "${insights.hiFiTrackCount}/${insights.totalTrackCount} lossless",
+                        tileSurface = tileSurface,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("insight_hifi_percent")
+                    )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun InsightMetricTile(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    subvalue: String,
+    tileSurface: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = tileSurface,
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(15.dp)
+                )
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subvalue,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+private fun formatListeningHoursMinutes(totalMs: Long): String {
+    if (totalMs <= 0L) return "0m"
+    val totalMinutes = (totalMs / 60_000L).coerceAtLeast(1L)
+    val hours = totalMinutes / 60L
+    val minutes = totalMinutes % 60L
+    return when {
+        hours > 0L && minutes > 0L -> "${hours}h ${minutes}m"
+        hours > 0L -> "${hours}h"
+        else -> "${minutes}m"
     }
 }
 
@@ -876,7 +1078,7 @@ private fun DiscoverSongCard(
                     artworkShape = artworkShape,
                     isPlaying = isCurrent && isPlaying,
                     animateScale = false,
-                    decodeSizePx = 288,
+                    decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
                     shapeOverride = FastListThumbnailShape,
                     modifier = Modifier.fillMaxSize()
                 )

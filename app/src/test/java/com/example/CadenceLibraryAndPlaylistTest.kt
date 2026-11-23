@@ -226,4 +226,132 @@ class CadenceLibraryAndPlaylistTest {
         repo.ensureInitialized()
         assertTrue("Fresh library must start with zero demo tracks", repo.getAllTracksOnce().isEmpty())
     }
+
+    @Test
+    fun `MIGRATION_2_3 adds completedPlayCount and skipCount non-destructively and TrackDao updates them`() = runTest {
+        // 1. Verify MIGRATION_2_3 SQL executes cleanly on a v2 schema table and preserves rows
+        val sqliteDb = android.database.sqlite.SQLiteDatabase.create(null)
+        try {
+            sqliteDb.execSQL(
+                """
+                CREATE TABLE tracks (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    artist TEXT NOT NULL,
+                    album TEXT NOT NULL,
+                    genre TEXT NOT NULL,
+                    durationMs INTEGER NOT NULL,
+                    bpm INTEGER NOT NULL,
+                    localUriString TEXT,
+                    artworkPath TEXT,
+                    folderName TEXT NOT NULL,
+                    folderPath TEXT NOT NULL,
+                    dateAdded INTEGER NOT NULL,
+                    playCount INTEGER NOT NULL,
+                    lastPlayedAt INTEGER NOT NULL,
+                    isFavorite INTEGER NOT NULL,
+                    isUserImported INTEGER NOT NULL,
+                    dedupeKey TEXT NOT NULL,
+                    mimeType TEXT NOT NULL,
+                    bitrateKbps INTEGER NOT NULL,
+                    sampleRateHz INTEGER NOT NULL,
+                    bitDepth INTEGER NOT NULL
+                )
+                """.trimIndent()
+            )
+            sqliteDb.execSQL(
+                """
+                INSERT INTO tracks VALUES (
+                    'v2_track_1', 'Lossless Dawn', 'Klara Lind', 'Warm Horizon', 'Ambient',
+                    210000, 84, 'content://media/1', NULL, 'Music', 'Music',
+                    1700000000, 5, 1700000500, 1, 1, 'lossless dawn|klara lind|210',
+                    'audio/flac', 1411, 96000, 24
+                )
+                """.trimIndent()
+            )
+
+            val supportDb = object : androidx.sqlite.db.SupportSQLiteDatabase by
+                androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory()
+                    .create(
+                        androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+                            .name(null)
+                            .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(2) {
+                                override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                                    db.execSQL(
+                                        """
+                                        CREATE TABLE tracks (
+                                            id TEXT NOT NULL PRIMARY KEY,
+                                            title TEXT NOT NULL,
+                                            artist TEXT NOT NULL,
+                                            album TEXT NOT NULL,
+                                            genre TEXT NOT NULL,
+                                            durationMs INTEGER NOT NULL,
+                                            bpm INTEGER NOT NULL,
+                                            localUriString TEXT,
+                                            artworkPath TEXT,
+                                            folderName TEXT NOT NULL,
+                                            folderPath TEXT NOT NULL,
+                                            dateAdded INTEGER NOT NULL,
+                                            playCount INTEGER NOT NULL,
+                                            lastPlayedAt INTEGER NOT NULL,
+                                            isFavorite INTEGER NOT NULL,
+                                            isUserImported INTEGER NOT NULL,
+                                            dedupeKey TEXT NOT NULL,
+                                            mimeType TEXT NOT NULL,
+                                            bitrateKbps INTEGER NOT NULL,
+                                            sampleRateHz INTEGER NOT NULL,
+                                            bitDepth INTEGER NOT NULL
+                                        )
+                                        """.trimIndent()
+                                    )
+                                    db.execSQL(
+                                        """
+                                        INSERT INTO tracks VALUES (
+                                            'v2_track_1', 'Lossless Dawn', 'Klara Lind', 'Warm Horizon', 'Ambient',
+                                            210000, 84, 'content://media/1', NULL, 'Music', 'Music',
+                                            1700000000, 5, 1700000500, 1, 1, 'lossless dawn|klara lind|210',
+                                            'audio/flac', 1411, 96000, 24
+                                        )
+                                        """.trimIndent()
+                                    )
+                                }
+
+                                override fun onUpgrade(
+                                    db: androidx.sqlite.db.SupportSQLiteDatabase,
+                                    oldVersion: Int,
+                                    newVersion: Int
+                                ) = Unit
+                            })
+                            .build()
+                    ).writableDatabase {}
+
+            try {
+                CadenceDatabase.MIGRATION_2_3.migrate(supportDb)
+                supportDb.query("SELECT id, completedPlayCount, skipCount FROM tracks WHERE id = 'v2_track_1'").use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    assertEquals("v2_track_1", cursor.getString(0))
+                    assertEquals(0, cursor.getInt(1))
+                    assertEquals(0, cursor.getInt(2))
+                }
+            } finally {
+                supportDb.close()
+            }
+        } finally {
+            sqliteDb.close()
+        }
+
+        // 2. Verify Room v3 TrackDao completion & skip counters persist cleanly
+        val trackDao = db.trackDao()
+        trackDao.insertTracksIgnore(sampleLocalTracks.map { TrackEntity.fromDomain(it) })
+        val id = sampleLocalTracks.first().id
+        val completedAt = 1_760_000_000L
+        trackDao.recordCompletedPlay(id, completedAt)
+        trackDao.recordCompletedPlay(id, completedAt + 1_000L)
+        trackDao.recordSkip(id)
+
+        val updated = trackDao.getTrackById(id)!!.toDomain()
+        assertEquals(2, updated.completedPlayCount)
+        assertEquals(1, updated.skipCount)
+        assertEquals(completedAt + 1_000L, updated.lastPlayedAt)
+    }
 }

@@ -8,7 +8,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode as AnimRepeatMode
 import androidx.compose.animation.core.Spring
@@ -25,7 +26,10 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -50,13 +54,13 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -76,40 +80,63 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.annotation.Keep
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.R
+import com.example.data.LibraryCategory
 import com.example.data.StableList
 import com.example.data.Track
 import com.example.data.library.ScanState
+import com.example.playback.PlaybackProgress
 import com.example.ui.components.ExpressiveArtworkFrame
+import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
 import com.example.ui.components.FastListThumbnailShape
 import com.example.ui.components.ambientAuraBackdrop
 import com.example.ui.player.PlayerViewModel
 import com.example.ui.screens.DiscoverScreen
+import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.NowPlayingScreen
+import com.example.ui.screens.OnboardingScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.CadenceTheme
 import com.example.ui.theme.ExpressiveArtworkShape
@@ -119,23 +146,31 @@ import com.example.ui.theme.opaqueOver
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 @Keep
+@Immutable
 enum class CadenceTab(
     val route: String,
     val labelRes: Int,
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
 ) {
-    NOW_PLAYING("now_playing", R.string.nav_now_playing, Icons.Rounded.Album, Icons.Outlined.Album),
+    HOME("home", R.string.nav_home, Icons.Rounded.Home, Icons.Outlined.Home),
     LIBRARY("library", R.string.nav_library, Icons.Rounded.LibraryMusic, Icons.Outlined.LibraryMusic),
     DISCOVER("discover", R.string.nav_discover, Icons.Rounded.AutoAwesome, Icons.Outlined.AutoAwesome);
 
     companion object {
         fun fromRoute(route: String?): CadenceTab =
-            entries.firstOrNull { it.route == route } ?: NOW_PLAYING
+            entries.firstOrNull { it.route == route } ?: HOME
     }
 }
+
+@Keep
+@Immutable
+data class FloatingNavBarState(
+    val activeTab: CadenceTab
+)
 
 private val CadenceTabSaver: Saver<CadenceTab, String> = Saver(
     save = { it.route },
@@ -148,12 +183,15 @@ fun CadenceApp(
 ) {
     val context = LocalContext.current
     val themePrefs by viewModel.themeState.collectAsStateWithLifecycle()
+    val userProfile by viewModel.userProfileState.collectAsStateWithLifecycle()
     val nowPlaying by viewModel.nowPlayingState.collectAsStateWithLifecycle()
     val hasDrillDown by viewModel.hasLibraryDrillDown.collectAsStateWithLifecycle()
 
-    var activeTab by rememberSaveable(stateSaver = CadenceTabSaver) { mutableStateOf(CadenceTab.NOW_PLAYING) }
+    var activeTab by rememberSaveable(stateSaver = CadenceTabSaver) { mutableStateOf(CadenceTab.HOME) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var isPlayerExpanded by rememberSaveable { mutableStateOf(false) }
     var askedNotificationPermission by rememberSaveable { mutableStateOf(false) }
+    var librarySearchFocusNonce by rememberSaveable { mutableIntStateOf(0) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     CadenceSnackbarObserver(
@@ -227,11 +265,18 @@ fun CadenceApp(
     }
 
     // Stabilized action lambdas so screen & list composables skip recomposition cleanly
-    val onOpenSettings = remember { { showSettings = true } }
+    val onOpenSettings = remember {
+        {
+            isPlayerExpanded = false
+            showSettings = true
+        }
+    }
     val onCloseSettings = remember { { showSettings = false } }
-    val onExpandMiniPlayer = remember { { activeTab = CadenceTab.NOW_PLAYING } }
+    val onExpandMiniPlayer = remember { { isPlayerExpanded = true } }
+    val onCollapseNowPlaying = remember { { isPlayerExpanded = false } }
     val onSelectTab = remember {
         { tab: CadenceTab ->
+            isPlayerExpanded = false
             showSettings = false
             activeTab = tab
         }
@@ -248,6 +293,7 @@ fun CadenceApp(
             viewModel.togglePlayPause()
         }
     }
+    val onNextTrack = remember(viewModel) { { viewModel.nextTrack() } }
     val onToggleFavoriteCurrent = remember(viewModel) { { viewModel.toggleFavorite() } }
     val onAddCurrentToPlaylist = remember(viewModel) {
         { plId: Long ->
@@ -281,21 +327,18 @@ fun CadenceApp(
         { track: Track, contextList: StableList<Track> ->
             ensureNotificationPermissionOnce()
             viewModel.selectTrackFromList(track, contextList)
-            activeTab = CadenceTab.NOW_PLAYING
         }
     }
     val onPlayTracksFromLibrary = remember(viewModel, ensureNotificationPermissionOnce) {
         { list: List<Track>, shuffle: Boolean ->
             ensureNotificationPermissionOnce()
             viewModel.playTracks(list, startIndex = 0, shuffle = shuffle)
-            activeTab = CadenceTab.NOW_PLAYING
         }
     }
     val onPlayPlaylistFromLibrary = remember(viewModel, ensureNotificationPermissionOnce) {
         { plId: Long, shuffle: Boolean ->
             ensureNotificationPermissionOnce()
             viewModel.playPlaylist(plId, shuffle)
-            activeTab = CadenceTab.NOW_PLAYING
         }
     }
     val onGenerateSmartPlaylist = remember(viewModel) {
@@ -303,9 +346,41 @@ fun CadenceApp(
             viewModel.generateSmartPlaylist(targetMood = mood, seedFromCurrent = seed)
         }
     }
+    val onGenerateTunedSmartPlaylist = remember(viewModel) {
+        { mood: String?, seed: Boolean, energy: String?, balance: Float ->
+            viewModel.generateSmartPlaylist(
+                targetMood = mood,
+                seedFromCurrent = seed,
+                energyFilter = energy,
+                discoveryBalance = balance
+            )
+        }
+    }
+    val onOpenLibrarySearch = remember(viewModel) {
+        {
+            viewModel.closeDrillDown()
+            isPlayerExpanded = false
+            showSettings = false
+            activeTab = CadenceTab.LIBRARY
+            librarySearchFocusNonce += 1
+        }
+    }
+    val onOpenLibraryShortcut = remember(viewModel) {
+        { category: LibraryCategory ->
+            viewModel.setLibraryCategory(category)
+            isPlayerExpanded = false
+            showSettings = false
+            activeTab = CadenceTab.LIBRARY
+        }
+    }
 
-    BackHandler(enabled = !showSettings && activeTab != CadenceTab.NOW_PLAYING && !(activeTab == CadenceTab.LIBRARY && hasDrillDown)) {
-        activeTab = CadenceTab.NOW_PLAYING
+    // Back collapses the expanded Now Playing sheet first, returning to the exact tab & scroll position
+    BackHandler(enabled = isPlayerExpanded) {
+        isPlayerExpanded = false
+    }
+
+    BackHandler(enabled = !isPlayerExpanded && !showSettings && activeTab != CadenceTab.HOME && !(activeTab == CadenceTab.LIBRARY && hasDrillDown)) {
+        activeTab = CadenceTab.HOME
     }
 
     CadenceTheme(
@@ -328,10 +403,33 @@ fun CadenceApp(
                 scanStateFlow = viewModel.scanState,
                 artworkShape = themePrefs.artworkShape
             ) {
+                val showOnboarding = nowPlaying.isInitialLibraryLoaded &&
+                    !userProfile.hasCompletedOnboarding &&
+                    nowPlaying.currentTrack == null &&
+                    nowPlaying.queueTracks.isEmpty()
+
+                if (showOnboarding) {
+                    OnboardingScreen(
+                        initialName = userProfile.displayName,
+                        artworkShape = themePrefs.artworkShape,
+                        onContinueAndScanFolder = { enteredName ->
+                            viewModel.completeOnboarding(enteredName)
+                            onAddFolder()
+                        },
+                        onContinueAndScanDevice = { enteredName ->
+                            viewModel.completeOnboarding(enteredName)
+                            triggerDeviceScan()
+                        },
+                        onSkip = { enteredName ->
+                            viewModel.completeOnboarding(enteredName)
+                        }
+                    )
+                    return@CadenceScanGate
+                }
+
                 val currentTrack = nowPlaying.currentTrack
                 val showFloatingDock = !useNavigationRail && !showSettings
-                val showMiniPlayer = showFloatingDock && activeTab != CadenceTab.NOW_PLAYING && currentTrack != null
-                val contentKey = if (showSettings) "settings" else activeTab.route
+                val showMiniPlayer = showFloatingDock && currentTrack != null
 
                 Box(
                     modifier = Modifier
@@ -399,58 +497,77 @@ fun CadenceApp(
                                 )
                             )
 
-                        if (performanceMode) {
-                            Box(modifier = contentInsetsModifier) {
-                                CadenceDestinationContent(
-                                    contentKey = contentKey,
+                        PersistentTabHost(
+                            activeTab = activeTab,
+                            showSettings = showSettings,
+                            modifier = contentInsetsModifier,
+                            settingsContent = {
+                                SettingsTabHost(
                                     viewModel = viewModel,
                                     themePrefs = themePrefs,
-                                    nowPlaying = nowPlaying,
-                                    onOpenSettings = onOpenSettings,
+                                    userDisplayName = userProfile.displayName,
+                                    currentTrack = currentTrack,
+                                    isPlaying = nowPlaying.isPlaying,
                                     onCloseSettings = onCloseSettings,
-                                    onTogglePlayPause = onTogglePlayPause,
-                                    onToggleFavoriteCurrent = onToggleFavoriteCurrent,
-                                    onAddCurrentToPlaylist = onAddCurrentToPlaylist,
-                                    onCreatePlaylistWithCurrent = onCreatePlaylistWithCurrent,
-                                    onPlayNextCurrent = onPlayNextCurrent,
-                                    onAddCurrentToQueue = onAddCurrentToQueue,
-                                    onSelectTrackFromLibrary = onSelectTrackFromLibrary,
-                                    onPlayTracksFromLibrary = onPlayTracksFromLibrary,
-                                    onPlayPlaylistFromLibrary = onPlayPlaylistFromLibrary,
-                                    onImportFiles = onImportFiles,
-                                    onAddFolder = onAddFolder,
-                                    onScanDevice = triggerDeviceScan,
-                                    onGenerateSmartPlaylist = onGenerateSmartPlaylist
+                                    onAddFolder = onAddFolder
                                 )
                             }
-                        } else {
-                            AnimatedContent(
-                                targetState = contentKey,
-                                transitionSpec = { fadeIn() togetherWith fadeOut() },
-                                modifier = contentInsetsModifier,
-                                label = "destination_content"
-                            ) { key ->
-                                CadenceDestinationContent(
-                                    contentKey = key,
-                                    viewModel = viewModel,
-                                    themePrefs = themePrefs,
-                                    nowPlaying = nowPlaying,
-                                    onOpenSettings = onOpenSettings,
-                                    onCloseSettings = onCloseSettings,
-                                    onTogglePlayPause = onTogglePlayPause,
-                                    onToggleFavoriteCurrent = onToggleFavoriteCurrent,
-                                    onAddCurrentToPlaylist = onAddCurrentToPlaylist,
-                                    onCreatePlaylistWithCurrent = onCreatePlaylistWithCurrent,
-                                    onPlayNextCurrent = onPlayNextCurrent,
-                                    onAddCurrentToQueue = onAddCurrentToQueue,
-                                    onSelectTrackFromLibrary = onSelectTrackFromLibrary,
-                                    onPlayTracksFromLibrary = onPlayTracksFromLibrary,
-                                    onPlayPlaylistFromLibrary = onPlayPlaylistFromLibrary,
-                                    onImportFiles = onImportFiles,
-                                    onAddFolder = onAddFolder,
-                                    onScanDevice = triggerDeviceScan,
-                                    onGenerateSmartPlaylist = onGenerateSmartPlaylist
-                                )
+                        ) { tab, isTabActive ->
+                            when (tab) {
+                                CadenceTab.HOME -> {
+                                    HomeTabHost(
+                                        viewModel = viewModel,
+                                        currentTrack = currentTrack,
+                                        isPlaying = nowPlaying.isPlaying,
+                                        artworkShape = themePrefs.artworkShape,
+                                        userDisplayName = userProfile.displayName,
+                                        isActiveTab = isTabActive,
+                                        onExpandNowPlaying = onExpandMiniPlayer,
+                                        onTogglePlayPause = onTogglePlayPause,
+                                        onSelectTrack = onSelectTrackFromLibrary,
+                                        onPlayTracks = onPlayTracksFromLibrary,
+                                        onOpenSettings = onOpenSettings,
+                                        onAddFolder = onAddFolder,
+                                        onScanDevice = triggerDeviceScan,
+                                        onOpenLibrarySearch = onOpenLibrarySearch,
+                                        onOpenLibraryShortcut = onOpenLibraryShortcut
+                                    )
+                                }
+
+                                CadenceTab.LIBRARY -> {
+                                    LibraryTabHost(
+                                        viewModel = viewModel,
+                                        currentTrackId = currentTrack?.id,
+                                        isPlaying = nowPlaying.isPlaying,
+                                        artworkShape = themePrefs.artworkShape,
+                                        searchFocusNonce = librarySearchFocusNonce,
+                                        isActiveTab = isTabActive,
+                                        onSelectTrack = onSelectTrackFromLibrary,
+                                        onPlayTracks = onPlayTracksFromLibrary,
+                                        onImportFiles = onImportFiles,
+                                        onAddFolder = onAddFolder,
+                                        onScanDevice = triggerDeviceScan,
+                                        onPlayPlaylist = onPlayPlaylistFromLibrary,
+                                        onOpenSettings = onOpenSettings
+                                    )
+                                }
+
+                                CadenceTab.DISCOVER -> {
+                                    DiscoverTabHost(
+                                        viewModel = viewModel,
+                                        currentTrackId = currentTrack?.id,
+                                        currentTrackTitle = currentTrack?.title.orEmpty(),
+                                        isPlaying = nowPlaying.isPlaying,
+                                        artworkShape = themePrefs.artworkShape,
+                                        onSelectTrackFromSection = onSelectTrackFromLibrary,
+                                        onPlayTracksFromLibrary = onPlayTracksFromLibrary,
+                                        onOpenSettings = onOpenSettings,
+                                        onAddFolder = onAddFolder,
+                                        onImportFiles = onImportFiles,
+                                        onGenerateSmartPlaylist = onGenerateSmartPlaylist,
+                                        onGenerateTunedSmartPlaylist = onGenerateTunedSmartPlaylist
+                                    )
+                                }
                             }
                         }
                     }
@@ -465,8 +582,71 @@ fun CadenceApp(
                             onSelectTab = onSelectTab,
                             onExpandMiniPlayer = onExpandMiniPlayer,
                             onTogglePlayPause = onTogglePlayPause,
-                            onNext = viewModel::nextTrack,
+                            onNext = onNextTrack,
+                            progressFlow = viewModel.progressState,
                             modifier = Modifier.align(Alignment.BottomCenter)
+                        )
+                    } else if (useNavigationRail && !showSettings && currentTrack != null) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .navigationBarsPadding()
+                                .padding(end = 24.dp, bottom = 16.dp)
+                        ) {
+                            FloatingMiniPlayerPill(
+                                track = currentTrack,
+                                isPlaying = nowPlaying.isPlaying,
+                                artworkShape = themePrefs.artworkShape,
+                                onExpand = onExpandMiniPlayer,
+                                onTogglePlayPause = onTogglePlayPause,
+                                onNext = onNextTrack,
+                                progressFlow = viewModel.progressState
+                            )
+                        }
+                    }
+
+                    // Expandable full-screen Now Playing sheet: composed ONLY while expanded/animating
+                    ExpandableNowPlayingOverlay(
+                        isExpanded = isPlayerExpanded,
+                        onCollapse = onCollapseNowPlaying,
+                        ambientAuraEnabled = themePrefs.effectiveAmbientAura,
+                        isPlaying = nowPlaying.isPlaying
+                    ) { dismissDragModifier ->
+                        val playlists by viewModel.playlistsState.collectAsStateWithLifecycle()
+                        NowPlayingScreen(
+                            uiState = nowPlaying,
+                            themePrefs = themePrefs,
+                            progressFlow = viewModel.progressState,
+                            sleepTimerFlow = viewModel.sleepTimerState,
+                            playlists = playlists,
+                            onTogglePlayPause = onTogglePlayPause,
+                            onNext = viewModel::nextTrack,
+                            onPrevious = viewModel::previousTrack,
+                            onSeek = viewModel::seekToFraction,
+                            onToggleShuffle = viewModel::toggleShuffle,
+                            onCycleRepeat = viewModel::cycleRepeatMode,
+                            onToggleFavorite = onToggleFavoriteCurrent,
+                            onCycleSpeed = viewModel::cyclePlaybackSpeed,
+                            onSelectPlaybackSpeed = viewModel::setPlaybackSpeed,
+                            onMatchMood = viewModel::matchCurrentTrackMood,
+                            onCollapse = onCollapseNowPlaying,
+                            onOpenSettings = onOpenSettings,
+                            onAddFolder = onAddFolder,
+                            onScanDevice = triggerDeviceScan,
+                            onSelectQueueIndex = viewModel::selectQueueIndex,
+                            onMoveQueueItem = viewModel::moveQueueItem,
+                            onRemoveQueueItem = viewModel::removeQueueItem,
+                            onClearQueue = viewModel::clearQueue,
+                            onSaveQueueAsPlaylist = viewModel::saveQueueAsPlaylist,
+                            onAddCurrentToPlaylist = onAddCurrentToPlaylist,
+                            onCreatePlaylistWithCurrent = onCreatePlaylistWithCurrent,
+                            onPlayNextCurrent = onPlayNextCurrent,
+                            onAddCurrentToQueue = onAddCurrentToQueue,
+                            onSelectSleepTimer = viewModel::setSleepTimer,
+                            lyricsStateFlow = viewModel.lyricsState,
+                            onRequestLyrics = viewModel::loadLyricsForTrack,
+                            onSeekToMs = viewModel::seekToMs,
+                            dismissDragModifier = dismissDragModifier
                         )
                     }
 
@@ -477,6 +657,7 @@ fun CadenceApp(
                             .navigationBarsPadding()
                             .padding(
                                 bottom = when {
+                                    isPlayerExpanded -> 24.dp
                                     !showFloatingDock -> 16.dp
                                     showMiniPlayer -> 154.dp
                                     else -> 84.dp
@@ -489,153 +670,407 @@ fun CadenceApp(
     }
 }
 
+/**
+ * GPU-translated expandable full-screen Now Playing sheet overlay.
+ * - Composes [content] strictly while expanded or animating (`isExpanded || progress > 0f`)
+ *   so minimized state consumes zero background memory on low-RAM devices.
+ * - Exposes [dismissDragModifier] so callers attach swipe-down strictly to the top header and
+ *   artwork area—never fighting horizontal seek-bar scrubbing.
+ */
 @Composable
-private fun CadenceDestinationContent(
-    contentKey: String,
-    viewModel: PlayerViewModel,
-    themePrefs: com.example.data.ThemePreferences,
-    nowPlaying: com.example.ui.player.NowPlayingUiState,
-    onOpenSettings: () -> Unit,
-    onCloseSettings: () -> Unit,
-    onTogglePlayPause: () -> Unit,
-    onToggleFavoriteCurrent: () -> Unit,
-    onAddCurrentToPlaylist: (Long) -> Unit,
-    onCreatePlaylistWithCurrent: (String) -> Unit,
-    onPlayNextCurrent: () -> Unit,
-    onAddCurrentToQueue: () -> Unit,
-    onSelectTrackFromLibrary: (Track, StableList<Track>) -> Unit,
-    onPlayTracksFromLibrary: (List<Track>, Boolean) -> Unit,
-    onPlayPlaylistFromLibrary: (Long, Boolean) -> Unit,
-    onImportFiles: () -> Unit,
-    onAddFolder: () -> Unit,
-    onScanDevice: () -> Unit,
-    onGenerateSmartPlaylist: (String?, Boolean) -> Unit
+internal fun ExpandableNowPlayingOverlay(
+    isExpanded: Boolean,
+    onCollapse: () -> Unit,
+    ambientAuraEnabled: Boolean,
+    isPlaying: Boolean,
+    content: @Composable (dismissDragModifier: Modifier) -> Unit
 ) {
-    when (contentKey) {
-        "settings" -> {
-            val audioSettings by viewModel.audioSettingsState.collectAsStateWithLifecycle()
-            val savedFolders by viewModel.savedFoldersState.collectAsStateWithLifecycle()
-            val minDurationSec by viewModel.minTrackDurationSecState.collectAsStateWithLifecycle()
-            SettingsScreen(
-                themePrefs = themePrefs,
-                audioSettings = audioSettings,
-                savedFolders = savedFolders,
-                minTrackDurationSec = minDurationSec,
-                currentTrack = nowPlaying.currentTrack,
-                isPlaying = nowPlaying.isPlaying,
-                onBack = onCloseSettings,
-                onSelectPalette = viewModel::setPalette,
-                onSelectAppearance = viewModel::setAppearanceMode,
-                onSelectArtworkShape = viewModel::setArtworkShape,
-                onToggleWavyScrubber = viewModel::setWavyScrubberEnabled,
-                onToggleAmbientAura = viewModel::setAmbientAuraEnabled,
-                onTogglePerformanceMode = viewModel::setPerformanceModeEnabled,
-                onAddFolder = onAddFolder,
-                onRemoveFolder = viewModel::removeSavedFolder,
-                onRescanFolders = viewModel::rescanSavedFolders,
-                onSelectMinTrackDurationSec = viewModel::setMinTrackDurationSec,
-                onToggleGaplessPlayback = viewModel::setGaplessPlaybackEnabled,
-                onChangeCrossfadeSec = viewModel::setCrossfadeDurationSec,
-                onTogglePauseOnHeadphoneDisconnect = viewModel::setPauseOnHeadphoneDisconnect,
-                onSelectAudioFocusBehavior = viewModel::setAudioFocusBehavior
-            )
-        }
+    val performanceMode = LocalPerformanceMode.current
+    val coroutineScope = rememberCoroutineScope()
+    val expansionAnimatable = remember { Animatable(if (isExpanded) 1f else 0f) }
+    val dragOffsetAnimatable = remember { Animatable(0f) }
+    var containerHeightPx by remember { mutableFloatStateOf(0f) }
+    val dismissThresholdPx = with(LocalDensity.current) { 108.dp.toPx() }
 
-        CadenceTab.LIBRARY.route -> {
-            val libraryState by viewModel.libraryState.collectAsStateWithLifecycle()
-            LibraryScreen(
-                uiState = libraryState,
-                currentTrackId = nowPlaying.currentTrack?.id,
-                isPlaying = nowPlaying.isPlaying,
-                artworkShape = themePrefs.artworkShape,
-                onSelectTrack = onSelectTrackFromLibrary,
-                onPlayTracks = onPlayTracksFromLibrary,
-                onToggleFavorite = viewModel::toggleFavorite,
-                onSearchChange = viewModel::updateSearchQuery,
-                onCategoryChange = viewModel::setLibraryCategory,
-                onSortChange = viewModel::setSortOrder,
-                onOpenDrillDown = viewModel::openDrillDown,
-                onCloseDrillDown = viewModel::closeDrillDown,
-                onImportFiles = onImportFiles,
-                onAddFolder = onAddFolder,
-                onScanDevice = onScanDevice,
-                onRescanFolders = viewModel::rescanSavedFolders,
-                onPlayNext = viewModel::playNext,
-                onAddToQueue = viewModel::addToQueue,
-                onAddTrackToPlaylist = viewModel::addTrackToPlaylist,
-                onRemoveTrackFromPlaylist = viewModel::removeTrackFromPlaylist,
-                onCreatePlaylist = viewModel::createPlaylist,
-                onRenamePlaylist = viewModel::renamePlaylist,
-                onDeletePlaylist = viewModel::deletePlaylist,
-                onPlayPlaylist = onPlayPlaylistFromLibrary,
-                onRemoveTrack = viewModel::removeTrack,
-                onOpenSettings = onOpenSettings,
-                scanStateFlow = viewModel.scanState
-            )
-        }
-
-        CadenceTab.DISCOVER.route -> {
-            val discoverState by viewModel.discoverState.collectAsStateWithLifecycle()
-            val onPlaySection = remember(onPlayTracksFromLibrary) {
-                { tracks: StableList<Track> -> onPlayTracksFromLibrary(tracks, false) }
+    LaunchedEffect(isExpanded, performanceMode) {
+        if (isExpanded) {
+            dragOffsetAnimatable.snapTo(0f)
+            if (performanceMode) {
+                expansionAnimatable.snapTo(1f)
+            } else {
+                expansionAnimatable.animateTo(
+                    targetValue = 1f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )
             }
-            DiscoverScreen(
-                uiState = discoverState,
-                currentTrackId = nowPlaying.currentTrack?.id,
-                isPlaying = nowPlaying.isPlaying,
-                artworkShape = themePrefs.artworkShape,
-                onSelectTrackFromSection = onSelectTrackFromLibrary,
-                onPlaySection = onPlaySection,
-                onRefreshDiscover = viewModel::refreshDiscoverFeed,
-                onOpenSettings = onOpenSettings,
-                onAddFolder = onAddFolder,
-                onImportFiles = onImportFiles,
-                onSaveMixAsPlaylist = viewModel::saveSmartPlaylist,
-                smartPlaylistFlow = viewModel.smartPlaylistState,
-                currentTrackTitle = nowPlaying.currentTrack?.title.orEmpty(),
-                onGenerateSmartPlaylist = onGenerateSmartPlaylist
-            )
+        } else {
+            if (containerHeightPx > 0f && dragOffsetAnimatable.value > 0f) {
+                val effectiveProgress =
+                    (expansionAnimatable.value - (dragOffsetAnimatable.value / containerHeightPx)).coerceIn(0f, 1f)
+                expansionAnimatable.snapTo(effectiveProgress)
+                dragOffsetAnimatable.snapTo(0f)
+            }
+            if (performanceMode) {
+                expansionAnimatable.snapTo(0f)
+            } else {
+                expansionAnimatable.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing)
+                )
+            }
         }
+    }
 
-        else -> {
-            val playlists by viewModel.playlistsState.collectAsStateWithLifecycle()
-            NowPlayingScreen(
-                uiState = nowPlaying,
-                themePrefs = themePrefs,
-                progressFlow = viewModel.progressState,
-                sleepTimerFlow = viewModel.sleepTimerState,
-                playlists = playlists,
-                onTogglePlayPause = onTogglePlayPause,
-                onNext = viewModel::nextTrack,
-                onPrevious = viewModel::previousTrack,
-                onSeek = viewModel::seekToFraction,
-                onToggleShuffle = viewModel::toggleShuffle,
-                onCycleRepeat = viewModel::cycleRepeatMode,
-                onToggleFavorite = onToggleFavoriteCurrent,
-                onCycleSpeed = viewModel::cyclePlaybackSpeed,
-                onMatchMood = viewModel::matchCurrentTrackMood,
-                onOpenSettings = onOpenSettings,
-                onAddFolder = onAddFolder,
-                onScanDevice = onScanDevice,
-                onSelectQueueIndex = viewModel::selectQueueIndex,
-                onMoveQueueItem = viewModel::moveQueueItem,
-                onRemoveQueueItem = viewModel::removeQueueItem,
-                onClearQueue = viewModel::clearQueue,
-                onSaveQueueAsPlaylist = viewModel::saveQueueAsPlaylist,
-                onAddCurrentToPlaylist = onAddCurrentToPlaylist,
-                onCreatePlaylistWithCurrent = onCreatePlaylistWithCurrent,
-                onPlayNextCurrent = onPlayNextCurrent,
-                onAddCurrentToQueue = onAddCurrentToQueue,
-                onSelectSleepTimer = viewModel::setSleepTimer
+    val shouldCompose = isExpanded || expansionAnimatable.value > 0.001f
+    if (!shouldCompose) return
+
+    val dismissDragModifier = remember(onCollapse, dismissThresholdPx) {
+        Modifier.pointerInput(onCollapse, dismissThresholdPx) {
+            detectVerticalDragGestures(
+                onVerticalDrag = { change, dragAmount ->
+                    val next = (dragOffsetAnimatable.value + dragAmount).coerceAtLeast(0f)
+                    if (next > 0f || dragAmount > 0f) {
+                        change.consume()
+                        coroutineScope.launch {
+                            dragOffsetAnimatable.snapTo(next)
+                        }
+                    }
+                },
+                onDragEnd = {
+                    val threshold = if (containerHeightPx > 0f) {
+                        minOf(dismissThresholdPx, containerHeightPx * 0.18f)
+                    } else {
+                        dismissThresholdPx
+                    }
+                    if (dragOffsetAnimatable.value >= threshold) {
+                        onCollapse()
+                    } else {
+                        coroutineScope.launch {
+                            dragOffsetAnimatable.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessMedium
+                                )
+                            )
+                        }
+                    }
+                },
+                onDragCancel = {
+                    coroutineScope.launch {
+                        dragOffsetAnimatable.animateTo(
+                            targetValue = 0f,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessMedium
+                            )
+                        )
+                    }
+                }
             )
         }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { size -> containerHeightPx = size.height.toFloat() }
+            .graphicsLayer {
+                val h = if (containerHeightPx > 0f) containerHeightPx else size.height
+                val p = expansionAnimatable.value.coerceIn(0f, 1f)
+                translationY = ((1f - p) * h) + dragOffsetAnimatable.value
+                alpha = (p * 1.45f).coerceIn(0f, 1f)
+            }
+            .background(MaterialTheme.colorScheme.background)
+            .ambientAuraBackdrop(
+                enabled = ambientAuraEnabled,
+                isPlaying = isPlaying
+            )
+            .pointerInput(Unit) { /* Consume stray taps so tabs behind stay untouched */ }
+            .windowInsetsPadding(
+                WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                )
+            )
+            .testTag("now_playing_sheet_overlay")
+    ) {
+        content(dismissDragModifier)
     }
 }
 
 /**
+ * Instant zero-rebuild tab host backed by [rememberSaveableStateHolder].
+ * - Lazily mounts each [CadenceTab] on first visit and keeps all visited tabs warm in memory
+ *   so switching between Home, Library, and Discover never tears down or re-measures LazyLists.
+ * - Toggles visibility purely in the GPU layer ([zIndex] + [graphicsLayer] alpha) and disables
+ *   pointer hit-testing & accessibility semantics on inactive tabs.
+ */
+@Composable
+internal fun PersistentTabHost(
+    activeTab: CadenceTab,
+    showSettings: Boolean,
+    modifier: Modifier = Modifier,
+    settingsContent: @Composable () -> Unit = {},
+    tabContent: @Composable (tab: CadenceTab, isActive: Boolean) -> Unit
+) {
+    val stateHolder = rememberSaveableStateHolder()
+    val visitedTabs = remember { mutableStateMapOf<CadenceTab, Boolean>() }
+    if (visitedTabs[activeTab] != true) {
+        visitedTabs[activeTab] = true
+    }
+
+    Box(
+        modifier = modifier.testTag("persistent_tab_host")
+    ) {
+        CadenceTab.entries.forEach { tab ->
+            if (visitedTabs[tab] == true) {
+                key(tab.route) {
+                    val isTabActive = !showSettings && activeTab == tab
+                    val inactiveBlockModifier = if (isTabActive) {
+                        Modifier
+                    } else {
+                        Modifier
+                            .clearAndSetSemantics {}
+                            .pointerInput(tab) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        event.changes.forEach { it.consume() }
+                                    }
+                                }
+                            }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .zIndex(if (isTabActive) 1f else 0f)
+                            .graphicsLayer {
+                                alpha = if (isTabActive) 1f else 0f
+                            }
+                            .then(inactiveBlockModifier)
+                    ) {
+                        stateHolder.SaveableStateProvider(key = tab.route) {
+                            tabContent(tab, isTabActive)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (showSettings) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(2f)
+                    .background(MaterialTheme.colorScheme.background)
+                    .pointerInput(Unit) { /* Consume stray taps so warm tabs behind stay untouched */ }
+            ) {
+                settingsContent()
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeTabHost(
+    viewModel: PlayerViewModel,
+    currentTrack: Track?,
+    isPlaying: Boolean,
+    artworkShape: ExpressiveArtworkShape,
+    userDisplayName: String,
+    isActiveTab: Boolean,
+    onExpandNowPlaying: () -> Unit,
+    onTogglePlayPause: () -> Unit,
+    onSelectTrack: (Track, StableList<Track>) -> Unit,
+    onPlayTracks: (List<Track>, Boolean) -> Unit,
+    onOpenSettings: () -> Unit,
+    onAddFolder: () -> Unit,
+    onScanDevice: () -> Unit,
+    onOpenLibrarySearch: () -> Unit,
+    onOpenLibraryShortcut: (LibraryCategory) -> Unit
+) {
+    val homeState by viewModel.homeState.collectAsStateWithLifecycle()
+    val onToggleFavorite = remember(viewModel) { viewModel::toggleFavorite }
+    HomeScreen(
+        uiState = homeState,
+        currentTrack = currentTrack,
+        isPlaying = isPlaying,
+        artworkShape = artworkShape,
+        onExpandNowPlaying = onExpandNowPlaying,
+        onTogglePlayPause = onTogglePlayPause,
+        onSelectTrack = onSelectTrack,
+        onPlayTracks = onPlayTracks,
+        onToggleFavorite = onToggleFavorite,
+        onOpenSettings = onOpenSettings,
+        onAddFolder = onAddFolder,
+        onScanDevice = onScanDevice,
+        userDisplayName = userDisplayName,
+        progressFlow = viewModel.progressState,
+        onOpenSearch = onOpenLibrarySearch,
+        onOpenLibraryShortcut = onOpenLibraryShortcut,
+        isActiveTab = isActiveTab
+    )
+}
+
+@Composable
+private fun LibraryTabHost(
+    viewModel: PlayerViewModel,
+    currentTrackId: String?,
+    isPlaying: Boolean,
+    artworkShape: ExpressiveArtworkShape,
+    searchFocusNonce: Int,
+    isActiveTab: Boolean,
+    onSelectTrack: (Track, StableList<Track>) -> Unit,
+    onPlayTracks: (List<Track>, Boolean) -> Unit,
+    onImportFiles: () -> Unit,
+    onAddFolder: () -> Unit,
+    onScanDevice: () -> Unit,
+    onPlayPlaylist: (Long, Boolean) -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    val libraryState by viewModel.libraryState.collectAsStateWithLifecycle()
+    val onToggleFavorite = remember(viewModel) { viewModel::toggleFavorite }
+    val onSearchChange = remember(viewModel) { viewModel::updateSearchQuery }
+    val onCategoryChange = remember(viewModel) { viewModel::setLibraryCategory }
+    val onSortChange = remember(viewModel) { viewModel::setSortOrder }
+    val onOpenDrillDown = remember(viewModel) { viewModel::openDrillDown }
+    val onCloseDrillDown = remember(viewModel) { viewModel::closeDrillDown }
+    val onRescanFolders = remember(viewModel) { viewModel::rescanSavedFolders }
+    val onPlayNext = remember(viewModel) { viewModel::playNext }
+    val onAddToQueue = remember(viewModel) { viewModel::addToQueue }
+    val onAddTrackToPlaylist = remember(viewModel) { viewModel::addTrackToPlaylist }
+    val onRemoveTrackFromPlaylist = remember(viewModel) { viewModel::removeTrackFromPlaylist }
+    val onCreatePlaylist = remember(viewModel) { viewModel::createPlaylist }
+    val onRenamePlaylist = remember(viewModel) { viewModel::renamePlaylist }
+    val onDeletePlaylist = remember(viewModel) { viewModel::deletePlaylist }
+    val onRemoveTrack = remember(viewModel) { viewModel::removeTrack }
+
+    LibraryScreen(
+        uiState = libraryState,
+        currentTrackId = currentTrackId,
+        isPlaying = isPlaying,
+        artworkShape = artworkShape,
+        onSelectTrack = onSelectTrack,
+        onPlayTracks = onPlayTracks,
+        onToggleFavorite = onToggleFavorite,
+        onSearchChange = onSearchChange,
+        onCategoryChange = onCategoryChange,
+        onSortChange = onSortChange,
+        onOpenDrillDown = onOpenDrillDown,
+        onCloseDrillDown = onCloseDrillDown,
+        onImportFiles = onImportFiles,
+        onAddFolder = onAddFolder,
+        onScanDevice = onScanDevice,
+        onRescanFolders = onRescanFolders,
+        onPlayNext = onPlayNext,
+        onAddToQueue = onAddToQueue,
+        onAddTrackToPlaylist = onAddTrackToPlaylist,
+        onRemoveTrackFromPlaylist = onRemoveTrackFromPlaylist,
+        onCreatePlaylist = onCreatePlaylist,
+        onRenamePlaylist = onRenamePlaylist,
+        onDeletePlaylist = onDeletePlaylist,
+        onPlayPlaylist = onPlayPlaylist,
+        onRemoveTrack = onRemoveTrack,
+        onOpenSettings = onOpenSettings,
+        scanStateFlow = viewModel.scanState,
+        searchFocusNonce = searchFocusNonce,
+        isActiveTab = isActiveTab
+    )
+}
+
+@Composable
+private fun DiscoverTabHost(
+    viewModel: PlayerViewModel,
+    currentTrackId: String?,
+    currentTrackTitle: String,
+    isPlaying: Boolean,
+    artworkShape: ExpressiveArtworkShape,
+    onSelectTrackFromSection: (Track, StableList<Track>) -> Unit,
+    onPlayTracksFromLibrary: (List<Track>, Boolean) -> Unit,
+    onOpenSettings: () -> Unit,
+    onAddFolder: () -> Unit,
+    onImportFiles: () -> Unit,
+    onGenerateSmartPlaylist: (String?, Boolean) -> Unit,
+    onGenerateTunedSmartPlaylist: (String?, Boolean, String?, Float) -> Unit
+) {
+    val discoverState by viewModel.discoverState.collectAsStateWithLifecycle()
+    val onPlaySection = remember(onPlayTracksFromLibrary) {
+        { tracks: StableList<Track> -> onPlayTracksFromLibrary(tracks, false) }
+    }
+    val onRefreshDiscover = remember(viewModel) { viewModel::refreshDiscoverFeed }
+    val onSaveMixAsPlaylist = remember(viewModel) { viewModel::saveSmartPlaylist }
+    val onUpdateTuneConfig = remember(viewModel) { viewModel::updateDiscoverTuneConfig }
+    val onResetTuneConfig = remember(viewModel) { viewModel::resetDiscoverTuneConfig }
+
+    DiscoverScreen(
+        uiState = discoverState,
+        currentTrackId = currentTrackId,
+        isPlaying = isPlaying,
+        artworkShape = artworkShape,
+        onSelectTrackFromSection = onSelectTrackFromSection,
+        onPlaySection = onPlaySection,
+        onRefreshDiscover = onRefreshDiscover,
+        onOpenSettings = onOpenSettings,
+        onAddFolder = onAddFolder,
+        onImportFiles = onImportFiles,
+        onSaveMixAsPlaylist = onSaveMixAsPlaylist,
+        smartPlaylistFlow = viewModel.smartPlaylistState,
+        currentTrackTitle = currentTrackTitle,
+        onGenerateSmartPlaylist = onGenerateSmartPlaylist,
+        onUpdateTuneConfig = onUpdateTuneConfig,
+        onResetTuneConfig = onResetTuneConfig,
+        onGenerateTunedSmartPlaylist = onGenerateTunedSmartPlaylist
+    )
+}
+
+@Composable
+private fun SettingsTabHost(
+    viewModel: PlayerViewModel,
+    themePrefs: com.example.data.ThemePreferences,
+    userDisplayName: String,
+    currentTrack: Track?,
+    isPlaying: Boolean,
+    onCloseSettings: () -> Unit,
+    onAddFolder: () -> Unit
+) {
+    val audioSettings by viewModel.audioSettingsState.collectAsStateWithLifecycle()
+    val savedFolders by viewModel.savedFoldersState.collectAsStateWithLifecycle()
+    val minDurationSec by viewModel.minTrackDurationSecState.collectAsStateWithLifecycle()
+    SettingsScreen(
+        themePrefs = themePrefs,
+        audioSettings = audioSettings,
+        savedFolders = savedFolders,
+        minTrackDurationSec = minDurationSec,
+        currentTrack = currentTrack,
+        isPlaying = isPlaying,
+        onBack = onCloseSettings,
+        onSelectPalette = viewModel::setPalette,
+        onSelectAppearance = viewModel::setAppearanceMode,
+        onSelectArtworkShape = viewModel::setArtworkShape,
+        onToggleWavyScrubber = viewModel::setWavyScrubberEnabled,
+        onToggleAmbientAura = viewModel::setAmbientAuraEnabled,
+        onTogglePerformanceMode = viewModel::setPerformanceModeEnabled,
+        onAddFolder = onAddFolder,
+        onRemoveFolder = viewModel::removeSavedFolder,
+        onRescanFolders = viewModel::rescanSavedFolders,
+        onSelectMinTrackDurationSec = viewModel::setMinTrackDurationSec,
+        onToggleGaplessPlayback = viewModel::setGaplessPlaybackEnabled,
+        onChangeCrossfadeSec = viewModel::setCrossfadeDurationSec,
+        onTogglePauseOnHeadphoneDisconnect = viewModel::setPauseOnHeadphoneDisconnect,
+        onSelectAudioFocusBehavior = viewModel::setAudioFocusBehavior,
+        userDisplayName = userDisplayName,
+        onUpdateDisplayName = viewModel::setUserDisplayName
+    )
+}
+
+/**
  * Truly floating bottom overlay combining a lightweight zero-blur vertical gradient scrim
- * with the floating mini-player pill and expanding floating navigation dock.
- * Parent containers never clip so pill edges remain razor-sharp with zero corner artifacts.
+ * with the floating mini-player pill (consistently visible across Home, Library, and Discover
+ * whenever a track is loaded) and the expanding floating navigation dock.
  */
 @Composable
 internal fun FloatingBottomDockOverlay(
@@ -647,6 +1082,7 @@ internal fun FloatingBottomDockOverlay(
     onExpandMiniPlayer: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onNext: () -> Unit,
+    progressFlow: StateFlow<PlaybackProgress>? = null,
     modifier: Modifier = Modifier
 ) {
     val performanceMode = LocalPerformanceMode.current
@@ -660,7 +1096,8 @@ internal fun FloatingBottomDockOverlay(
             )
         )
     }
-    val showMiniPlayer = activeTab != CadenceTab.NOW_PLAYING && currentTrack != null
+    val navState = remember(activeTab) { FloatingNavBarState(activeTab) }
+    val showMiniPlayer = currentTrack != null
 
     Box(
         modifier = modifier
@@ -678,14 +1115,15 @@ internal fun FloatingBottomDockOverlay(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             if (performanceMode) {
-                if (activeTab != CadenceTab.NOW_PLAYING && currentTrack != null) {
+                if (currentTrack != null) {
                     FloatingMiniPlayerPill(
                         track = currentTrack,
                         isPlaying = isPlaying,
                         artworkShape = artworkShape,
                         onExpand = onExpandMiniPlayer,
                         onTogglePlayPause = onTogglePlayPause,
-                        onNext = onNext
+                        onNext = onNext,
+                        progressFlow = progressFlow
                     )
                 }
             } else {
@@ -701,14 +1139,15 @@ internal fun FloatingBottomDockOverlay(
                             artworkShape = artworkShape,
                             onExpand = onExpandMiniPlayer,
                             onTogglePlayPause = onTogglePlayPause,
-                            onNext = onNext
+                            onNext = onNext,
+                            progressFlow = progressFlow
                         )
                     }
                 }
             }
 
             FloatingExpressiveNavDock(
-                activeTab = activeTab,
+                navState = navState,
                 onSelectTab = onSelectTab
             )
         }
@@ -722,7 +1161,8 @@ internal fun FloatingMiniPlayerPill(
     artworkShape: ExpressiveArtworkShape,
     onExpand: () -> Unit,
     onTogglePlayPause: () -> Unit,
-    onNext: () -> Unit
+    onNext: () -> Unit,
+    progressFlow: StateFlow<PlaybackProgress>? = null
 ) {
     val bg = MaterialTheme.colorScheme.background
     val pillBg = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(bg, 0.96f)
@@ -739,66 +1179,80 @@ internal fun FloatingMiniPlayerPill(
             .widthIn(max = 460.dp)
             .testTag("mini_player_pill")
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            ExpressiveArtworkFrame(
-                track = track,
-                artworkShape = artworkShape,
-                isPlaying = isPlaying,
-                animateScale = false,
-                decodeSizePx = 128,
-                shapeOverride = FastListThumbnailShape,
-                modifier = Modifier.size(44.dp)
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = track.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = track.artist,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            FilledIconButton(
-                onClick = onTogglePlayPause,
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Row(
                 modifier = Modifier
-                    .size(48.dp)
-                    .testTag("mini_play_pause_button"),
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                )
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = stringResource(
-                        if (isPlaying) R.string.action_pause else R.string.action_play
-                    ),
-                    modifier = Modifier.size(22.dp)
+                ExpressiveArtworkFrame(
+                    track = track,
+                    artworkShape = artworkShape,
+                    isPlaying = isPlaying,
+                    animateScale = false,
+                    decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
+                    shapeOverride = FastListThumbnailShape,
+                    modifier = Modifier.size(44.dp)
                 )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = track.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = track.artist,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                FilledIconButton(
+                    onClick = onTogglePlayPause,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("mini_play_pause_button"),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = stringResource(
+                            if (isPlaying) R.string.action_pause else R.string.action_play
+                        ),
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onNext,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("mini_next_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.SkipNext,
+                        contentDescription = stringResource(R.string.action_next),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            IconButton(
-                onClick = onNext,
-                modifier = Modifier
-                    .size(48.dp)
-                    .testTag("mini_next_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.SkipNext,
-                    contentDescription = stringResource(R.string.action_next),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+
+            if (progressFlow != null) {
+                MiniPlayerProgressIndicator(
+                    progressFlow = progressFlow,
+                    fallbackDurationMs = track.durationMs,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp)
+                        .height(2.dp)
                 )
             }
         }
@@ -806,11 +1260,62 @@ internal fun FloatingMiniPlayerPill(
 }
 
 /**
+ * Isolated draw-phase progress bar for [FloatingMiniPlayerPill].
+ * Collects [progressFlow] strictly inside this tiny leaf and reads state inside Canvas draw phase,
+ * guaranteeing 0 recompositions of [FloatingMiniPlayerPill], [FloatingBottomDockOverlay], or [FloatingExpressiveNavDock].
+ */
+@Composable
+private fun MiniPlayerProgressIndicator(
+    progressFlow: StateFlow<PlaybackProgress>,
+    fallbackDurationMs: Long,
+    modifier: Modifier = Modifier
+) {
+    val progressState = progressFlow.collectAsStateWithLifecycle()
+    val activeColor = MaterialTheme.colorScheme.primary
+    val trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.24f)
+
+    Canvas(modifier = modifier.testTag("mini_player_progress_bar")) {
+        val progress = progressState.value
+        val dur = progress.durationMs.takeIf { it > 0L } ?: fallbackDurationMs.coerceAtLeast(1L)
+        val fraction = (progress.positionMs.coerceIn(0L, dur).toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+        val y = size.height / 2f
+        drawLine(
+            color = trackColor,
+            start = Offset(0f, y),
+            end = Offset(size.width, y),
+            strokeWidth = size.height,
+            cap = StrokeCap.Round
+        )
+        val fillEnd = size.width * fraction
+        if (fillEnd > 0f) {
+            drawLine(
+                color = activeColor,
+                start = Offset(0f, y),
+                end = Offset(fillEnd, y),
+                strokeWidth = size.height,
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+private val NavPillExpandSpringSpec = spring<IntSize>(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = Spring.StiffnessMediumLow
+)
+
+private val NavPillColorSpringSpec = spring<Color>(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = Spring.StiffnessMediumLow
+)
+
+/**
  * Google Photos-inspired expanding floating bottom navigation dock:
- * - Only the active tab expands into a highlighted pill displaying both icon & text label.
- * - Inactive tabs collapse into compact 50dp circular icon buttons with hidden text labels.
- * - Uses CircleShape, 0dp shadowElevation, and a crisp 1dp pre-blended outlineVariant border
- *   so corners render razor-sharp with zero clipped shadow artifacts.
+ * - Isolated with [@Immutable] [FloatingNavBarState] and stable tab callbacks so heavy screen
+ *   recompositions never stall tab transitions.
+ * - Uses a single unified spring spec inside [AnimatedVisibility] (zero competing nested
+ *   `animateContentSize` modifiers) and pre-blended [Color.opaqueOver] colors with
+ *   [animateColorAsState] and 0dp shadow elevation for stutter-free 60fps pill transitions.
  */
 @Composable
 internal fun FloatingExpressiveNavDock(
@@ -818,24 +1323,27 @@ internal fun FloatingExpressiveNavDock(
     onSelectTab: (CadenceTab) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val performanceMode = LocalPerformanceMode.current
+    val navState = remember(activeTab) { FloatingNavBarState(activeTab) }
+    FloatingExpressiveNavDock(
+        navState = navState,
+        onSelectTab = onSelectTab,
+        modifier = modifier
+    )
+}
+
+@Composable
+internal fun FloatingExpressiveNavDock(
+    navState: FloatingNavBarState,
+    onSelectTab: (CadenceTab) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val bg = MaterialTheme.colorScheme.background
     val dockBg = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(bg, 0.96f)
     val dockBorder = MaterialTheme.colorScheme.outlineVariant.opaqueOver(bg, 0.85f)
-    val inactiveCircleBg = MaterialTheme.colorScheme.surfaceContainer.opaqueOver(
-        dockBg,
-        0.82f
-    )
-    val dockAnimModifier = if (performanceMode) {
-        Modifier
-    } else {
-        Modifier.animateContentSize(
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioNoBouncy,
-                stiffness = Spring.StiffnessMediumLow
-            )
-        )
-    }
+    val activePillBg = MaterialTheme.colorScheme.primaryContainer.opaqueOver(dockBg, 1f)
+    val inactivePillBg = MaterialTheme.colorScheme.surfaceContainer.opaqueOver(dockBg, 0.82f)
+    val activeContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+    val inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant
 
     Surface(
         shape = CircleShape,
@@ -845,7 +1353,6 @@ internal fun FloatingExpressiveNavDock(
         border = BorderStroke(1.dp, dockBorder),
         modifier = modifier
             .wrapContentWidth()
-            .then(dockAnimModifier)
             .testTag("floating_nav_dock")
     ) {
         Row(
@@ -854,96 +1361,118 @@ internal fun FloatingExpressiveNavDock(
             verticalAlignment = Alignment.CenterVertically
         ) {
             CadenceTab.entries.forEach { tab ->
-                val selected = tab == activeTab
+                val selected = tab == navState.activeTab
                 val onPickTab = remember(tab, onSelectTab) { { onSelectTab(tab) } }
-                val tabLabel = stringResource(tab.labelRes)
-                val pillAnimModifier = if (performanceMode) {
-                    Modifier
-                } else {
-                    Modifier.animateContentSize(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMedium
-                        )
-                    )
-                }
+                FloatingNavTabPill(
+                    tab = tab,
+                    selected = selected,
+                    activePillBg = activePillBg,
+                    inactivePillBg = inactivePillBg,
+                    activeContentColor = activeContentColor,
+                    inactiveContentColor = inactiveContentColor,
+                    onClick = onPickTab
+                )
+            }
+        }
+    }
+}
 
-                Surface(
-                    onClick = onPickTab,
-                    shape = CircleShape,
-                    color = if (selected) {
-                        MaterialTheme.colorScheme.primaryContainer
-                    } else {
-                        inactiveCircleBg
-                    },
-                    contentColor = if (selected) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    tonalElevation = 0.dp,
-                    shadowElevation = 0.dp,
+@Composable
+private fun FloatingNavTabPill(
+    tab: CadenceTab,
+    selected: Boolean,
+    activePillBg: Color,
+    inactivePillBg: Color,
+    activeContentColor: Color,
+    inactiveContentColor: Color,
+    onClick: () -> Unit
+) {
+    val performanceMode = LocalPerformanceMode.current
+    val tabLabel = stringResource(tab.labelRes)
+
+    val containerColor = if (performanceMode) {
+        if (selected) activePillBg else inactivePillBg
+    } else {
+        animateColorAsState(
+            targetValue = if (selected) activePillBg else inactivePillBg,
+            animationSpec = NavPillColorSpringSpec,
+            label = "nav_pill_bg_${tab.route}"
+        ).value
+    }
+
+    val contentColor = if (performanceMode) {
+        if (selected) activeContentColor else inactiveContentColor
+    } else {
+        animateColorAsState(
+            targetValue = if (selected) activeContentColor else inactiveContentColor,
+            animationSpec = NavPillColorSpringSpec,
+            label = "nav_pill_fg_${tab.route}"
+        ).value
+    }
+
+    Row(
+        modifier = Modifier
+            .height(50.dp)
+            .widthIn(min = 50.dp)
+            .clip(CircleShape)
+            .background(color = containerColor, shape = CircleShape)
+            .clickable(
+                role = Role.Tab,
+                onClickLabel = tabLabel,
+                onClick = onClick
+            )
+            .padding(horizontal = 14.dp)
+            .testTag("nav_${tab.route}"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+            contentDescription = tabLabel,
+            tint = contentColor,
+            modifier = Modifier.size(22.dp)
+        )
+        if (performanceMode) {
+            if (selected) {
+                Text(
+                    text = tabLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = contentColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Clip,
                     modifier = Modifier
-                        .height(50.dp)
-                        .widthIn(min = 50.dp)
-                        .then(pillAnimModifier)
-                        .testTag("nav_${tab.route}")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = if (selected) 18.dp else 0.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                            contentDescription = tabLabel,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        if (performanceMode) {
-                            if (selected) {
-                                Text(
-                                    text = tabLabel,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier
-                                        .padding(start = 8.dp)
-                                        .testTag("nav_label_${tab.route}")
-                                )
-                            }
-                        } else {
-                            AnimatedVisibility(
-                                visible = selected,
-                                enter = fadeIn(tween(180)) + expandHorizontally(
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    ),
-                                    expandFrom = Alignment.Start
-                                ),
-                                exit = fadeOut(tween(120)) + shrinkHorizontally(
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    ),
-                                    shrinkTowards = Alignment.Start
-                                )
-                            ) {
-                                Text(
-                                    text = tabLabel,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier
-                                        .padding(start = 8.dp)
-                                        .testTag("nav_label_${tab.route}")
-                                )
-                            }
-                        }
-                    }
-                }
+                        .padding(start = 8.dp, end = 4.dp)
+                        .testTag("nav_label_${tab.route}")
+                )
+            }
+        } else {
+            AnimatedVisibility(
+                visible = selected,
+                enter = fadeIn(
+                    animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)
+                ) + expandHorizontally(
+                    animationSpec = NavPillExpandSpringSpec,
+                    expandFrom = Alignment.Start
+                ),
+                exit = fadeOut(
+                    animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing)
+                ) + shrinkHorizontally(
+                    animationSpec = NavPillExpandSpringSpec,
+                    shrinkTowards = Alignment.Start
+                )
+            ) {
+                Text(
+                    text = tabLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = contentColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier
+                        .padding(start = 8.dp, end = 4.dp)
+                        .testTag("nav_label_${tab.route}")
+                )
             }
         }
     }

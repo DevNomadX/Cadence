@@ -116,6 +116,8 @@ data class Track(
     val fileSizeBytes: Long = 0L,
     val dateAdded: Long = 0L,
     val playCount: Int = 0,
+    val completedPlayCount: Int = 0,
+    val skipCount: Int = 0,
     val lastPlayedAt: Long = 0L,
     val isFavorite: Boolean = false,
     val suggestedPalette: ExpressivePalette = ExpressivePalette.TERRACOTTA,
@@ -189,12 +191,114 @@ data class Track(
             return parts.joinToString(" ")
         }
 
+    /**
+     * Builds an immutable [AudioQualitySpec] strictly from this track's extracted file metadata
+     * (zero hardcoded or fabricated fields). Returns null if no real technical metadata exists.
+     */
+    fun resolveAudioQualitySpec(): AudioQualitySpec? {
+        val format = resolvedCodec
+        val bitDepthStr = if (bitDepth > 0 && (isLosslessFormat || isHiRes)) {
+            "$bitDepth-bit"
+        } else {
+            ""
+        }
+        val sampleRateStr = formatSampleRateKHz(sampleRateHz)
+        val bitrateStr = formatBitrateKbps(bitrateKbps)
+
+        val items = ArrayList<AudioSpecItem>(4)
+        if (format.isNotEmpty()) {
+            items += AudioSpecItem(label = "Format", value = format, testTagKey = "format")
+        }
+        if (bitDepthStr.isNotEmpty()) {
+            items += AudioSpecItem(label = "Bit Depth", value = bitDepthStr, testTagKey = "bit_depth")
+        }
+        if (sampleRateStr.isNotEmpty()) {
+            items += AudioSpecItem(label = "Sample Rate", value = sampleRateStr, testTagKey = "sample_rate")
+        }
+        if (bitrateStr.isNotEmpty()) {
+            items += AudioSpecItem(label = "Bitrate", value = bitrateStr, testTagKey = "bitrate")
+        }
+        if (items.isEmpty()) return null
+
+        val tier = when {
+            isHiRes -> AudioQualityTier.HI_RES
+            isLosslessFormat -> AudioQualityTier.LOSSLESS
+            bitrateKbps >= 256 -> AudioQualityTier.HIGH_QUALITY
+            else -> AudioQualityTier.STANDARD
+        }
+
+        val tierTitle = when (tier) {
+            AudioQualityTier.HI_RES -> "HI-RES"
+            AudioQualityTier.LOSSLESS -> "LOSSLESS"
+            AudioQualityTier.HIGH_QUALITY -> "HIGH QUALITY"
+            AudioQualityTier.STANDARD -> "STANDARD"
+        }
+
+        val secondaryHeadline = when (tier) {
+            AudioQualityTier.HI_RES -> when {
+                bitDepth >= 24 -> "$bitDepth-BIT"
+                sampleRateStr.isNotEmpty() -> sampleRateStr.uppercase(java.util.Locale.US)
+                else -> format
+            }
+            AudioQualityTier.LOSSLESS -> format.ifEmpty {
+                bitDepthStr.uppercase(java.util.Locale.US)
+            }
+            AudioQualityTier.HIGH_QUALITY, AudioQualityTier.STANDARD -> format.ifEmpty {
+                if (bitrateKbps > 0) "$bitrateKbps KBPS" else sampleRateStr.uppercase(java.util.Locale.US)
+            }
+        }
+
+        val headline = if (secondaryHeadline.isNotEmpty()) {
+            "$tierTitle • $secondaryHeadline"
+        } else {
+            tierTitle
+        }
+
+        return AudioQualitySpec(
+            tier = tier,
+            headline = headline,
+            formatLabel = format,
+            bitDepthLabel = bitDepthStr,
+            sampleRateLabel = sampleRateStr,
+            bitrateLabel = bitrateStr,
+            detailItems = items.toStableList()
+        )
+    }
+
     companion object {
         val LOSSLESS_CODECS: Set<String> = setOf(
             "FLAC", "WAV", "ALAC", "AIFF", "APE", "DSD", "PCM", "WV", "TTA"
         )
     }
 }
+
+@Keep
+enum class AudioQualityTier {
+    HI_RES,
+    LOSSLESS,
+    HIGH_QUALITY,
+    STANDARD
+}
+
+@Keep
+@Immutable
+data class AudioSpecItem(
+    val label: String,
+    val value: String,
+    val testTagKey: String
+)
+
+@Keep
+@Immutable
+data class AudioQualitySpec(
+    val tier: AudioQualityTier,
+    val headline: String,
+    val formatLabel: String,
+    val bitDepthLabel: String,
+    val sampleRateLabel: String,
+    val bitrateLabel: String,
+    val detailItems: StableList<AudioSpecItem>
+)
 
 fun resolveAudioCodecLabel(
     codec: String,
@@ -250,6 +354,12 @@ fun formatSampleRateKHz(sampleRateHz: Int): String {
         val kHz = sampleRateHz / 1000.0
         "%.1f kHz".format(java.util.Locale.US, kHz)
     }
+}
+
+fun formatBitrateKbps(bitrateKbps: Int): String {
+    if (bitrateKbps <= 0) return ""
+    val formatted = java.text.NumberFormat.getIntegerInstance(java.util.Locale.US).format(bitrateKbps)
+    return "$formatted kbps"
 }
 
 @Immutable

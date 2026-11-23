@@ -27,9 +27,12 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.Check
@@ -37,8 +40,10 @@ import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -48,13 +53,19 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,6 +77,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import com.example.R
 import com.example.data.AudioFocusBehavior
 import com.example.data.AudioSettings
@@ -109,9 +121,13 @@ fun SettingsScreen(
     onChangeCrossfadeSec: (Int) -> Unit,
     onTogglePauseOnHeadphoneDisconnect: (Boolean) -> Unit,
     onSelectAudioFocusBehavior: (AudioFocusBehavior) -> Unit,
+    userDisplayName: String = "",
+    onUpdateDisplayName: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
+
+    var showDisplayNameDialog by remember { mutableStateOf(false) }
 
     val bg = MaterialTheme.colorScheme.background
     val cardColor = MaterialTheme.colorScheme.surfaceContainerLow.opaqueOver(bg, 0.96f)
@@ -182,6 +198,73 @@ fun SettingsScreen(
                             .weight(1f)
                             .testTag("settings_header_title")
                     )
+                }
+            }
+
+            // --- Profile / Display Name ---
+
+            item(key = "section_profile", contentType = "profile_row") {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = cardColor,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(24.dp))
+                        .clickable { showDisplayNameDialog = true }
+                        .testTag("settings_display_name_row")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Person,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.settings_display_name_title),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = userDisplayName.ifBlank {
+                                    stringResource(R.string.settings_display_name_empty)
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (userDisplayName.isNotBlank()) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("settings_display_name_value")
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Outlined.Edit,
+                            contentDescription = stringResource(R.string.settings_display_name_title),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
                 }
             }
 
@@ -600,6 +683,99 @@ fun SettingsScreen(
             }
         }
     }
+
+    if (showDisplayNameDialog) {
+        DisplayNameEditDialog(
+            initialName = userDisplayName,
+            onDismiss = { showDisplayNameDialog = false },
+            onSave = { updated ->
+                onUpdateDisplayName(updated.trim())
+                showDisplayNameDialog = false
+            },
+            onClear = {
+                onUpdateDisplayName("")
+                showDisplayNameDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun DisplayNameEditDialog(
+    initialName: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+    onClear: () -> Unit
+) {
+    var draftName by remember(initialName) { mutableStateOf(initialName) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        shape = RoundedCornerShape(28.dp),
+        title = {
+            Text(
+                text = stringResource(R.string.settings_display_name_dialog_title),
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            OutlinedTextField(
+                value = draftName,
+                onValueChange = { next ->
+                    if (next.length <= 36) {
+                        draftName = next
+                    }
+                },
+                label = { Text(stringResource(R.string.onboarding_name_label)) },
+                placeholder = { Text(stringResource(R.string.onboarding_name_placeholder)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Words,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = { onSave(draftName) }
+                ),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_display_name_input")
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(draftName) },
+                shape = CircleShape,
+                modifier = Modifier.testTag("settings_display_name_save")
+            ) {
+                Text(stringResource(R.string.action_save))
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (initialName.isNotBlank() || draftName.isNotBlank()) {
+                    TextButton(
+                        onClick = onClear,
+                        modifier = Modifier.testTag("settings_display_name_clear")
+                    ) {
+                        Text(stringResource(R.string.action_clear))
+                    }
+                }
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("settings_display_name_cancel")
+                ) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .widthIn(max = 400.dp)
+            .testTag("settings_display_name_dialog")
+    )
 }
 
 @Composable

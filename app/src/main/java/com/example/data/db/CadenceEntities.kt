@@ -1,5 +1,6 @@
 package com.example.data.db
 
+import androidx.annotation.Keep
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -7,6 +8,7 @@ import androidx.room.PrimaryKey
 import com.example.data.Track
 import com.example.ui.theme.ExpressivePalette
 
+@Keep
 @Entity(
     tableName = "tracks",
     indices = [
@@ -42,6 +44,8 @@ data class TrackEntity(
     val fileSizeBytes: Long,
     val dateAdded: Long,
     val playCount: Int,
+    val completedPlayCount: Int = 0,
+    val skipCount: Int = 0,
     val lastPlayedAt: Long,
     val isFavorite: Boolean,
     val synthProfileName: String? = null,
@@ -73,6 +77,8 @@ data class TrackEntity(
         fileSizeBytes = fileSizeBytes,
         dateAdded = dateAdded,
         playCount = playCount,
+        completedPlayCount = completedPlayCount,
+        skipCount = skipCount,
         lastPlayedAt = lastPlayedAt,
         isFavorite = isFavorite,
         suggestedPalette = ExpressivePalette.fromId(suggestedPaletteId),
@@ -108,6 +114,8 @@ data class TrackEntity(
             fileSizeBytes = track.fileSizeBytes,
             dateAdded = track.dateAdded,
             playCount = track.playCount,
+            completedPlayCount = track.completedPlayCount,
+            skipCount = track.skipCount,
             lastPlayedAt = track.lastPlayedAt,
             isFavorite = track.isFavorite,
             synthProfileName = null,

@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -17,23 +18,31 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
@@ -66,6 +75,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -88,12 +98,17 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Size as CoilSize
 import com.example.R
+import com.example.data.AudioQualitySpec
+import com.example.data.AudioQualityTier
 import com.example.data.Track
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.LocalPerformanceMode
+import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
 import java.io.File
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -347,28 +362,15 @@ fun MorphingPlayPauseButton(
     }
 
     val cornerRadius = if (performanceMode) {
-        if (isPlaying) 24.dp else 40.dp
+        if (isPlaying) 24.dp else 38.dp
     } else {
         animateDpAsState(
-            targetValue = if (isPlaying) 24.dp else 40.dp,
+            targetValue = if (isPlaying) 24.dp else 38.dp,
             animationSpec = spring(
                 dampingRatio = Spring.DampingRatioMediumBouncy,
                 stiffness = Spring.StiffnessLow
             ),
             label = "play_button_corner"
-        ).value
-    }
-
-    val buttonWidth = if (performanceMode) {
-        if (isPlaying) 88.dp else 76.dp
-    } else {
-        animateDpAsState(
-            targetValue = if (isPlaying) 88.dp else 76.dp,
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessLow
-            ),
-            label = "play_button_width"
         ).value
     }
 
@@ -384,8 +386,7 @@ fun MorphingPlayPauseButton(
         tonalElevation = if (performanceMode) 0.dp else 6.dp,
         shadowElevation = if (performanceMode) 0.dp else 6.dp,
         modifier = modifier
-            .width(buttonWidth)
-            .height(74.dp)
+            .size(76.dp)
             .let { if (scale != 1f) it.scale(scale) else it }
             .clip(buttonShape)
             .clickable(
@@ -443,6 +444,41 @@ fun MorphingPlayPauseButton(
  * Playlists, Mini-Player) so low-end GPUs never allocate per-row stencil-buffer clip paths.
  */
 val FastListThumbnailShape: Shape = RoundedCornerShape(14.dp)
+
+/**
+ * Shared target pixel decode size for all list rows, shortcut cards, LazyRow shelves,
+ * and mini-player thumbnails so Coil reuses one memory-cache entry across every tab.
+ */
+const val FAST_THUMBNAIL_DECODE_PX: Int = 160
+
+/**
+ * Builds a low-overhead Coil [ImageRequest] with explicit pixel [CoilSize], hardware bitmaps,
+ * deterministic cache keys, and zero crossfade on fast-scrolling list thumbnails.
+ */
+internal fun buildArtworkImageRequest(
+    context: android.content.Context,
+    artworkPath: String,
+    decodeSizePx: Int,
+    enableCrossfade: Boolean
+): ImageRequest {
+    val data: Any = if (artworkPath.startsWith("content://") || artworkPath.startsWith("file://")) {
+        artworkPath
+    } else {
+        File(artworkPath)
+    }
+    val cacheKey = "art_${artworkPath}_$decodeSizePx"
+    return ImageRequest.Builder(context)
+        .data(data)
+        .size(CoilSize(decodeSizePx, decodeSizePx))
+        .allowHardware(true)
+        .allowRgb565(true)
+        .memoryCacheKey(cacheKey)
+        .diskCacheKey(cacheKey)
+        .apply {
+            if (enableCrossfade) crossfade(140) else crossfade(false)
+        }
+        .build()
+}
 
 /**
  * Displays track artwork clipped into the selected Material 3 Expressive organic shape
@@ -505,21 +541,14 @@ fun ExpressiveArtworkFrame(
 
             !track.artworkPath.isNullOrBlank() -> {
                 val context = LocalContext.current
-                val enableCrossfade = decodeSizePx > 160 && !performanceMode
-                val model = remember(track.artworkPath, decodeSizePx, enableCrossfade) {
-                    val data: Any = if (track.artworkPath.startsWith("content://") || track.artworkPath.startsWith("file://")) {
-                        track.artworkPath
-                    } else {
-                        File(track.artworkPath)
-                    }
-                    ImageRequest.Builder(context)
-                        .data(data)
-                        .size(decodeSizePx)
-                        .allowRgb565(true)
-                        .apply {
-                            if (enableCrossfade) crossfade(140) else crossfade(false)
-                        }
-                        .build()
+                val enableCrossfade = decodeSizePx > 256 && !performanceMode
+                val model = remember(context, track.artworkPath, decodeSizePx, enableCrossfade) {
+                    buildArtworkImageRequest(
+                        context = context,
+                        artworkPath = track.artworkPath,
+                        decodeSizePx = decodeSizePx,
+                        enableCrossfade = enableCrossfade
+                    )
                 }
                 AsyncImage(
                     model = model,
@@ -559,45 +588,52 @@ fun ThemeReactiveBauhausArtwork(
     val tertiaryContainer = MaterialTheme.colorScheme.tertiaryContainer
     val secondary = MaterialTheme.colorScheme.secondary
 
+    val gradientColors = remember(primaryContainer, tertiaryContainer) {
+        listOf(primaryContainer, tertiaryContainer)
+    }
+    val cachedDrawModifier = remember(seed, gradientColors, primary, tertiary, secondary) {
+        val tertiaryTint = tertiary.copy(alpha = 0.88f)
+        val secondaryTint = secondary.copy(alpha = 0.72f)
+        val ringTint = Color.White.copy(alpha = 0.35f)
+        val variant = (seed and 0x7FFFFFFF) % 3
+        Modifier.drawWithCache {
+            val w = size.width
+            val h = size.height
+            val bgBrush = Brush.linearGradient(
+                colors = gradientColors,
+                start = Offset.Zero,
+                end = Offset(w, h)
+            )
+            val sunCenter = when (variant) {
+                0 -> Offset(w * 0.62f, h * 0.36f)
+                1 -> Offset(w * 0.38f, h * 0.34f)
+                else -> Offset(w * 0.50f, h * 0.42f)
+            }
+            val ringStroke = Stroke(width = w * 0.018f)
+            val lowLeftCenter = Offset(w * 0.28f, h * 0.92f)
+            val lowRightCenter = Offset(w * 0.76f, h * 0.74f)
+
+            onDrawBehind {
+                drawRect(brush = bgBrush)
+                drawCircle(color = primary, radius = w * 0.34f, center = sunCenter)
+                drawCircle(color = tertiaryTint, radius = w * 0.46f, center = lowLeftCenter)
+                drawCircle(color = secondaryTint, radius = w * 0.16f, center = lowRightCenter)
+                drawCircle(color = ringTint, radius = w * 0.24f, center = sunCenter, style = ringStroke)
+            }
+        }
+    }
+
     Box(
         modifier = modifier
             .background(primaryContainer)
             .semantics { this.contentDescription = contentDescription }
-            .drawWithCache {
-                val w = size.width
-                val h = size.height
-                val variant = (seed and 0x7FFFFFFF) % 3
-                val bgBrush = Brush.linearGradient(
-                    colors = listOf(primaryContainer, tertiaryContainer),
-                    start = Offset.Zero,
-                    end = Offset(w, h)
-                )
-                val sunCenter = when (variant) {
-                    0 -> Offset(w * 0.62f, h * 0.36f)
-                    1 -> Offset(w * 0.38f, h * 0.34f)
-                    else -> Offset(w * 0.50f, h * 0.42f)
-                }
-                val ringStroke = Stroke(width = w * 0.018f)
-                val tertiaryTint = tertiary.copy(alpha = 0.88f)
-                val secondaryTint = secondary.copy(alpha = 0.72f)
-                val ringTint = Color.White.copy(alpha = 0.35f)
-                val lowLeftCenter = Offset(w * 0.28f, h * 0.92f)
-                val lowRightCenter = Offset(w * 0.76f, h * 0.74f)
-
-                onDrawBehind {
-                    drawRect(brush = bgBrush)
-                    drawCircle(color = primary, radius = w * 0.34f, center = sunCenter)
-                    drawCircle(color = tertiaryTint, radius = w * 0.46f, center = lowLeftCenter)
-                    drawCircle(color = secondaryTint, radius = w * 0.16f, center = lowRightCenter)
-                    drawCircle(color = ringTint, radius = w * 0.24f, center = sunCenter, style = ringStroke)
-                }
-            }
+            .then(cachedDrawModifier)
     )
 }
 
 /**
- * Minimalist 4-bar rhythmic equalizer indicator.
- * Low-end optimized: draws all 4 bars in a single Canvas and reads State<Float> handles strictly
+ * Minimalist rhythmic equalizer indicator (3 or 4 bars).
+ * Low-end optimized: draws all bars in a single Canvas and reads State<Float> handles strictly
  * during Draw phase (0 recompositions, 0 relayouts, 0 per-frame List allocations).
  * Static in Performance Mode to save GPU/CPU cycles on low-end devices.
  */
@@ -606,8 +642,10 @@ fun AudioPulseBars(
     isPlaying: Boolean,
     tint: Color = MaterialTheme.colorScheme.primary,
     barHeight: Dp = 16.dp,
+    barCount: Int = 4,
     modifier: Modifier = Modifier
 ) {
+    val clampedBars = barCount.coerceIn(3, 4)
     val performanceMode = LocalPerformanceMode.current
     val isResumed = rememberIsLifecycleResumed()
     val animate = isPlaying && isResumed && !performanceMode
@@ -646,27 +684,32 @@ fun AudioPulseBars(
             ),
             label = "eq_3"
         )
-        bar4State = transition.animateFloat(
-            initialValue = 0.76f,
-            targetValue = 0.24f,
-            animationSpec = infiniteRepeatable(
-                tween(490, easing = FastOutSlowInEasing),
-                RepeatMode.Reverse
-            ),
-            label = "eq_4"
-        )
+        bar4State = if (clampedBars == 4) {
+            transition.animateFloat(
+                initialValue = 0.76f,
+                targetValue = 0.24f,
+                animationSpec = infiniteRepeatable(
+                    tween(490, easing = FastOutSlowInEasing),
+                    RepeatMode.Reverse
+                ),
+                label = "eq_4"
+            )
+        } else {
+            remember { mutableFloatStateOf(0f) }
+        }
     } else {
         val activeStatic = isPlaying
-        bar1State = remember(activeStatic) { mutableFloatStateOf(if (activeStatic) 0.55f else 0.28f) }
-        bar2State = remember(activeStatic) { mutableFloatStateOf(if (activeStatic) 0.92f else 0.45f) }
-        bar3State = remember(activeStatic) { mutableFloatStateOf(if (activeStatic) 0.68f else 0.32f) }
-        bar4State = remember(activeStatic) { mutableFloatStateOf(if (activeStatic) 0.44f else 0.22f) }
+        bar1State = remember(activeStatic) { mutableFloatStateOf(if (activeStatic) 0.55f else 0.38f) }
+        bar2State = remember(activeStatic) { mutableFloatStateOf(if (activeStatic) 0.92f else 0.72f) }
+        bar3State = remember(activeStatic) { mutableFloatStateOf(if (activeStatic) 0.68f else 0.48f) }
+        bar4State = remember(activeStatic) { mutableFloatStateOf(if (activeStatic) 0.44f else 0.28f) }
     }
 
-    // Total width: 4 * 3.dp + 3 * 2.5.dp = 19.5.dp
+    // Width: 3 bars -> 3*3.dp + 2*2.5.dp = 14.dp; 4 bars -> 4*3.dp + 3*2.5.dp = 19.5.dp
+    val totalWidth = if (clampedBars == 3) 14.dp else 19.5.dp
     Canvas(
         modifier = modifier
-            .width(19.5.dp)
+            .width(totalWidth)
             .height(barHeight)
     ) {
         val barWidthPx = 3.dp.toPx()
@@ -678,7 +721,6 @@ fun AudioPulseBars(
         val h1 = (totalH * bar1State.value).coerceAtLeast(minBarPx)
         val h2 = (totalH * bar2State.value).coerceAtLeast(minBarPx)
         val h3 = (totalH * bar3State.value).coerceAtLeast(minBarPx)
-        val h4 = (totalH * bar4State.value).coerceAtLeast(minBarPx)
 
         var x = 0f
         drawRoundRect(tint, Offset(x, totalH - h1), Size(barWidthPx, h1), radius)
@@ -686,8 +728,11 @@ fun AudioPulseBars(
         drawRoundRect(tint, Offset(x, totalH - h2), Size(barWidthPx, h2), radius)
         x += barWidthPx + gapPx
         drawRoundRect(tint, Offset(x, totalH - h3), Size(barWidthPx, h3), radius)
-        x += barWidthPx + gapPx
-        drawRoundRect(tint, Offset(x, totalH - h4), Size(barWidthPx, h4), radius)
+        if (clampedBars == 4) {
+            val h4 = (totalH * bar4State.value).coerceAtLeast(minBarPx)
+            x += barWidthPx + gapPx
+            drawRoundRect(tint, Offset(x, totalH - h4), Size(barWidthPx, h4), radius)
+        }
     }
 }
 
@@ -729,42 +774,48 @@ fun Modifier.ambientAuraBackdrop(
         remember { mutableFloatStateOf(0.35f) }
     }
 
-    return this.drawWithCache {
-        val topRadius = size.maxDimension * 0.58f
-        val bottomRadius = size.maxDimension * 0.52f
-        val topBrush = if (topRadius > 0f) {
-            Brush.radialGradient(
-                colors = listOf(primary.copy(alpha = 0.55f), Color.Transparent),
-                center = Offset.Zero,
-                radius = topRadius
-            )
-        } else null
-        val bottomBrush = if (bottomRadius > 0f) {
-            Brush.radialGradient(
-                colors = listOf(tertiary.copy(alpha = 0.42f), Color.Transparent),
-                center = Offset.Zero,
-                radius = bottomRadius
-            )
-        } else null
+    val topColors = remember(primary) { listOf(primary.copy(alpha = 0.55f), Color.Transparent) }
+    val bottomColors = remember(tertiary) { listOf(tertiary.copy(alpha = 0.42f), Color.Transparent) }
+    val cachedAuraModifier = remember(surface, topColors, bottomColors, driftState) {
+        Modifier.drawWithCache {
+            val topRadius = size.maxDimension * 0.58f
+            val bottomRadius = size.maxDimension * 0.52f
+            val topBrush = if (topRadius > 0f) {
+                Brush.radialGradient(
+                    colors = topColors,
+                    center = Offset.Zero,
+                    radius = topRadius
+                )
+            } else null
+            val bottomBrush = if (bottomRadius > 0f) {
+                Brush.radialGradient(
+                    colors = bottomColors,
+                    center = Offset.Zero,
+                    radius = bottomRadius
+                )
+            } else null
 
-        onDrawBehind {
-            drawRect(surface)
-            if (topBrush == null || bottomBrush == null) return@onDrawBehind
+            onDrawBehind {
+                drawRect(surface)
+                if (topBrush == null || bottomBrush == null) return@onDrawBehind
 
-            val drift = driftState.value
-            val topX = size.width * (0.22f + 0.16f * drift)
-            val topY = size.height * (0.14f + 0.05f * drift)
-            translate(left = topX, top = topY) {
-                drawCircle(brush = topBrush, radius = topRadius, center = Offset.Zero)
-            }
+                val drift = driftState.value
+                val topX = size.width * (0.22f + 0.16f * drift)
+                val topY = size.height * (0.14f + 0.05f * drift)
+                translate(left = topX, top = topY) {
+                    drawCircle(brush = topBrush, radius = topRadius, center = Offset.Zero)
+                }
 
-            val bottomX = size.width * (0.82f - 0.14f * drift)
-            val bottomY = size.height * (0.76f - 0.06f * drift)
-            translate(left = bottomX, top = bottomY) {
-                drawCircle(brush = bottomBrush, radius = bottomRadius, center = Offset.Zero)
+                val bottomX = size.width * (0.82f - 0.14f * drift)
+                val bottomY = size.height * (0.76f - 0.06f * drift)
+                translate(left = bottomX, top = bottomY) {
+                    drawCircle(brush = bottomBrush, radius = bottomRadius, center = Offset.Zero)
+                }
             }
         }
     }
+
+    return this.then(cachedAuraModifier)
 }
 
 private val HiFiBadgeShape: Shape = RoundedCornerShape(6.dp)
@@ -809,5 +860,187 @@ fun HiFiQualityBadge(
             softWrap = false,
             overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+private val AudioSpecPanelShape: Shape = RoundedCornerShape(14.dp)
+
+/**
+ * Tactile, theme-aware expandable Audio Quality badge for Now Playing.
+ * - Collapsed: 29dp CircleShape pill with tier-colored pre-blended container, 1dp hairline border,
+ *   headline tier/spec label, and a 14dp chevron that rotates 180° in the GPU draw phase.
+ * - Expanded: Smooth spring-animated inline metadata breakdown populated strictly from real
+ *   extracted Track properties (Format, Bit Depth when lossless/hi-res, Sample Rate, Bitrate).
+ */
+@Composable
+fun ExpandableAudioQualityBadge(
+    spec: AudioQualitySpec,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    modifier: Modifier = Modifier,
+    backgroundBehind: Color = MaterialTheme.colorScheme.background
+) {
+    val performanceMode = LocalPerformanceMode.current
+    val scheme = MaterialTheme.colorScheme
+
+    val pillContainer: Color
+    val pillBorder: Color
+    val pillContent: Color
+    val panelContainer: Color
+
+    when (spec.tier) {
+        AudioQualityTier.HI_RES -> {
+            pillContainer = scheme.primaryContainer.opaqueOver(backgroundBehind, 0.72f)
+            pillBorder = scheme.primary.opaqueOver(backgroundBehind, 0.34f)
+            pillContent = scheme.onPrimaryContainer
+            panelContainer = scheme.surfaceContainerHigh.opaqueOver(backgroundBehind, 0.88f)
+        }
+        AudioQualityTier.LOSSLESS -> {
+            pillContainer = scheme.tertiaryContainer.opaqueOver(backgroundBehind, 0.72f)
+            pillBorder = scheme.tertiary.opaqueOver(backgroundBehind, 0.34f)
+            pillContent = scheme.onTertiaryContainer
+            panelContainer = scheme.surfaceContainerHigh.opaqueOver(backgroundBehind, 0.88f)
+        }
+        AudioQualityTier.HIGH_QUALITY -> {
+            pillContainer = scheme.secondaryContainer.opaqueOver(backgroundBehind, 0.72f)
+            pillBorder = scheme.secondary.opaqueOver(backgroundBehind, 0.34f)
+            pillContent = scheme.onSecondaryContainer
+            panelContainer = scheme.surfaceContainerHigh.opaqueOver(backgroundBehind, 0.88f)
+        }
+        AudioQualityTier.STANDARD -> {
+            pillContainer = scheme.surfaceContainerHigh.opaqueOver(backgroundBehind, 0.78f)
+            pillBorder = scheme.outlineVariant.opaqueOver(backgroundBehind, 0.85f)
+            pillContent = scheme.onSurfaceVariant
+            panelContainer = scheme.surfaceContainer.opaqueOver(backgroundBehind, 0.90f)
+        }
+    }
+
+    val chevronRotation = if (performanceMode) {
+        if (expanded) 180f else 0f
+    } else {
+        animateFloatAsState(
+            targetValue = if (expanded) 180f else 0f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMedium
+            ),
+            label = "audio_badge_chevron_rotation"
+        ).value
+    }
+
+    val containerAnimModifier = if (performanceMode) {
+        Modifier
+    } else {
+        Modifier.animateContentSize(
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMedium
+            )
+        )
+    }
+
+    val dividerColor = scheme.outlineVariant.opaqueOver(panelContainer, 0.65f)
+    val toggleLabel = stringResource(
+        if (expanded) R.string.badge_audio_specs_collapse else R.string.badge_audio_specs_expand
+    )
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(containerAnimModifier),
+        horizontalAlignment = Alignment.Start
+    ) {
+        Row(
+            modifier = Modifier
+                .height(29.dp)
+                .clip(CircleShape)
+                .background(color = pillContainer, shape = CircleShape)
+                .border(BorderStroke(1.dp, pillBorder), CircleShape)
+                .clickable(
+                    role = Role.Button,
+                    onClickLabel = toggleLabel,
+                    onClick = onToggleExpanded
+                )
+                .padding(horizontal = 11.dp)
+                .testTag("now_playing_hifi_badge"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Text(
+                text = spec.headline,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.8.sp
+                ),
+                color = pillContent,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+            Icon(
+                imageVector = Icons.Rounded.KeyboardArrowDown,
+                contentDescription = null,
+                tint = pillContent,
+                modifier = Modifier
+                    .size(14.dp)
+                    .graphicsLayer { rotationZ = chevronRotation }
+            )
+        }
+
+        if (expanded && spec.detailItems.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(AudioSpecPanelShape)
+                    .background(panelContainer, AudioSpecPanelShape)
+                    .border(BorderStroke(1.dp, pillBorder), AudioSpecPanelShape)
+                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                    .testTag("now_playing_audio_specs_panel"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                spec.detailItems.forEachIndexed { index, item ->
+                    if (index > 0) {
+                        Box(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .height(20.dp)
+                                .background(dividerColor)
+                        )
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics(mergeDescendants = true) {}
+                            .testTag("audio_spec_${item.testTagKey}"),
+                        verticalArrangement = Arrangement.spacedBy(1.dp)
+                    ) {
+                        Text(
+                            text = item.label.uppercase(Locale.US),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 9.sp,
+                                letterSpacing = 0.6.sp
+                            ),
+                            color = scheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = item.value,
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = MonoFontFamily
+                            ),
+                            color = scheme.onSurface,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
     }
 }

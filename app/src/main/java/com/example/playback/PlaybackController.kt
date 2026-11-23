@@ -61,7 +61,9 @@ class PlaybackController(
     private val onQueueChanged: (List<String>) -> Unit,
     private val onPositionCheckpoint: (String, Long) -> Unit,
     private val onPlaybackError: (String) -> Unit,
-    private val onTrackNaturallyEnded: () -> Unit
+    private val onTrackNaturallyEnded: () -> Unit,
+    private val onTrackCompleted: (String) -> Unit = {},
+    private val onTrackSkippedEarly: (String) -> Unit = {}
 ) {
     private val mapper = MediaItemMapper(context)
     private val queueMutex = Mutex()
@@ -71,6 +73,13 @@ class PlaybackController(
     private var pendingAction: (suspend () -> Unit)? = null
     private var lastRecordedPlayTrackId: String? = null
     private var lastCheckpointTimeMs: Long = 0L
+
+    // Per-playback-session tracking for completion (>80%) & early skip (<20% after >=3s)
+    private var sessionTrackId: String? = null
+    private var sessionMaxPositionMs: Long = 0L
+    private var sessionDurationMs: Long = 0L
+    private var sessionCompletedRecorded: Boolean = false
+    private var sessionSkipRecorded: Boolean = false
 
     private val _playbackState = MutableStateFlow(PlaybackState())
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
@@ -83,9 +92,14 @@ class PlaybackController(
             syncFromPlayer()
             if (isPlaying) {
                 val activeId = controller?.currentMediaItem?.mediaId
-                if (activeId != null && activeId != lastRecordedPlayTrackId) {
-                    lastRecordedPlayTrackId = activeId
-                    onTrackPlayStarted(activeId)
+                if (activeId != null) {
+                    if (activeId != sessionTrackId) {
+                        resetPlaybackSignalSession(activeId, controller?.duration?.takeIf { it > 0L } ?: 0L)
+                    }
+                    if (activeId != lastRecordedPlayTrackId) {
+                        lastRecordedPlayTrackId = activeId
+                        onTrackPlayStarted(activeId)
+                    }
                 }
                 startProgressPolling()
             } else {
@@ -98,19 +112,35 @@ class PlaybackController(
             syncFromPlayer()
             if (playbackState == Player.STATE_ENDED) {
                 stopProgressPolling()
+                val endedId = controller?.currentMediaItem?.mediaId ?: sessionTrackId
+                if (endedId != null) {
+                    recordSessionCompletionIfEligible(endedId, forceNaturalEnd = true)
+                }
                 onTrackNaturallyEnded()
             }
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            val outgoingTrackId = sessionTrackId
+            val naturalTransition = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+                reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
+            if (outgoingTrackId != null) {
+                if (naturalTransition) {
+                    recordSessionCompletionIfEligible(outgoingTrackId, forceNaturalEnd = true)
+                } else if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK) {
+                    evaluateEarlySkipForOutgoingTrack(outgoingTrackId)
+                }
+            }
+
             syncFromPlayer()
             val id = mediaItem?.mediaId
-            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
-                reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
-            ) {
+            if (naturalTransition) {
                 onTrackNaturallyEnded()
             }
             val mc = controller
+            val nextDuration = mc?.duration?.takeIf { it > 0L } ?: 0L
+            resetPlaybackSignalSession(id, nextDuration)
+
             // Only record play count / reset checkpoint when playback is actually active,
             // preventing cold-start session restoration from clobbering saved position or playCount.
             if (id != null && mc != null && (mc.isPlaying || mc.playWhenReady)) {
@@ -262,6 +292,7 @@ class PlaybackController(
     fun playAtQueueIndex(index: Int) {
         val mc = controller ?: return
         if (index in 0 until mc.mediaItemCount) {
+            captureOutgoingSignalSnapshot(mc)
             mc.seekTo(index, 0L)
             mc.prepare()
             mc.play()
@@ -270,6 +301,7 @@ class PlaybackController(
 
     fun next() {
         val mc = controller ?: return
+        captureOutgoingSignalSnapshot(mc)
         if (mc.hasNextMediaItem()) {
             mc.seekToNextMediaItem()
             mc.prepare()
@@ -447,17 +479,80 @@ class PlaybackController(
                     val dur = mc.duration.takeIf { it > 0L } ?: 0L
                     _progressState.value = PlaybackProgress(positionMs = pos, durationMs = dur)
 
+                    val activeId = mc.currentMediaItem?.mediaId
+                    if (activeId != null) {
+                        if (activeId != sessionTrackId) {
+                            resetPlaybackSignalSession(activeId, dur)
+                        }
+                        if (dur > 0L) sessionDurationMs = dur
+                        if (pos > sessionMaxPositionMs) sessionMaxPositionMs = pos
+                        if (dur > 0L && pos >= (dur * COMPLETION_THRESHOLD_RATIO).toLong()) {
+                            recordSessionCompletionIfEligible(activeId, forceNaturalEnd = false)
+                        }
+                    }
+
                     val now = System.currentTimeMillis()
                     if (now - lastCheckpointTimeMs >= 5_000L) {
                         lastCheckpointTimeMs = now
-                        mc.currentMediaItem?.mediaId?.let { id ->
-                            onPositionCheckpoint(id, pos)
+                        if (activeId != null) {
+                            onPositionCheckpoint(activeId, pos)
                         }
                     }
                 }
                 delay(250L)
             }
         }
+    }
+
+    private fun resetPlaybackSignalSession(trackId: String?, durationMs: Long) {
+        sessionTrackId = trackId
+        sessionMaxPositionMs = 0L
+        sessionDurationMs = durationMs.coerceAtLeast(0L)
+        sessionCompletedRecorded = false
+        sessionSkipRecorded = false
+    }
+
+    private fun captureOutgoingSignalSnapshot(mc: MediaController) {
+        val id = mc.currentMediaItem?.mediaId ?: return
+        val pos = mc.currentPosition.coerceAtLeast(0L)
+        val dur = mc.duration.takeIf { it > 0L } ?: _progressState.value.durationMs
+        if (sessionTrackId != id) {
+            resetPlaybackSignalSession(id, dur)
+        }
+        if (dur > 0L) sessionDurationMs = dur
+        if (pos > sessionMaxPositionMs) sessionMaxPositionMs = pos
+        evaluateEarlySkipForOutgoingTrack(id)
+    }
+
+    private fun recordSessionCompletionIfEligible(trackId: String, forceNaturalEnd: Boolean) {
+        if (sessionTrackId == trackId && sessionCompletedRecorded) return
+        val dur = sessionDurationMs.takeIf { it > 0L } ?: _progressState.value.durationMs
+        val reachedThreshold = forceNaturalEnd ||
+            (dur > 0L && sessionMaxPositionMs >= (dur * COMPLETION_THRESHOLD_RATIO).toLong())
+        if (reachedThreshold) {
+            if (sessionTrackId == trackId) {
+                sessionCompletedRecorded = true
+            }
+            onTrackCompleted(trackId)
+        }
+    }
+
+    private fun evaluateEarlySkipForOutgoingTrack(trackId: String) {
+        if (sessionTrackId != trackId || sessionCompletedRecorded || sessionSkipRecorded) return
+        val dur = sessionDurationMs.takeIf { it > 0L } ?: _progressState.value.durationMs
+        if (dur > 0L &&
+            sessionMaxPositionMs >= EARLY_SKIP_MIN_MS &&
+            sessionMaxPositionMs < (dur * EARLY_SKIP_MAX_RATIO).toLong()
+        ) {
+            sessionSkipRecorded = true
+            onTrackSkippedEarly(trackId)
+        }
+    }
+
+    companion object {
+        internal const val COMPLETION_THRESHOLD_RATIO = 0.80
+        internal const val EARLY_SKIP_MAX_RATIO = 0.20
+        internal const val EARLY_SKIP_MIN_MS = 3_000L
     }
 
     private fun stopProgressPolling() {

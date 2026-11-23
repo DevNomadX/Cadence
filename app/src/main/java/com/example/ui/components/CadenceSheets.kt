@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,11 +9,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -34,6 +37,7 @@ import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.QueuePlayNext
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
@@ -67,6 +71,7 @@ import com.example.data.formatFileSize
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
+import kotlin.math.abs
 
 @Composable
 fun QueueSheetContent(
@@ -174,7 +179,7 @@ fun QueueSheetContent(
                             artworkShape = artworkShape,
                             isPlaying = isCurrent && isPlaying,
                             animateScale = false,
-                            decodeSizePx = 144,
+                            decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
                             shapeOverride = FastListThumbnailShape,
                             modifier = Modifier.size(46.dp)
                         )
@@ -263,6 +268,8 @@ fun TrackActionsSheetContent(
     onAddToQueue: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onShowDetails: () -> Unit,
+    playbackSpeed: Float? = null,
+    onSelectPlaybackSpeed: ((Float) -> Unit)? = null,
     onRemoveFromPlaylist: (() -> Unit)? = null,
     onRemoveFromLibrary: (() -> Unit)? = null
 ) {
@@ -285,7 +292,7 @@ fun TrackActionsSheetContent(
                 artworkShape = artworkShape,
                 isPlaying = false,
                 animateScale = false,
-                decodeSizePx = 144,
+                decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
                 shapeOverride = FastListThumbnailShape,
                 modifier = Modifier.size(52.dp)
             )
@@ -322,6 +329,12 @@ fun TrackActionsSheetContent(
             label = stringResource(R.string.action_add_to_playlist),
             onClick = onAddToPlaylist
         )
+        if (playbackSpeed != null && onSelectPlaybackSpeed != null) {
+            PlaybackSpeedSelectorCard(
+                currentSpeed = playbackSpeed,
+                onSelectSpeed = onSelectPlaybackSpeed
+            )
+        }
         SheetActionItem(
             icon = Icons.Outlined.Info,
             label = stringResource(R.string.action_track_info),
@@ -535,6 +548,106 @@ private fun SheetActionItem(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackSpeedSelectorCard(
+    currentSpeed: Float,
+    onSelectSpeed: (Float) -> Unit
+) {
+    val cardBg = MaterialTheme.colorScheme.surfaceContainer
+    val badgeBg = MaterialTheme.colorScheme.primaryContainer.opaqueOver(cardBg, 0.72f)
+    val idleChipBg = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(cardBg, 0.94f)
+    val borderColor = MaterialTheme.colorScheme.outlineVariant.opaqueOver(cardBg, 0.85f)
+
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = cardBg,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("overflow_playback_speed_section")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = badgeBg,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.Speed,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = stringResource(R.string.playback_speed_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = formatSpeedLabel(currentSpeed),
+                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = MonoFontFamily),
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(
+                    items = PLAYBACK_SPEED_OPTIONS,
+                    key = { speed -> "overflow_speed_$speed" },
+                    contentType = { "speed_chip" }
+                ) { speed ->
+                    val selected = abs(currentSpeed - speed) < 0.01f
+                    val label = formatSpeedLabel(speed)
+                    val onClick = remember(speed, onSelectSpeed) { { onSelectSpeed(speed) } }
+                    Surface(
+                        shape = CircleShape,
+                        color = if (selected) MaterialTheme.colorScheme.primary else idleChipBg,
+                        border = if (selected) null else BorderStroke(1.dp, borderColor),
+                        modifier = Modifier
+                            .height(40.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onClick)
+                            .testTag("overflow_speed_$label")
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 14.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = MonoFontFamily),
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }

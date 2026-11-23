@@ -31,7 +31,9 @@ class CadenceApplication : Application(), ImageLoaderFactory {
         val isLowRam = am?.isLowRamDevice == true
 
         return ImageLoader.Builder(this)
+            .allowHardware(true)
             .allowRgb565(true)
+            .crossfade(false)
             .respectCacheHeaders(false)
             .memoryCache {
                 MemoryCache.Builder(this)

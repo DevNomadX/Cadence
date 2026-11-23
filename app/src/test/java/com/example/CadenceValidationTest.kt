@@ -281,18 +281,34 @@ class CadenceValidationTest {
     }
 
     @Test
-    fun `NowPlayingScreen transport controls sleep timer sheet and queue sheet work`() {
+    fun `NowPlayingScreen transport controls and audio output fallback sheet work`() {
         val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 12_000L, durationMs = 180_000L))
         val sleepTimerFlow = MutableStateFlow(SleepTimerState())
+        val outputState = com.example.playback.AudioOutputState(
+            activeRoute = com.example.playback.AudioOutputRouteType.BLUETOOTH,
+            activeDeviceName = "Studio Buds Pro",
+            devices = listOf(
+                com.example.playback.AudioOutputDevice(
+                    id = 10,
+                    name = "Studio Buds Pro",
+                    routeType = com.example.playback.AudioOutputRouteType.BLUETOOTH,
+                    isActive = true
+                ),
+                com.example.playback.AudioOutputDevice(
+                    id = -1,
+                    name = "Phone Speaker",
+                    routeType = com.example.playback.AudioOutputRouteType.SPEAKER,
+                    isActive = false
+                )
+            ).toStableList()
+        )
         var playToggled = false
         var nextClicked = false
         var prevClicked = false
         var shuffleClicked = false
         var repeatClicked = false
-        var speedClicked = false
         var favoriteClicked = false
-        var settingsClicked = false
-        var selectedTimer: SleepTimerOption? = null
+        var collapseClicked = false
 
         composeRule.setContent {
             CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
@@ -320,9 +336,9 @@ class CadenceValidationTest {
                     onToggleShuffle = { shuffleClicked = true },
                     onCycleRepeat = { repeatClicked = true },
                     onToggleFavorite = { favoriteClicked = true },
-                    onCycleSpeed = { speedClicked = true },
                     onMatchMood = {},
-                    onOpenSettings = { settingsClicked = true },
+                    onCollapse = { collapseClicked = true },
+                    onOpenSettings = {},
                     onAddFolder = {},
                     onScanDevice = {},
                     onSelectQueueIndex = {},
@@ -334,40 +350,138 @@ class CadenceValidationTest {
                     onCreatePlaylistWithCurrent = {},
                     onPlayNextCurrent = {},
                     onAddCurrentToQueue = {},
-                    onSelectSleepTimer = { selectedTimer = it }
+                    onSelectSleepTimer = {},
+                    audioOutputStateOverride = outputState
                 )
             }
         }
 
         composeRule.onNodeWithTag("now_playing_title").assertIsDisplayed()
-        composeRule.onNodeWithTag("settings_button").performClick()
+        composeRule.onNodeWithTag("collapse_now_playing_button").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("play_pause_button").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("next_button").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("previous_button").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("shuffle_button").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("repeat_button").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("favorite_button").assertIsDisplayed().performClick()
-        composeRule.onNodeWithTag("speed_pill").assertIsDisplayed().performClick()
 
-        assertTrue(settingsClicked)
+        assertTrue(collapseClicked)
         assertTrue(playToggled)
         assertTrue(nextClicked)
         assertTrue(prevClicked)
         assertTrue(shuffleClicked)
         assertTrue(repeatClicked)
         assertTrue(favoriteClicked)
-        assertTrue(speedClicked)
 
-        // Open Sleep Timer sheet and select End of Track
+        // Tap Audio Output Switcher -> opens M3 fallback sheet when system dialog is unavailable
+        composeRule.onNodeWithTag("audio_output_button").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("audio_output_sheet").assertIsDisplayed()
+        composeRule.onNodeWithTag("audio_output_device_0_bluetooth").assertIsDisplayed()
+        composeRule.onNodeWithTag("audio_output_device_1_speaker").assertIsDisplayed()
+        composeRule.onNodeWithTag("audio_output_system_settings_button").assertIsDisplayed()
+    }
+
+    @Test
+    fun `NowPlayingScreen overflow menu exposes playback speed selector`() {
+        val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 12_000L, durationMs = 180_000L))
+        val sleepTimerFlow = MutableStateFlow(SleepTimerState())
+        var selectedSpeed = 1.0f
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                NowPlayingScreen(
+                    uiState = NowPlayingUiState(
+                        currentTrack = sampleTracks.first(),
+                        queueTracks = sampleTracks.toStableList(),
+                        currentQueueIndex = 0,
+                        isPlaying = false,
+                        playbackSpeed = selectedSpeed
+                    ),
+                    themePrefs = ThemePreferences(
+                        palette = ExpressivePalette.TERRACOTTA,
+                        appearanceMode = AppearanceMode.LIGHT
+                    ),
+                    progressFlow = progressFlow,
+                    sleepTimerFlow = sleepTimerFlow,
+                    playlists = StableList(),
+                    onTogglePlayPause = {},
+                    onNext = {},
+                    onPrevious = {},
+                    onSeek = {},
+                    onToggleShuffle = {},
+                    onCycleRepeat = {},
+                    onToggleFavorite = {},
+                    onSelectPlaybackSpeed = { selectedSpeed = it },
+                    onMatchMood = {}
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("now_playing_more_button").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("overflow_playback_speed_section").assertIsDisplayed()
+        composeRule.onNodeWithTag("overflow_speed_1.5x").performClick()
+        assertEquals(1.5f, selectedSpeed, 0.01f)
+    }
+
+    @Test
+    fun `NowPlayingScreen opens Lyrics Sleep Timer and Queue sheets`() {
+        val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 12_000L, durationMs = 180_000L))
+        val sleepTimerFlow = MutableStateFlow(SleepTimerState())
+        val lyricsFlow = MutableStateFlow<com.example.data.lyrics.LyricsUiState>(
+            com.example.data.lyrics.LyricsUiState.Empty(
+                trackId = sampleTracks.first().id,
+                trackTitle = sampleTracks.first().title
+            )
+        )
+        var lyricsRequested = false
+        var selectedTimer: SleepTimerOption? = null
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                NowPlayingScreen(
+                    uiState = NowPlayingUiState(
+                        currentTrack = sampleTracks.first(),
+                        queueTracks = sampleTracks.toStableList(),
+                        currentQueueIndex = 0,
+                        isPlaying = false
+                    ),
+                    themePrefs = ThemePreferences(
+                        palette = ExpressivePalette.TERRACOTTA,
+                        appearanceMode = AppearanceMode.LIGHT
+                    ),
+                    progressFlow = progressFlow,
+                    sleepTimerFlow = sleepTimerFlow,
+                    playlists = StableList(),
+                    onTogglePlayPause = {},
+                    onNext = {},
+                    onPrevious = {},
+                    onSeek = {},
+                    onToggleShuffle = {},
+                    onCycleRepeat = {},
+                    onToggleFavorite = {},
+                    onMatchMood = {},
+                    onSelectSleepTimer = { selectedTimer = it },
+                    lyricsStateFlow = lyricsFlow,
+                    onRequestLyrics = { lyricsRequested = true }
+                )
+            }
+        }
+
+        // Open Sleep Timer sheet and select End of Track (auto-dismisses sheet on selection)
         composeRule.onNodeWithTag("timer_pill").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("End of track").performClick()
+        composeRule.waitForIdle()
         assertEquals(SleepTimerOption.END_OF_TRACK, selectedTimer)
 
-        // Open Up Next Queue sheet and verify queue items render
-        composeRule.onNodeWithTag("queue_button").assertIsDisplayed().performClick()
+        // Open Lyrics sheet and verify fallback state renders
+        composeRule.onNodeWithTag("lyrics_pill").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("queue_item_0").assertIsDisplayed()
+        assertTrue(lyricsRequested)
+        composeRule.onNodeWithTag("lyrics_sheet").assertIsDisplayed()
+        composeRule.onNodeWithTag("lyrics_empty_state").assertIsDisplayed()
     }
 
     @Test
@@ -1404,7 +1518,7 @@ class CadenceValidationTest {
     }
 
     @Test
-    fun `NowPlayingScreen displays detailed HiFiQualityBadge for Hi-Res tracks and hides it for standard tracks`() {
+    fun `NowPlayingScreen displays expandable real-metadata audio quality badge across tiers and omits unavailable specs`() {
         val hiResTrack = Track(
             id = "np_hires",
             title = "Midnight Vinyl",
@@ -1430,6 +1544,19 @@ class CadenceValidationTest {
             bitrateKbps = 128,
             sampleRateHz = 44_100
         )
+        val unknownTrack = Track(
+            id = "np_unknown",
+            title = "Mystery Tape",
+            artist = "Unknown",
+            album = "Vault",
+            genre = "Ambient",
+            durationMs = 150_000L,
+            mimeType = "audio/*",
+            codec = "",
+            bitrateKbps = 0,
+            sampleRateHz = 0,
+            bitDepth = 0
+        )
         var activeTrack by mutableStateOf(hiResTrack)
 
         composeRule.setContent {
@@ -1437,7 +1564,7 @@ class CadenceValidationTest {
                 NowPlayingScreen(
                     uiState = NowPlayingUiState(
                         currentTrack = activeTrack,
-                        queueTracks = listOf(hiResTrack, stdTrack).toStableList(),
+                        queueTracks = listOf(hiResTrack, stdTrack, unknownTrack).toStableList(),
                         currentQueueIndex = 0,
                         isPlaying = false
                     ),
@@ -1474,11 +1601,40 @@ class CadenceValidationTest {
             }
         }
 
+        // 1. Hi-Res FLAC collapsed pill shows tier + headline spec, expanded reveals all 4 real specs
         composeRule.onNodeWithTag("now_playing_hifi_badge")
             .assertIsDisplayed()
-            .assertTextContains("HI-RES · 24-bit / 96 kHz FLAC")
+            .assertTextContains("HI-RES • 24-BIT")
+        composeRule.onNodeWithTag("now_playing_audio_specs_panel").assertDoesNotExist()
 
+        composeRule.onNodeWithTag("now_playing_hifi_badge").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("now_playing_audio_specs_panel").assertIsDisplayed()
+        composeRule.onNodeWithTag("audio_spec_format").assertTextContains("FLAC")
+        composeRule.onNodeWithTag("audio_spec_bit_depth").assertTextContains("24-bit")
+        composeRule.onNodeWithTag("audio_spec_sample_rate").assertTextContains("96 kHz")
+        composeRule.onNodeWithTag("audio_spec_bitrate").assertTextContains("2,840 kbps")
+
+        // Tap again to collapse
+        composeRule.onNodeWithTag("now_playing_hifi_badge").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("now_playing_audio_specs_panel").assertDoesNotExist()
+
+        // 2. Standard lossy MP3 shows STANDARD • MP3 and omits Bit Depth when expanded
         activeTrack = stdTrack
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("now_playing_hifi_badge")
+            .assertIsDisplayed()
+            .assertTextContains("STANDARD • MP3")
+        composeRule.onNodeWithTag("now_playing_hifi_badge").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("audio_spec_format").assertTextContains("MP3")
+        composeRule.onNodeWithTag("audio_spec_bit_depth").assertDoesNotExist()
+        composeRule.onNodeWithTag("audio_spec_sample_rate").assertTextContains("44.1 kHz")
+        composeRule.onNodeWithTag("audio_spec_bitrate").assertTextContains("128 kbps")
+
+        // 3. Track with zero extracted metadata hides badge completely (never fabricates specs)
+        activeTrack = unknownTrack
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("now_playing_hifi_badge").assertDoesNotExist()
     }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -52,6 +53,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -63,6 +65,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,6 +76,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -95,6 +100,7 @@ import com.example.data.library.ScanState
 import com.example.ui.components.AddToPlaylistSheetContent
 import com.example.ui.components.AudioPulseBars
 import com.example.ui.components.ExpressiveArtworkFrame
+import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
 import com.example.ui.components.FastListThumbnailShape
 import com.example.ui.components.HiFiQualityBadge
 import com.example.ui.components.ImportSourcesSheetContent
@@ -145,6 +151,9 @@ fun LibraryScreen(
     onRemoveTrack: (Track) -> Unit,
     onOpenSettings: () -> Unit = {},
     scanStateFlow: StateFlow<ScanState> = IdleScanStateFlow,
+    searchFocusNonce: Int = 0,
+    isActiveTab: Boolean = true,
+    listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
     var showImportSheet by remember { mutableStateOf(false) }
@@ -159,9 +168,16 @@ fun LibraryScreen(
     // Immediate local text state so typing renders at 60 FPS with zero ViewModel round-trip lag
     var rawSearchQuery by rememberSaveable { mutableStateOf(uiState.searchQuery) }
     val latestOnSearchChange by rememberUpdatedState(onSearchChange)
-    val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val searchFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(searchFocusNonce, isActiveTab) {
+        if (isActiveTab && searchFocusNonce > 0 && uiState.drillDown == null) {
+            runCatching { searchFocusRequester.requestFocus() }
+            keyboardController?.show()
+        }
+    }
 
     // Debounce search dispatches to ViewModel (150ms) so fast typing never floods filtering
     LaunchedEffect(Unit) {
@@ -193,7 +209,7 @@ fun LibraryScreen(
             }
     }
 
-    BackHandler(enabled = uiState.drillDown != null) {
+    BackHandler(enabled = isActiveTab && uiState.drillDown != null) {
         onCloseDrillDown()
     }
 
@@ -357,9 +373,11 @@ fun LibraryScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 48.dp)
+                            .focusRequester(searchFocusRequester)
                             .testTag("library_search_input")
                     )
                 }
+                LibraryScrolledHeaderDivider(listState = listState)
             }
 
             LazyColumn(
@@ -484,7 +502,7 @@ fun LibraryScreen(
                 } else {
                     items(
                         items = drillTracks,
-                        key = { it.id },
+                        key = { "drill_${it.id}" },
                         contentType = { "track_row" }
                     ) { track ->
                         val isCurrentTrack = track.id == currentTrackId
@@ -643,7 +661,7 @@ fun LibraryScreen(
 
                             items(
                                 items = tracks,
-                                key = { it.id },
+                                key = { "track_${it.id}" },
                                 contentType = { "track_row" }
                             ) { track ->
                                 val isCurrentTrack = track.id == currentTrackId
@@ -727,7 +745,7 @@ fun LibraryScreen(
                         } else if (uiState.playlists.isNotEmpty()) {
                             items(
                                 items = uiState.playlists,
-                                key = { it.id },
+                                key = { "pl_${it.id}" },
                                 contentType = { "playlist_row" }
                             ) { pl ->
                                 PlaylistRowCard(
@@ -765,7 +783,7 @@ fun LibraryScreen(
                         } else if (uiState.albums.isNotEmpty()) {
                             items(
                                 items = uiState.albums,
-                                key = { it.key },
+                                key = { "album_${it.key}" },
                                 contentType = { "group_row" }
                             ) { group ->
                                 val onClick = remember(group.key, onOpenDrillDown) {
@@ -803,7 +821,7 @@ fun LibraryScreen(
                         } else if (uiState.artists.isNotEmpty()) {
                             items(
                                 items = uiState.artists,
-                                key = { it.key },
+                                key = { "artist_${it.key}" },
                                 contentType = { "group_row" }
                             ) { group ->
                                 val onClick = remember(group.key, onOpenDrillDown) {
@@ -841,7 +859,7 @@ fun LibraryScreen(
                         } else if (uiState.folders.isNotEmpty()) {
                             items(
                                 items = uiState.folders,
-                                key = { it.key },
+                                key = { "folder_${it.key}" },
                                 contentType = { "group_row" }
                             ) { group ->
                                 val onClick = remember(group.key, group.title, onOpenDrillDown) {
@@ -879,7 +897,7 @@ fun LibraryScreen(
                         } else if (uiState.genres.isNotEmpty()) {
                             items(
                                 items = uiState.genres,
-                                key = { it.key },
+                                key = { "genre_${it.key}" },
                                 contentType = { "group_row" }
                             ) { group ->
                                 val onClick = remember(group.key, onOpenDrillDown) {
@@ -1026,6 +1044,25 @@ fun LibraryScreen(
 }
 
 @Composable
+private fun LibraryScrolledHeaderDivider(listState: LazyListState) {
+    val isScrolled by remember(listState) {
+        derivedStateOf {
+            listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 8
+        }
+    }
+    if (isScrolled) {
+        HorizontalDivider(
+            thickness = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.opaqueOver(
+                MaterialTheme.colorScheme.background,
+                0.55f
+            ),
+            modifier = Modifier.testTag("library_scrolled_divider")
+        )
+    }
+}
+
+@Composable
 private fun IsolatedScanProgressBanner(scanStateFlow: StateFlow<ScanState>) {
     val scan by scanStateFlow.collectAsStateWithLifecycle()
     val bannerColor = MaterialTheme.colorScheme.tertiaryContainer.opaqueOver(
@@ -1100,7 +1137,7 @@ private fun LibraryTrackRow(
                 artworkShape = artworkShape,
                 isPlaying = isCurrent && isPlaying,
                 animateScale = false,
-                decodeSizePx = 160,
+                decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
                 shapeOverride = FastListThumbnailShape,
                 modifier = Modifier.size(52.dp)
             )
@@ -1233,7 +1270,7 @@ private fun GroupCollectionRow(
                     artworkShape = artworkShape,
                     isPlaying = false,
                     animateScale = false,
-                    decodeSizePx = 160,
+                    decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
                     shapeOverride = FastListThumbnailShape,
                     modifier = Modifier.size(52.dp)
                 )
@@ -1325,7 +1362,7 @@ private fun PlaylistRowCard(
                     artworkShape = artworkShape,
                     isPlaying = false,
                     animateScale = false,
-                    decodeSizePx = 160,
+                    decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
                     shapeOverride = FastListThumbnailShape,
                     modifier = Modifier.size(52.dp)
                 )

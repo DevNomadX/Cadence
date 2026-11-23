@@ -25,6 +25,37 @@ enum class DiscoverCategory(val id: String) {
 
 @Keep
 @Immutable
+data class DiscoverTuneConfig(
+    val selectedMood: String? = null,
+    val energyFilter: String? = null,
+    val discoveryBalance: Float = 0.5f
+) {
+    val isCustomized: Boolean
+        get() = selectedMood != null || energyFilter != null || abs(discoveryBalance - 0.5f) >= 0.05f
+
+    val balanceLabel: String
+        get() = when {
+            discoveryBalance <= 0.32f -> "Familiar"
+            discoveryBalance >= 0.68f -> "Fresh"
+            else -> "Balanced"
+        }
+}
+
+@Keep
+@Immutable
+data class ListeningInsights(
+    val topMood: String = "",
+    val topGenre: String = "",
+    val topArtist: String = "",
+    val totalListeningMs: Long = 0L,
+    val totalTrackCount: Int = 0,
+    val hiFiTrackCount: Int = 0,
+    val hiFiPercentage: Int = 0,
+    val completedPlaysTotal: Int = 0
+)
+
+@Keep
+@Immutable
 data class DiscoverSection(
     val category: DiscoverCategory,
     val title: String,
@@ -39,16 +70,19 @@ data class DiscoverSection(
 data class DiscoverFeed(
     val sections: StableList<DiscoverSection> = StableList(),
     val anchorTrackTitle: String? = null,
-    val smartMixOutput: MusicIntelligenceOutput? = null
+    val smartMixOutput: MusicIntelligenceOutput? = null,
+    val insights: ListeningInsights = ListeningInsights()
 )
 
 /**
  * Local, zero-server Discover suggestion engine computing 6 distinct personalized categories
- * directly from Room track metadata (play count, last-played timestamp, date added, genre,
- * artist, album, duration, BPM, and favorite status).
+ * plus local Listening Insights directly from Room track metadata (completion ratio, skip count,
+ * play count, last-played recency decay, date added, genre, artist, album, duration, BPM, Hi-Fi,
+ * and favorite status).
  *
- * Avoids duplicate tracks across sections whenever the library size permits, and provides
- * graceful metadata-driven fallbacks when listening history is sparse or empty.
+ * Pre-computes all deterministic tie-breakers prior to sorting so TimSort never violates
+ * transitivity on large libraries (32+ tracks), avoids duplicate tracks across sections whenever
+ * library size permits, and provides graceful metadata-driven fallbacks when history is sparse.
  */
 internal class DiscoverFeedGenerator(
     private val engine: MusicIntelligenceEngine
@@ -59,7 +93,8 @@ internal class DiscoverFeedGenerator(
         skippedTrackIds: List<String> = emptyList(),
         nowMs: Long = System.currentTimeMillis(),
         shuffleNonce: Int = 0,
-        maxTracksPerSection: Int = 10
+        maxTracksPerSection: Int = 10,
+        tuneConfig: DiscoverTuneConfig = DiscoverTuneConfig()
     ): DiscoverFeed {
         val cleanTracks = libraryTracks
             .filter { it.id.isNotBlank() }
@@ -73,17 +108,21 @@ internal class DiscoverFeedGenerator(
         val skippedSet = skippedTrackIds.toSet()
         val usedIds = HashSet<String>(cleanTracks.size)
 
-        // Pre-compute BPM & mood vectors once for O(N) efficiency across all 6 sections
+        // Pre-compute BPM, energy, and mood vectors once for O(N) efficiency across all sections & insights
         val bpmById = HashMap<String, Int>(cleanTracks.size)
+        val energyById = HashMap<String, String>(cleanTracks.size)
         val moodVecById = HashMap<String, Map<String, Double>>(cleanTracks.size)
         val primaryMoodById = HashMap<String, String>(cleanTracks.size)
         for (t in cleanTracks) {
             val bpm = engine.effectiveBpmFor(t)
             val vec = engine.moodVectorFor(t)
             bpmById[t.id] = bpm
+            energyById[t.id] = engine.energyLevelFor(bpm)
             moodVecById[t.id] = vec
             primaryMoodById[t.id] = vec.maxByOrNull { it.value }?.key ?: "calm"
         }
+
+        val insights = computeListeningInsights(cleanTracks, primaryMoodById)
 
         // Compute adaptive per-section target so small libraries still spread cleanly with minimal overlap
         val targetSize = when {
@@ -95,13 +134,16 @@ internal class DiscoverFeedGenerator(
 
         val sections = ArrayList<DiscoverSection>(6)
 
-        // 1. Made for you
+        // 1. Made for you (Daily Mix — completion affinity, recency decay & Tune Mix controls)
         val madeForYou = buildMadeForYou(
             tracks = cleanTracks,
             usedIds = usedIds,
             skippedSet = skippedSet,
             bpmById = bpmById,
+            energyById = energyById,
+            moodVecById = moodVecById,
             primaryMoodById = primaryMoodById,
+            tuneConfig = tuneConfig,
             nowMs = nowMs,
             seed = daySeed + 11,
             targetSize = targetSize
@@ -109,20 +151,22 @@ internal class DiscoverFeedGenerator(
         sections += madeForYou
         madeForYou.tracks.forEach { usedIds.add(it.id) }
 
-        // 2. Smart Mix
+        // 2. Smart Mix (interactive mood, energy & Familiar↔Fresh tuned engine)
         val (smartMixSection, smartMixOutput) = buildSmartMix(
             tracks = cleanTracks,
             usedIds = usedIds,
             skippedTrackIds = skippedTrackIds,
             bpmById = bpmById,
             primaryMoodById = primaryMoodById,
+            tuneConfig = tuneConfig,
+            nowMs = nowMs,
             shuffleNonce = shuffleNonce,
             targetSize = targetSize
         )
         sections += smartMixSection
         smartMixSection.tracks.forEach { usedIds.add(it.id) }
 
-        // 3. Rediscover (30+ days unplayed or 0 plays)
+        // 3. Rediscover (30+ days quiet or 0 plays with low skips)
         val rediscover = buildRediscover(
             tracks = cleanTracks,
             usedIds = usedIds,
@@ -133,7 +177,7 @@ internal class DiscoverFeedGenerator(
         sections += rediscover
         rediscover.tracks.forEach { usedIds.add(it.id) }
 
-        // 4. Forgotten favorites (high all-time play count, not played recently)
+        // 4. Forgotten favorites (favorited or high-completion tracks untouched for a long time)
         val forgottenFavorites = buildForgottenFavorites(
             tracks = cleanTracks,
             usedIds = usedIds,
@@ -144,23 +188,26 @@ internal class DiscoverFeedGenerator(
         sections += forgottenFavorites
         forgottenFavorites.tracks.forEach { usedIds.add(it.id) }
 
-        // 5. Continue the vibe (matching current or most recently played track)
+        // 5. Continue the vibe (matching mood/tempo/artist/genre of anchor with anti-repetition)
         val (continueVibe, anchorTitle) = buildContinueTheVibe(
             tracks = cleanTracks,
             currentTrackId = currentTrackId,
             usedIds = usedIds,
+            skippedSet = skippedSet,
             bpmById = bpmById,
             moodVecById = moodVecById,
             primaryMoodById = primaryMoodById,
+            nowMs = nowMs,
             targetSize = targetSize
         )
         sections += continueVibe
         continueVibe.tracks.forEach { usedIds.add(it.id) }
 
-        // 6. Explore your library (deeper cuts, underplayed albums, rotating genre spotlight)
-        val exploreLibrary = buildExploreYourLibrary(
+        // 6. Deep Cuts / Unplayed Gems (EXPLORE_YOUR_LIBRARY: playCount <= 1 & low skips)
+        val exploreLibrary = buildDeepCutsAndGems(
             tracks = cleanTracks,
             usedIds = usedIds,
+            skippedSet = skippedSet,
             seed = daySeed + 73,
             shuffleNonce = shuffleNonce,
             targetSize = targetSize
@@ -170,35 +217,93 @@ internal class DiscoverFeedGenerator(
         return DiscoverFeed(
             sections = sections.distinctBy { it.category }.toStableList(),
             anchorTrackTitle = anchorTitle,
-            smartMixOutput = smartMixOutput
+            smartMixOutput = smartMixOutput,
+            insights = insights
         )
     }
 
-    // --- 1. Made for you ---
+    private data class RankedTrack(
+        val track: Track,
+        val score: Double,
+        val tieBreaker: Double
+    )
+
+    private fun completionAffinity(track: Track): Double {
+        val plays = track.playCount.coerceAtLeast(0).toDouble()
+        val completed = track.completedPlayCount.coerceAtLeast(0).toDouble()
+        return safeFinite(completed / (plays + 1.0)).coerceIn(0.0, 1.0)
+    }
+
+    private fun skipPenaltyScore(track: Track, skippedSet: Set<String>): Double {
+        val plays = track.playCount.coerceAtLeast(0).toDouble()
+        val skips = track.skipCount.coerceAtLeast(0).toDouble()
+        val historical = safeFinite(skips / (plays + skips + 2.0)).coerceIn(0.0, 1.0)
+        val session = if (track.id in skippedSet) 0.35 else 0.0
+        return (historical * 0.45 + session).coerceIn(0.0, 0.72)
+    }
+
+    /**
+     * Smooth recency decay penalizing tracks played within the last 6 hours so recent
+     * spins don't clutter Discover, while giving a rediscovery boost to loved/completed
+     * tracks not spun recently.
+     */
+    private fun recencyAdjustment(track: Track, nowMs: Long): Double {
+        if (track.lastPlayedAt <= 0L) return 0.0
+        val ageMs = (nowMs - track.lastPlayedAt).coerceAtLeast(0L)
+        return when {
+            ageMs <= SIX_HOURS_MS -> {
+                val hoursAgo = ageMs.toDouble() / ONE_HOUR_MS.toDouble()
+                -0.34 * (1.0 - (hoursAgo / 6.0)).coerceIn(0.0, 1.0)
+            }
+            ageMs >= FOURTEEN_DAYS_MS && (track.completedPlayCount > 0 || track.isFavorite || track.playCount >= 2) -> {
+                0.18
+            }
+            ageMs >= THREE_DAYS_MS && track.completedPlayCount > 0 -> 0.08
+            else -> 0.0
+        }
+    }
+
+    // --- 1. Made for you (Daily Mix) ---
     private fun buildMadeForYou(
         tracks: List<Track>,
         usedIds: Set<String>,
         skippedSet: Set<String>,
         bpmById: Map<String, Int>,
+        energyById: Map<String, String>,
+        moodVecById: Map<String, Map<String, Double>>,
         primaryMoodById: Map<String, String>,
+        tuneConfig: DiscoverTuneConfig,
         nowMs: Long,
         seed: Int,
         targetSize: Int
     ): DiscoverSection {
-        val hasHistory = tracks.any { it.playCount > 0 || it.isFavorite || it.lastPlayedAt > 0L }
+        val hasHistory = tracks.any {
+            it.playCount > 0 || it.completedPlayCount > 0 || it.isFavorite || it.lastPlayedAt > 0L
+        }
         val rng = Random(seed)
+        val balance = tuneConfig.discoveryBalance.coerceIn(0f, 1f).toDouble()
 
-        if (!hasHistory) {
-            // Cold-start graceful fallback: pre-assign deterministic tie-breakers before sorting
-            // (never call rng.nextDouble() inside a Comparator, which violates TimSort's contract!)
-            val newestFirst = tracks
-                .map { it to rng.nextDouble() }
-                .sortedWith(compareByDescending<Pair<Track, Double>> { it.first.dateAdded }.thenBy { it.second })
-                .map { it.first }
-            val picked = pickDistinctTracks(newestFirst, usedIds, targetSize)
+        if (!hasHistory && !tuneConfig.isCustomized) {
+            val ranked = tracks
+                .map { t ->
+                    val hiFiBoost = if (t.isHiFi) 0.12 else 0.0
+                    val dateScore = if (t.dateAdded > 0L) (t.dateAdded % 1_000_000_000L) / 1_000_000_000.0 else 0.0
+                    RankedTrack(
+                        track = t,
+                        score = safeFinite(dateScore + hiFiBoost),
+                        tieBreaker = rng.nextDouble()
+                    )
+                }
+                .sortedWith(
+                    compareByDescending<RankedTrack> { it.score }
+                        .thenBy { it.tieBreaker }
+                        .thenBy { it.track.id }
+                )
+                .map { it.track }
+            val picked = pickDistinctTracks(ranked, usedIds, targetSize)
             val cues = picked.associate { t ->
                 val genre = t.genre.ifBlank { primaryMoodById[t.id]?.replaceFirstChar { it.uppercase() } ?: "Fresh" }
-                t.id to "New · $genre"
+                t.id to if (t.isHiFi) "Hi-Fi · $genre" else "New · $genre"
             }
             return DiscoverSection(
                 category = DiscoverCategory.MADE_FOR_YOU,
@@ -213,10 +318,11 @@ internal class DiscoverFeedGenerator(
         val artistAffinity = HashMap<String, Double>()
         val genreAffinity = HashMap<String, Double>()
         for (t in tracks) {
-            val safePlays = t.playCount.coerceAtLeast(0)
-            val weight = safePlays.toDouble() +
-                (if (t.isFavorite) 4.0 else 0.0) +
-                (if (t.lastPlayedAt > 0L && (nowMs - t.lastPlayedAt) in 0L..FOURTEEN_DAYS_MS) 2.0 else 0.0)
+            val safePlays = t.playCount.coerceAtLeast(0).toDouble()
+            val safeCompleted = t.completedPlayCount.coerceAtLeast(0).toDouble()
+            val weight = safePlays + (safeCompleted * 2.0) +
+                (if (t.isFavorite) 4.0 else 0.0) -
+                (t.skipCount.coerceAtLeast(0) * 1.2)
             if (weight > 0.0) {
                 val aKey = t.artist.trim().lowercase(Locale.ROOT)
                 if (aKey.isNotEmpty() && aKey != "unknown artist") {
@@ -232,19 +338,51 @@ internal class DiscoverFeedGenerator(
         val maxGenreWeight = genreAffinity.values.maxOrNull()?.coerceAtLeast(1.0) ?: 1.0
         val maxPlays = (tracks.maxOfOrNull { it.playCount.coerceAtLeast(0) } ?: 0).coerceAtLeast(1).toDouble()
 
-        val scored = tracks.map { t ->
+        val ranked = tracks.map { t ->
             val aScore = (artistAffinity[t.artist.trim().lowercase(Locale.ROOT)] ?: 0.0) / maxArtistWeight
             val gScore = (genreAffinity[t.genre.trim().lowercase(Locale.ROOT)] ?: 0.0) / maxGenreWeight
-            val favScore = if (t.isFavorite) 0.32 else 0.0
-            val playScore = (t.playCount.coerceAtLeast(0) / maxPlays) * 0.25
-            val recentFavBoost = if (t.isFavorite && t.lastPlayedAt > 0L && (nowMs - t.lastPlayedAt) in 0L..THIRTY_DAYS_MS) 0.14 else 0.0
-            val skipPenalty = if (t.id in skippedSet) -0.35 else 0.0
-            val jitter = rng.nextDouble(0.0, 0.08)
-            val total = safeFinite(aScore * 0.34 + gScore * 0.24 + favScore + playScore + recentFavBoost + skipPenalty + jitter)
-            t to total
-        }.sortedByDescending { it.second }.map { it.first }
+            val compScore = completionAffinity(t)
+            val favScore = if (t.isFavorite) 0.30 else 0.0
+            val playScore = (t.playCount.coerceAtLeast(0) / maxPlays) * 0.22
+            val hiFiScore = if (t.isHiFi) 0.04 else 0.0
 
-        val picked = pickDistinctTracks(scored, usedIds, targetSize)
+            val familiarSignal = aScore * 0.28 + gScore * 0.18 + favScore + playScore + compScore * 0.32 + hiFiScore
+            val freshSignal = (if (t.playCount <= 1) 0.42 else 0.10) +
+                (if (t.lastPlayedAt > 0L && (nowMs - t.lastPlayedAt) >= FOURTEEN_DAYS_MS) 0.30 else 0.0) +
+                compScore * 0.20 + aScore * 0.14 + gScore * 0.14 + hiFiScore
+
+            var blended = ((1.0 - balance) * familiarSignal) + (balance * freshSignal)
+
+            // Apply Tune Mix mood & energy filters
+            tuneConfig.selectedMood?.let { mood ->
+                val moodFit = moodVecById[t.id]?.get(mood) ?: 0.30
+                blended += (moodFit - 0.45) * 0.70
+            }
+            tuneConfig.energyFilter?.let { targetEnergy ->
+                val trackEnergy = energyById[t.id] ?: "medium"
+                blended += when {
+                    trackEnergy == targetEnergy -> 0.28
+                    (targetEnergy == "low" && trackEnergy == "high") ||
+                        (targetEnergy == "high" && trackEnergy == "low") -> -0.35
+                    else -> -0.06
+                }
+            }
+
+            // Recency decay (penalize tracks played in the last 6 hours) & early skip penalty
+            blended += recencyAdjustment(t, nowMs)
+            blended -= skipPenaltyScore(t, skippedSet)
+
+            RankedTrack(
+                track = t,
+                score = safeFinite(blended),
+                tieBreaker = rng.nextDouble(0.0, 0.06)
+            )
+        }.sortedWith(
+            compareByDescending<RankedTrack> { it.score + it.tieBreaker }
+                .thenBy { it.track.id }
+        ).map { it.track }
+
+        val picked = pickDistinctTracks(ranked, usedIds, targetSize)
         val topArtistDisplay = tracks
             .filter { it.artist.isNotBlank() && !it.artist.equals("Unknown Artist", ignoreCase = true) }
             .maxByOrNull { artistAffinity[it.artist.trim().lowercase(Locale.ROOT)] ?: 0.0 }
@@ -255,31 +393,43 @@ internal class DiscoverFeedGenerator(
             ?.genre
 
         val subtitle = when {
+            tuneConfig.isCustomized -> {
+                val moodPart = tuneConfig.selectedMood?.replaceFirstChar { it.uppercase() } ?: "All moods"
+                val energyPart = tuneConfig.energyFilter?.replaceFirstChar { it.uppercase() }?.let { " · $it energy" }.orEmpty()
+                "Tuned for $moodPart$energyPart · ${tuneConfig.balanceLabel} blend"
+            }
             topArtistDisplay != null && topGenreDisplay != null ->
-                "Daily mix shaped by $topArtistDisplay, $topGenreDisplay & your favorites"
+                "Daily mix shaped by $topArtistDisplay, $topGenreDisplay & high-completion listens"
             topArtistDisplay != null ->
-                "Daily mix built around $topArtistDisplay and your top listens"
+                "Daily mix built around $topArtistDisplay and your favorite listens"
             topGenreDisplay != null ->
                 "Daily mix blending your favorite $topGenreDisplay picks"
             else ->
-                "Daily mix tailored to your favorite tracks and recent spins"
+                "Daily mix tuned to your completed plays and favorite tracks"
         }
 
         val cues = picked.associate { t ->
             val cue = when {
+                t.completedPlayCount >= 2 -> "${t.completedPlayCount} full listens"
                 t.isFavorite -> "Favorite · ${bpmById[t.id] ?: 90} BPM"
-                t.playCount >= 3 -> "${t.playCount} plays"
+                t.playCount == 0 -> "Fresh pick"
                 t.genre.isNotBlank() -> t.genre
                 else -> "${bpmById[t.id] ?: 90} BPM"
             }
             t.id to cue
         }
 
+        val badge = if (tuneConfig.isCustomized) {
+            "Tuned · ${tuneConfig.balanceLabel}"
+        } else {
+            "Daily Mix"
+        }
+
         return DiscoverSection(
             category = DiscoverCategory.MADE_FOR_YOU,
             title = "Made for you",
             subtitle = subtitle,
-            badgeText = "Daily Mix",
+            badgeText = badge,
             tracks = picked.toStableList(),
             trackCues = cues.toStableMap()
         )
@@ -292,6 +442,8 @@ internal class DiscoverFeedGenerator(
         skippedTrackIds: List<String>,
         bpmById: Map<String, Int>,
         primaryMoodById: Map<String, String>,
+        tuneConfig: DiscoverTuneConfig,
+        nowMs: Long,
         shuffleNonce: Int,
         targetSize: Int
     ): Pair<DiscoverSection, MusicIntelligenceOutput> {
@@ -299,8 +451,7 @@ internal class DiscoverFeedGenerator(
         val candidatePool = if (unusedPool.size >= minOf(targetSize, 4)) unusedPool else tracks
         val history = engine.deriveListeningHistory(candidatePool, skippedTrackIds)
 
-        // Rotate mood subtly when user taps Refresh so Smart Mix always feels alive
-        val rotatedMood = if (shuffleNonce > 0) {
+        val targetMood = tuneConfig.selectedMood ?: if (shuffleNonce > 0) {
             val moods = listOf("calm", "focused", "warm", "nocturnal", "energetic", "organic", "uplifting")
             moods[safeMod(shuffleNonce - 1, moods.size)]
         } else {
@@ -310,8 +461,11 @@ internal class DiscoverFeedGenerator(
         val output = engine.analyzeAndRecommend(
             request = MusicIntelligenceRequest(
                 seedTrackId = null,
-                targetMood = rotatedMood,
-                maxTracks = targetSize.coerceAtLeast(1)
+                targetMood = targetMood,
+                energyFilter = tuneConfig.energyFilter,
+                discoveryBalance = tuneConfig.discoveryBalance,
+                maxTracks = targetSize.coerceAtLeast(1),
+                nowMs = nowMs
             ),
             history = history,
             libraryTracks = candidatePool
@@ -366,21 +520,27 @@ internal class DiscoverFeedGenerator(
 
         val ordered = if (staleOrUnplayed.isNotEmpty()) {
             staleOrUnplayed
-                .map { it to rng.nextDouble() }
+                .map { t ->
+                    val unplayedRank = if (t.playCount <= 0) 0 else 1
+                    Triple(t, unplayedRank, rng.nextDouble())
+                }
                 .sortedWith(
-                    compareBy<Pair<Track, Double>> { if (it.first.playCount <= 0) 0 else 1 }
-                        .thenBy { it.first.lastPlayedAt }
+                    compareBy<Triple<Track, Int, Double>> { it.first.skipCount.coerceAtLeast(0) }
                         .thenBy { it.second }
+                        .thenBy { it.first.lastPlayedAt }
+                        .thenBy { it.third }
+                        .thenBy { it.first.id }
                 )
                 .map { it.first }
         } else {
-            // Fallback: every track played in the last 30 days -> pick least recently played
             tracks
                 .map { it to rng.nextDouble() }
                 .sortedWith(
                     compareBy<Pair<Track, Double>> { it.first.lastPlayedAt }
+                        .thenBy { it.first.skipCount.coerceAtLeast(0) }
                         .thenBy { it.first.playCount }
                         .thenBy { it.second }
+                        .thenBy { it.first.id }
                 )
                 .map { it.first }
         }
@@ -414,7 +574,7 @@ internal class DiscoverFeedGenerator(
         )
     }
 
-    // --- 4. Forgotten favorites (high all-time play count, not played recently) ---
+    // --- 4. Forgotten favorites (favorited or high-completion tracks not played recently) ---
     private fun buildForgottenFavorites(
         tracks: List<Track>,
         usedIds: Set<String>,
@@ -423,7 +583,7 @@ internal class DiscoverFeedGenerator(
         targetSize: Int
     ): DiscoverSection {
         val rng = Random(seed)
-        val playedTracks = tracks.filter { it.playCount > 0 }
+        val playedTracks = tracks.filter { it.playCount > 0 || it.completedPlayCount > 0 }
         val veryRecentIds = tracks
             .filter { it.lastPlayedAt > 0L }
             .sortedByDescending { it.lastPlayedAt }
@@ -431,20 +591,22 @@ internal class DiscoverFeedGenerator(
             .mapTo(HashSet()) { it.id }
 
         val minHighPlayThreshold = if (playedTracks.isNotEmpty()) {
-            val sortedCounts = playedTracks.map { it.playCount }.sortedDescending()
+            val sortedCounts = playedTracks.map { maxOf(it.playCount, it.completedPlayCount) }.sortedDescending()
             val topThirdIdx = (sortedCounts.size / 3).coerceAtMost(sortedCounts.lastIndex)
             maxOf(2, sortedCounts[topThirdIdx])
         } else {
             3
         }
 
-        // Strict forgotten favorites: high all-time plays (or favorited & played) and not played recently
         val forgottenStrict = tracks.filter { t ->
-            val highPlay = t.playCount >= minHighPlayThreshold || (t.isFavorite && t.playCount >= 1)
+            val highAffinity = t.playCount >= minHighPlayThreshold ||
+                t.completedPlayCount >= 2 ||
+                (t.isFavorite && (t.playCount >= 1 || t.completedPlayCount >= 1))
+            val lowSkips = t.skipCount <= maxOf(1, t.completedPlayCount + 1)
             val notRecent = (t.lastPlayedAt > 0L && (nowMs - t.lastPlayedAt) >= FOURTEEN_DAYS_MS) ||
-                (t.lastPlayedAt == 0L && t.playCount >= minHighPlayThreshold) ||
-                (t.id !in veryRecentIds && t.playCount >= minHighPlayThreshold)
-            highPlay && notRecent
+                (t.lastPlayedAt == 0L && (t.playCount >= minHighPlayThreshold || t.completedPlayCount >= 2)) ||
+                (t.id !in veryRecentIds && (t.playCount >= minHighPlayThreshold || t.completedPlayCount >= 2))
+            highAffinity && lowSkips && notRecent
         }
 
         val (ordered, isTrueForgotten) = when {
@@ -455,29 +617,44 @@ internal class DiscoverFeedGenerator(
                     } else {
                         30.0
                     }
-                    val favBoost = if (t.isFavorite) 1.35 else 1.0
-                    val safePlays = t.playCount.coerceAtLeast(0).toDouble()
-                    val score = safeFinite(ln(safePlays + 1.0) * ln(ageDays + 2.0) * favBoost)
-                    t to score
-                }.sortedByDescending { it.second }.map { it.first }
+                    val favBoost = if (t.isFavorite) 1.38 else 1.0
+                    val compBoost = 1.0 + completionAffinity(t) * 0.55
+                    val skipDampen = 1.0 - (skipPenaltyScore(t, emptySet()) * 0.65)
+                    val safePlays = maxOf(t.playCount, t.completedPlayCount).coerceAtLeast(0).toDouble()
+                    val score = safeFinite(ln(safePlays + 1.0) * ln(ageDays + 2.0) * favBoost * compBoost * skipDampen)
+                    RankedTrack(t, score, rng.nextDouble(0.0, 0.01))
+                }.sortedWith(
+                    compareByDescending<RankedTrack> { it.score }
+                        .thenBy { it.tieBreaker }
+                        .thenBy { it.track.id }
+                ).map { it.track }
                 ranked to true
             }
             playedTracks.isNotEmpty() -> {
-                // Fallback when user has some plays, all recent: top played excluding very newest
-                val ranked = playedTracks.sortedWith(
-                    compareByDescending<Track> { it.playCount }
-                        .thenBy { it.lastPlayedAt }
-                )
+                val ranked = playedTracks
+                    .map { t ->
+                        val score = safeFinite(
+                            (t.completedPlayCount * 2.0) + t.playCount + (if (t.isFavorite) 4.0 else 0.0) - (t.skipCount * 1.5)
+                        )
+                        RankedTrack(t, score, rng.nextDouble(0.0, 0.01))
+                    }
+                    .sortedWith(
+                        compareByDescending<RankedTrack> { it.score }
+                            .thenBy { it.track.lastPlayedAt }
+                            .thenBy { it.track.id }
+                    )
+                    .map { it.track }
                 ranked to false
             }
             else -> {
-                // Cold-start fallback: favorited tracks or standout album cuts (longer durations)
                 val ranked = tracks
                     .map { it to rng.nextDouble() }
                     .sortedWith(
                         compareByDescending<Pair<Track, Double>> { if (it.first.isFavorite) 1 else 0 }
+                            .thenByDescending { if (it.first.isHiFi) 1 else 0 }
                             .thenByDescending { it.first.durationMs }
                             .thenBy { it.second }
+                            .thenBy { it.first.id }
                     )
                     .map { it.first }
                 ranked to false
@@ -488,10 +665,15 @@ internal class DiscoverFeedGenerator(
 
         val cues = picked.associate { t ->
             val cue = when {
+                t.completedPlayCount >= 2 && t.lastPlayedAt > 0L && (nowMs - t.lastPlayedAt) >= FOURTEEN_DAYS_MS -> {
+                    val days = (nowMs - t.lastPlayedAt) / ONE_DAY_MS
+                    "${t.completedPlayCount} full · ${days}d ago"
+                }
                 t.playCount > 0 && t.lastPlayedAt > 0L && (nowMs - t.lastPlayedAt) >= FOURTEEN_DAYS_MS -> {
                     val days = (nowMs - t.lastPlayedAt) / ONE_DAY_MS
                     "${t.playCount} plays · ${days}d ago"
                 }
+                t.completedPlayCount > 0 -> "${t.completedPlayCount} full listens"
                 t.playCount > 0 -> "${t.playCount} all-time plays"
                 t.isFavorite -> "Saved favorite"
                 else -> t.album.ifBlank { "Standout cut" }
@@ -503,9 +685,9 @@ internal class DiscoverFeedGenerator(
             category = DiscoverCategory.FORGOTTEN_FAVORITES,
             title = "Forgotten favorites",
             subtitle = if (isTrueForgotten) {
-                "Most-played tracks you haven't revisited lately"
+                "Previously loved, high-completion tracks you haven't spun in a while"
             } else if (playedTracks.isNotEmpty()) {
-                "High-rotation favorites ready for another encore"
+                "High-completion favorites ready for another encore"
             } else {
                 "Favorites & standout album cuts from your collection"
             },
@@ -520,9 +702,11 @@ internal class DiscoverFeedGenerator(
         tracks: List<Track>,
         currentTrackId: String?,
         usedIds: Set<String>,
+        skippedSet: Set<String>,
         bpmById: Map<String, Int>,
         moodVecById: Map<String, Map<String, Double>>,
         primaryMoodById: Map<String, String>,
+        nowMs: Long,
         targetSize: Int
     ): Pair<DiscoverSection, String?> {
         val anchor = currentTrackId?.let { id -> tracks.firstOrNull { it.id == id } }
@@ -556,13 +740,19 @@ internal class DiscoverFeedGenerator(
                 t.artist.trim().lowercase(Locale.ROOT) == anchorArtist
 
             val score = safeFinite(
-                moodSim * 0.35 +
-                    bpmScore * 0.25 +
-                    (if (sameGenre) 0.28 else 0.0) +
-                    (if (sameArtist) 0.22 else 0.0)
+                moodSim * 0.34 +
+                    bpmScore * 0.24 +
+                    (if (sameGenre) 0.26 else 0.0) +
+                    (if (sameArtist) 0.20 else 0.0) +
+                    completionAffinity(t) * 0.10 +
+                    recencyAdjustment(t, nowMs) * 0.5 -
+                    skipPenaltyScore(t, skippedSet) * 0.6
             )
-            t to score
-        }.sortedByDescending { it.second }.map { it.first }
+            RankedTrack(t, score, 0.0)
+        }.sortedWith(
+            compareByDescending<RankedTrack> { it.score }
+                .thenBy { it.track.id }
+        ).map { it.track }
 
         val picked = pickDistinctTracks(scored, usedIds, targetSize, fallbackPool = others)
 
@@ -592,10 +782,11 @@ internal class DiscoverFeedGenerator(
         return section to anchorDisplayTitle
     }
 
-    // --- 6. Explore your library ---
-    private fun buildExploreYourLibrary(
+    // --- 6. Deep Cuts & Unplayed Gems (EXPLORE_YOUR_LIBRARY) ---
+    private fun buildDeepCutsAndGems(
         tracks: List<Track>,
         usedIds: Set<String>,
+        skippedSet: Set<String>,
         seed: Int,
         shuffleNonce: Int,
         targetSize: Int
@@ -604,14 +795,13 @@ internal class DiscoverFeedGenerator(
         val unused = tracks.filter { it.id !in usedIds }
         val workingPool = if (unused.size >= 3) unused else tracks
 
-        // Identify underplayed albums & genre spotlights
         val genres = workingPool
             .map { it.genre.trim() }
             .filter { it.isNotBlank() && !it.equals("Audio", ignoreCase = true) }
             .groupingBy { it }
             .eachCount()
             .entries
-            .sortedByDescending { it.value }
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
             .map { it.key }
 
         val spotlightGenre = if (genres.isNotEmpty()) {
@@ -626,49 +816,144 @@ internal class DiscoverFeedGenerator(
                 safeFinite(avg).coerceAtLeast(0.0)
             }
 
-        val sortedCounts = tracks.map { it.playCount.coerceAtLeast(0) }.sorted()
-        val medianPlays = sortedCounts.getOrElse(sortedCounts.size / 2) { 0 }
+        val hasTrueDeepCuts = workingPool.any { it.playCount <= 1 && it.skipCount <= 1 }
 
-        val scored = workingPool.map { t ->
+        val ranked = workingPool.map { t ->
             val albumKey = t.album.ifBlank { "Unknown Album" }
             val albumAvg = (albumAvgPlays[albumKey] ?: 0.0).coerceAtLeast(0.0)
-            val deepCutBonus = if (t.playCount.coerceAtLeast(0) <= medianPlays) 0.40 else 0.0
-            val underplayedAlbumBonus = (1.0 / (albumAvg + 1.0)) * 0.30
+            val isUnplayed = t.playCount <= 0
+            val isLowPlay = t.playCount <= 1
+            val lowPlayBonus = when {
+                isUnplayed && t.skipCount == 0 -> 0.62
+                isLowPlay && t.skipCount <= 1 -> 0.48
+                else -> 0.05
+            }
+            val underplayedAlbumBonus = (1.0 / (albumAvg + 1.0)) * 0.24
             val genreSpotlightBonus = if (spotlightGenre != null &&
                 t.genre.trim().equals(spotlightGenre, ignoreCase = true)
-            ) 0.35 else 0.0
-            val unusedBonus = if (t.id !in usedIds) 0.25 else 0.0
-            val jitter = rng.nextDouble(0.0, 0.12)
-            t to safeFinite(deepCutBonus + underplayedAlbumBonus + genreSpotlightBonus + unusedBonus + jitter)
-        }.sortedByDescending { it.second }.map { it.first }
+            ) 0.18 else 0.0
+            val hiFiGemBonus = if (t.isHiFi) 0.08 else 0.0
+            val unusedBonus = if (t.id !in usedIds) 0.22 else 0.0
+            val skipPenalty = skipPenaltyScore(t, skippedSet) * 0.85
 
-        val picked = pickDistinctTracks(scored, usedIds, targetSize, fallbackPool = tracks)
+            RankedTrack(
+                track = t,
+                score = safeFinite(lowPlayBonus + underplayedAlbumBonus + genreSpotlightBonus + hiFiGemBonus + unusedBonus - skipPenalty),
+                tieBreaker = rng.nextDouble(0.0, 0.08)
+            )
+        }.sortedWith(
+            compareByDescending<RankedTrack> { it.score + it.tieBreaker }
+                .thenBy { it.track.id }
+        ).map { it.track }
+
+        val picked = pickDistinctTracks(ranked, usedIds, targetSize, fallbackPool = tracks)
 
         val cues = picked.associate { t ->
             val cue = when {
+                t.playCount <= 0 -> if (t.isHiFi) "Unplayed · Hi-Fi" else "Unplayed gem"
+                t.playCount == 1 -> "1 spin · Deep cut"
                 spotlightGenre != null && t.genre.trim().equals(spotlightGenre, ignoreCase = true) ->
                     "$spotlightGenre spotlight"
                 t.album.isNotBlank() && !t.album.equals("Unknown Album", ignoreCase = true) ->
                     t.album
-                t.playCount <= 0 -> "Deep cut"
                 else -> t.folderName.ifBlank { "Hidden gem" }
             }
             t.id to cue
         }
 
-        val subtitle = if (spotlightGenre != null) {
-            "Deeper cuts, underplayed albums & a $spotlightGenre spotlight"
-        } else {
-            "Deeper cuts and underplayed albums from your local collection"
+        val subtitle = when {
+            hasTrueDeepCuts && spotlightGenre != null ->
+                "Unplayed & low-play tracks worth exploring · $spotlightGenre spotlight"
+            hasTrueDeepCuts ->
+                "Unplayed and low-play gems hidden across your local folders"
+            else ->
+                "Deeper album cuts from your local collection"
         }
 
         return DiscoverSection(
             category = DiscoverCategory.EXPLORE_YOUR_LIBRARY,
-            title = "Explore your library",
+            title = "Deep Cuts & Unplayed Gems",
             subtitle = subtitle,
-            badgeText = spotlightGenre ?: "Deep cuts",
+            badgeText = if (hasTrueDeepCuts) "Unplayed Gems" else (spotlightGenre ?: "Deep cuts"),
             tracks = picked.toStableList(),
             trackCues = cues.toStableMap()
+        )
+    }
+
+    private fun computeListeningInsights(
+        tracks: List<Track>,
+        primaryMoodById: Map<String, String>
+    ): ListeningInsights {
+        if (tracks.isEmpty()) return ListeningInsights()
+
+        val moodWeights = HashMap<String, Double>()
+        val genreWeights = HashMap<String, Double>()
+        val artistWeights = HashMap<String, Double>()
+        val artistDisplayByKey = HashMap<String, String>()
+        val genreDisplayByKey = HashMap<String, String>()
+
+        var totalListeningMs = 0L
+        var catalogDurationMs = 0L
+        var hiFiCount = 0
+        var completedTotal = 0
+
+        for (t in tracks) {
+            val plays = t.playCount.coerceAtLeast(0)
+            val completed = t.completedPlayCount.coerceAtLeast(0)
+            val effectivePlays = maxOf(plays, completed)
+            val safeDur = t.durationMs.coerceAtLeast(0L)
+
+            completedTotal += completed
+            catalogDurationMs += safeDur
+            if (effectivePlays > 0) {
+                totalListeningMs += safeDur * effectivePlays.toLong()
+            }
+            if (t.isHiFi) {
+                hiFiCount++
+            }
+
+            val affinityWeight = (plays.toDouble() + completed * 2.0 + if (t.isFavorite) 3.0 else 0.0)
+                .coerceAtLeast(0.25)
+
+            val mood = primaryMoodById[t.id] ?: "calm"
+            moodWeights[mood] = (moodWeights[mood] ?: 0.0) + affinityWeight
+
+            val cleanGenre = t.genre.trim()
+            if (cleanGenre.isNotEmpty() && !cleanGenre.equals("Audio", ignoreCase = true)) {
+                val gKey = cleanGenre.lowercase(Locale.ROOT)
+                genreWeights[gKey] = (genreWeights[gKey] ?: 0.0) + affinityWeight
+                genreDisplayByKey.putIfAbsent(gKey, cleanGenre)
+            }
+
+            val cleanArtist = t.artist.trim()
+            if (cleanArtist.isNotEmpty() && !cleanArtist.equals("Unknown Artist", ignoreCase = true)) {
+                val aKey = cleanArtist.lowercase(Locale.ROOT)
+                artistWeights[aKey] = (artistWeights[aKey] ?: 0.0) + affinityWeight
+                artistDisplayByKey.putIfAbsent(aKey, cleanArtist)
+            }
+        }
+
+        val topMoodRaw = moodWeights.entries
+            .sortedWith(compareByDescending<Map.Entry<String, Double>> { it.value }.thenBy { it.key })
+            .firstOrNull()?.key ?: "calm"
+        val topGenreKey = genreWeights.entries
+            .sortedWith(compareByDescending<Map.Entry<String, Double>> { it.value }.thenBy { it.key })
+            .firstOrNull()?.key
+        val topArtistKey = artistWeights.entries
+            .sortedWith(compareByDescending<Map.Entry<String, Double>> { it.value }.thenBy { it.key })
+            .firstOrNull()?.key
+
+        val hiFiPct = ((hiFiCount.toDouble() / tracks.size.toDouble()) * 100.0).roundToInt().coerceIn(0, 100)
+
+        return ListeningInsights(
+            topMood = topMoodRaw.replaceFirstChar { it.uppercase() },
+            topGenre = topGenreKey?.let { genreDisplayByKey[it] } ?: "",
+            topArtist = topArtistKey?.let { artistDisplayByKey[it] } ?: "",
+            totalListeningMs = if (totalListeningMs > 0L) totalListeningMs else catalogDurationMs,
+            totalTrackCount = tracks.size,
+            hiFiTrackCount = hiFiCount,
+            hiFiPercentage = hiFiPct,
+            completedPlaysTotal = completedTotal
         )
     }
 
@@ -733,7 +1018,10 @@ internal class DiscoverFeedGenerator(
     }
 
     companion object {
-        internal const val ONE_DAY_MS = 24L * 60L * 60L * 1000L
+        internal const val ONE_HOUR_MS = 60L * 60L * 1000L
+        internal const val SIX_HOURS_MS = 6L * ONE_HOUR_MS
+        internal const val ONE_DAY_MS = 24L * ONE_HOUR_MS
+        internal const val THREE_DAYS_MS = 3L * ONE_DAY_MS
         internal const val FOURTEEN_DAYS_MS = 14L * ONE_DAY_MS
         internal const val THIRTY_DAYS_MS = 30L * ONE_DAY_MS
     }

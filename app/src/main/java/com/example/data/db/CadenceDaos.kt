@@ -45,6 +45,12 @@ interface TrackDao {
     @Query("UPDATE tracks SET playCount = playCount + 1, lastPlayedAt = :timestamp WHERE id = :trackId")
     suspend fun recordPlay(trackId: String, timestamp: Long)
 
+    @Query("UPDATE tracks SET completedPlayCount = completedPlayCount + 1, lastPlayedAt = :timestamp WHERE id = :trackId")
+    suspend fun recordCompletedPlay(trackId: String, timestamp: Long)
+
+    @Query("UPDATE tracks SET skipCount = skipCount + 1 WHERE id = :trackId")
+    suspend fun recordSkip(trackId: String)
+
     @Query("DELETE FROM tracks WHERE id = :trackId")
     suspend fun deleteTrackById(trackId: String)
 

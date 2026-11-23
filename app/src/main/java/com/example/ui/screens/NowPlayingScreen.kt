@@ -9,7 +9,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,7 +41,9 @@ import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
@@ -47,7 +51,6 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
-import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -69,12 +72,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.PlaylistSummary
@@ -84,12 +90,19 @@ import com.example.data.StableList
 import com.example.data.ThemePreferences
 import com.example.data.Track
 import com.example.data.formatDuration
+import com.example.data.lyrics.LyricsUiState
+import com.example.playback.AudioOutputMonitor
+import com.example.playback.AudioOutputState
 import com.example.playback.PlaybackProgress
+import com.example.playback.rememberAudioOutputState
 import com.example.ui.components.AddToPlaylistSheetContent
+import com.example.ui.components.AudioOutputSheetContent
 import com.example.ui.components.AudioPulseBars
+import com.example.ui.components.ExpandableAudioQualityBadge
 import com.example.ui.components.ExpressiveArtworkFrame
-import com.example.ui.components.HiFiQualityBadge
+import com.example.ui.components.LyricsSheetContent
 import com.example.ui.components.MorphingPlayPauseButton
+import com.example.ui.components.audioOutputIconFor
 import com.example.ui.components.PlaylistNameDialog
 import com.example.ui.components.QueueSheetContent
 import com.example.ui.components.TrackActionsSheetContent
@@ -100,9 +113,12 @@ import com.example.ui.player.SleepTimerState
 import com.example.ui.theme.LocalPerformanceMode
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+
+private val DefaultLyricsFlow: StateFlow<LyricsUiState> = MutableStateFlow(LyricsUiState.Idle)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -119,25 +135,37 @@ fun NowPlayingScreen(
     onToggleShuffle: () -> Unit,
     onCycleRepeat: () -> Unit,
     onToggleFavorite: () -> Unit,
-    onCycleSpeed: () -> Unit,
+    onCycleSpeed: () -> Unit = {},
+    onSelectPlaybackSpeed: (Float) -> Unit = {},
     onMatchMood: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onAddFolder: () -> Unit,
-    onScanDevice: () -> Unit,
-    onSelectQueueIndex: (Int) -> Unit,
-    onMoveQueueItem: (Int, Int) -> Unit,
-    onRemoveQueueItem: (Int) -> Unit,
-    onClearQueue: () -> Unit,
-    onSaveQueueAsPlaylist: (String) -> Unit,
-    onAddCurrentToPlaylist: (Long) -> Unit,
-    onCreatePlaylistWithCurrent: (String) -> Unit,
-    onPlayNextCurrent: () -> Unit,
-    onAddCurrentToQueue: () -> Unit,
-    onSelectSleepTimer: (SleepTimerOption) -> Unit,
+    onCollapse: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+    onAddFolder: () -> Unit = {},
+    onScanDevice: () -> Unit = {},
+    onSelectQueueIndex: (Int) -> Unit = {},
+    onMoveQueueItem: (Int, Int) -> Unit = { _, _ -> },
+    onRemoveQueueItem: (Int) -> Unit = {},
+    onClearQueue: () -> Unit = {},
+    onSaveQueueAsPlaylist: (String) -> Unit = {},
+    onAddCurrentToPlaylist: (Long) -> Unit = {},
+    onCreatePlaylistWithCurrent: (String) -> Unit = {},
+    onPlayNextCurrent: () -> Unit = {},
+    onAddCurrentToQueue: () -> Unit = {},
+    onSelectSleepTimer: (SleepTimerOption) -> Unit = {},
+    audioOutputStateOverride: AudioOutputState? = null,
+    lyricsStateFlow: StateFlow<LyricsUiState> = DefaultLyricsFlow,
+    onRequestLyrics: (Track) -> Unit = {},
+    onSeekToMs: (Long) -> Unit = {},
+    dismissDragModifier: Modifier = Modifier,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val audioOutputState = audioOutputStateOverride ?: rememberAudioOutputState()
+
     var showQueueSheet by remember { mutableStateOf(false) }
     var showTimerSheet by remember { mutableStateOf(false) }
+    var showAudioOutputSheet by remember { mutableStateOf(false) }
+    var showLyricsSheet by remember { mutableStateOf(false) }
     var showSaveQueueDialog by remember { mutableStateOf(false) }
     var showTrackActions by remember { mutableStateOf(false) }
     var showPlaylistPicker by remember { mutableStateOf(false) }
@@ -146,13 +174,28 @@ fun NowPlayingScreen(
 
     val openQueue = remember { { showQueueSheet = true } }
     val openTimer = remember { { showTimerSheet = true } }
+    val openAudioOutput = remember(context) {
+        {
+            if (!AudioOutputMonitor.openSystemOutputSwitcher(context)) {
+                showAudioOutputSheet = true
+            }
+        }
+    }
     val openTrackMenu = remember { { showTrackActions = true } }
 
     val currentTrack = uiState.currentTrack
+    val openLyrics = remember(currentTrack, onRequestLyrics) {
+        {
+            if (currentTrack != null) {
+                onRequestLyrics(currentTrack)
+                showLyricsSheet = true
+            }
+        }
+    }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isWide = maxWidth >= 640.dp
-        val isUltraShortPortrait = maxHeight < 580.dp
+        val isUltraShortPortrait = maxHeight < 560.dp
 
         if (currentTrack == null && !uiState.isInitialLibraryLoaded) {
             Box(
@@ -163,79 +206,93 @@ fun NowPlayingScreen(
         } else if (currentTrack == null) {
             EmptyNowPlayingContent(
                 artworkShape = themePrefs.artworkShape,
+                onCollapse = onCollapse,
                 onOpenSettings = onOpenSettings,
                 onAddFolder = onAddFolder,
-                onScanDevice = onScanDevice
+                onScanDevice = onScanDevice,
+                dismissDragModifier = dismissDragModifier
             )
         } else if (isWide) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 32.dp, vertical = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(36.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .navigationBarsPadding()
             ) {
-                Box(
+                NowPlayingDragHandle(modifier = dismissDragModifier)
+
+                Row(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight(),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .padding(start = 32.dp, end = 32.dp, bottom = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(32.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ExpressiveArtworkFrame(
-                        track = currentTrack,
-                        artworkShape = themePrefs.artworkShape,
-                        isPlaying = uiState.isPlaying,
-                        decodeSizePx = 768,
+                    Box(
                         modifier = Modifier
-                            .widthIn(max = 340.dp)
-                            .fillMaxWidth(0.88f)
-                            .aspectRatio(1f)
-                            .testTag("hero_album_artwork")
-                    )
-                }
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .then(dismissDragModifier),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        ExpressiveArtworkFrame(
+                            track = currentTrack,
+                            artworkShape = themePrefs.artworkShape,
+                            isPlaying = uiState.isPlaying,
+                            decodeSizePx = 768,
+                            modifier = Modifier
+                                .widthIn(max = 320.dp)
+                                .fillMaxWidth(0.86f)
+                                .aspectRatio(1f)
+                                .testTag("hero_album_artwork")
+                        )
+                    }
 
-                Column(
-                    modifier = Modifier
-                        .weight(1.1f)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(18.dp)
-                ) {
-                    NowPlayingTopBar(
-                        hasTrack = true,
-                        isPlaying = uiState.isPlaying,
-                        isPreparing = uiState.isPreparing,
-                        onOpenSettings = onOpenSettings,
-                        onOpenQueue = openQueue
-                    )
-                    TrackIdentityBlock(
-                        track = currentTrack,
-                        onToggleFavorite = onToggleFavorite,
-                        onOpenTrackMenu = openTrackMenu
-                    )
-                    ScrubberSection(
-                        progressFlow = progressFlow,
-                        fallbackDurationMs = currentTrack.durationMs,
-                        isPlaying = uiState.isPlaying,
-                        wavyEnabled = themePrefs.effectiveWavyScrubber,
-                        onSeek = onSeek
-                    )
-                    ExpressiveTransportCluster(
-                        uiState = uiState,
-                        onTogglePlayPause = onTogglePlayPause,
-                        onNext = onNext,
-                        onPrevious = onPrevious,
-                        onToggleShuffle = onToggleShuffle,
-                        onCycleRepeat = onCycleRepeat
-                    )
-                    UtilityPillStrip(
-                        playbackSpeed = uiState.playbackSpeed,
-                        suggestedPalette = currentTrack.suggestedPalette,
-                        activePalette = themePrefs.palette,
-                        sleepTimerFlow = sleepTimerFlow,
-                        onCycleSpeed = onCycleSpeed,
-                        onOpenTimer = openTimer,
-                        onMatchMood = onMatchMood
-                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1.1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        NowPlayingTopBar(
+                            hasTrack = true,
+                            isPlaying = uiState.isPlaying,
+                            isPreparing = uiState.isPreparing,
+                            audioOutputState = audioOutputState,
+                            onCollapse = onCollapse,
+                            onOpenAudioOutput = openAudioOutput,
+                            onOpenQueue = openQueue,
+                            modifier = dismissDragModifier
+                        )
+                        TrackIdentityBlock(
+                            track = currentTrack,
+                            onToggleFavorite = onToggleFavorite,
+                            onOpenTrackMenu = openTrackMenu
+                        )
+                        ScrubberSection(
+                            progressFlow = progressFlow,
+                            fallbackDurationMs = currentTrack.durationMs,
+                            isPlaying = uiState.isPlaying,
+                            wavyEnabled = themePrefs.effectiveWavyScrubber,
+                            onSeek = onSeek
+                        )
+                        ExpressiveTransportCluster(
+                            uiState = uiState,
+                            onTogglePlayPause = onTogglePlayPause,
+                            onNext = onNext,
+                            onPrevious = onPrevious,
+                            onToggleShuffle = onToggleShuffle,
+                            onCycleRepeat = onCycleRepeat
+                        )
+                        UtilityPillStrip(
+                            suggestedPalette = currentTrack.suggestedPalette,
+                            activePalette = themePrefs.palette,
+                            sleepTimerFlow = sleepTimerFlow,
+                            onOpenLyrics = openLyrics,
+                            onOpenTimer = openTimer,
+                            onMatchMood = onMatchMood
+                        )
+                    }
                 }
             }
         } else if (isUltraShortPortrait) {
@@ -244,29 +301,42 @@ fun NowPlayingScreen(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .navigationBarsPadding()
-                    .padding(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 96.dp)
+                    .padding(start = 20.dp, end = 20.dp, bottom = 20.dp)
                     .testTag("now_playing_portrait_container"),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                NowPlayingTopBar(
-                    hasTrack = true,
-                    isPlaying = uiState.isPlaying,
-                    isPreparing = uiState.isPreparing,
-                    onOpenSettings = onOpenSettings,
-                    onOpenQueue = openQueue
-                )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    NowPlayingDragHandle(modifier = dismissDragModifier)
+                    NowPlayingTopBar(
+                        hasTrack = true,
+                        isPlaying = uiState.isPlaying,
+                        isPreparing = uiState.isPreparing,
+                        audioOutputState = audioOutputState,
+                        onCollapse = onCollapse,
+                        onOpenAudioOutput = openAudioOutput,
+                        onOpenQueue = openQueue,
+                        modifier = dismissDragModifier
+                    )
+                }
 
-                ExpressiveArtworkFrame(
-                    track = currentTrack,
-                    artworkShape = themePrefs.artworkShape,
-                    isPlaying = uiState.isPlaying,
-                    decodeSizePx = 768,
+                Box(
                     modifier = Modifier
-                        .size(176.dp)
-                        .aspectRatio(1f)
-                        .testTag("hero_album_artwork")
-                )
+                        .fillMaxWidth()
+                        .then(dismissDragModifier),
+                    contentAlignment = Alignment.Center
+                ) {
+                    ExpressiveArtworkFrame(
+                        track = currentTrack,
+                        artworkShape = themePrefs.artworkShape,
+                        isPlaying = uiState.isPlaying,
+                        decodeSizePx = 768,
+                        modifier = Modifier
+                            .size(176.dp)
+                            .aspectRatio(1f)
+                            .testTag("hero_album_artwork")
+                    )
+                }
 
                 TrackIdentityBlock(
                     track = currentTrack,
@@ -292,11 +362,10 @@ fun NowPlayingScreen(
                 )
 
                 UtilityPillStrip(
-                    playbackSpeed = uiState.playbackSpeed,
                     suggestedPalette = currentTrack.suggestedPalette,
                     activePalette = themePrefs.palette,
                     sleepTimerFlow = sleepTimerFlow,
-                    onCycleSpeed = onCycleSpeed,
+                    onOpenLyrics = openLyrics,
                     onOpenTimer = openTimer,
                     onMatchMood = onMatchMood
                 )
@@ -306,23 +375,30 @@ fun NowPlayingScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .navigationBarsPadding()
-                    .padding(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 96.dp)
+                    .padding(start = 20.dp, end = 20.dp, bottom = 20.dp)
                     .testTag("now_playing_portrait_container"),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // Swipe-down gesture attached strictly to Drag Handle, Top Header & Artwork Area (never the seek bar)
+                NowPlayingDragHandle(modifier = dismissDragModifier)
+
                 NowPlayingTopBar(
                     hasTrack = true,
                     isPlaying = uiState.isPlaying,
                     isPreparing = uiState.isPreparing,
-                    onOpenSettings = onOpenSettings,
-                    onOpenQueue = openQueue
+                    audioOutputState = audioOutputState,
+                    onCollapse = onCollapse,
+                    onOpenAudioOutput = openAudioOutput,
+                    onOpenQueue = openQueue,
+                    modifier = dismissDragModifier
                 )
 
                 BoxWithConstraints(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                        .padding(vertical = 8.dp)
+                        .then(dismissDragModifier),
                     contentAlignment = Alignment.Center
                 ) {
                     val artworkSize = minOf(maxWidth, maxHeight, 260.dp).coerceAtLeast(0.dp)
@@ -366,12 +442,13 @@ fun NowPlayingScreen(
                         onCycleRepeat = onCycleRepeat
                     )
 
+                    Spacer(Modifier.height(2.dp))
+
                     UtilityPillStrip(
-                        playbackSpeed = uiState.playbackSpeed,
                         suggestedPalette = currentTrack.suggestedPalette,
                         activePalette = themePrefs.palette,
                         sleepTimerFlow = sleepTimerFlow,
-                        onCycleSpeed = onCycleSpeed,
+                        onOpenLyrics = openLyrics,
                         onOpenTimer = openTimer,
                         onMatchMood = onMatchMood
                     )
@@ -403,6 +480,43 @@ fun NowPlayingScreen(
                     showQueueSheet = false
                     showSaveQueueDialog = true
                 }
+            )
+        }
+    }
+
+    if (showAudioOutputSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showAudioOutputSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
+        ) {
+            AudioOutputSheetContent(
+                outputState = audioOutputState,
+                onOpenSoundSettings = { openBluetooth ->
+                    showAudioOutputSheet = false
+                    AudioOutputMonitor.openSystemAudioSettings(
+                        context = context,
+                        openBluetooth = openBluetooth
+                    )
+                }
+            )
+        }
+    }
+
+    if (showLyricsSheet && currentTrack != null) {
+        val lyricsState by lyricsStateFlow.collectAsStateWithLifecycle()
+        ModalBottomSheet(
+            onDismissRequest = { showLyricsSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
+        ) {
+            LyricsSheetContent(
+                track = currentTrack,
+                lyricsState = lyricsState,
+                progressFlow = progressFlow,
+                onSeekToMs = onSeekToMs
             )
         }
     }
@@ -448,7 +562,9 @@ fun NowPlayingScreen(
                 onShowDetails = {
                     showTrackActions = false
                     showTrackDetails = true
-                }
+                },
+                playbackSpeed = uiState.playbackSpeed,
+                onSelectPlaybackSpeed = onSelectPlaybackSpeed
             )
         }
     }
@@ -508,28 +624,48 @@ fun NowPlayingScreen(
 @Composable
 private fun EmptyNowPlayingContent(
     artworkShape: com.example.ui.theme.ExpressiveArtworkShape,
+    onCollapse: () -> Unit,
     onOpenSettings: () -> Unit,
     onAddFolder: () -> Unit,
-    onScanDevice: () -> Unit
+    onScanDevice: () -> Unit,
+    dismissDragModifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val isUltraShort = maxHeight < 580.dp
+        val isUltraShort = maxHeight < 560.dp
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .then(if (isUltraShort) Modifier.verticalScroll(rememberScrollState()) else Modifier)
                 .navigationBarsPadding()
-                .padding(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 96.dp),
+                .padding(start = 20.dp, end = 20.dp, bottom = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = if (isUltraShort) Arrangement.spacedBy(16.dp) else Arrangement.SpaceBetween
         ) {
-            NowPlayingTopBar(
-                hasTrack = false,
-                isPlaying = false,
-                isPreparing = false,
-                onOpenSettings = onOpenSettings,
-                onOpenQueue = {}
-            )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                NowPlayingDragHandle(modifier = dismissDragModifier)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(dismissDragModifier),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    GlassHeaderCircleButton(
+                        icon = Icons.Rounded.KeyboardArrowDown,
+                        contentDescription = stringResource(R.string.action_collapse_player),
+                        onClick = onCollapse,
+                        testTag = "collapse_now_playing_button"
+                    )
+
+                    GlassHeaderCircleButton(
+                        icon = Icons.Rounded.Settings,
+                        contentDescription = stringResource(R.string.action_settings),
+                        onClick = onOpenSettings,
+                        testTag = "settings_button"
+                    )
+                }
+            }
 
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -604,13 +740,46 @@ private fun EmptyNowPlayingContent(
     }
 }
 
+/**
+ * Centered 36dp × 4dp top drag handle wired to the sheet swipe-down dismissal gesture.
+ */
+@Composable
+private fun NowPlayingDragHandle(
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("now_playing_drag_handle")
+            .then(modifier)
+            .padding(top = 10.dp, bottom = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 36.dp, height = 4.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.32f))
+        )
+    }
+}
+
+/**
+ * Theme-aware 2-group glassmorphic Now Playing top header (all items equal 42dp height, zero blur):
+ * - Left: Unified clickable CircleShape pill combining minimize chevron (⌄) + hairline divider +
+ *   3-bar draw-phase equalizer + "NOW PLAYING" / "PAUSED" label.
+ * - Right: Two matching 42dp circular buttons separated by 10dp (Audio Output Switcher + Queue).
+ */
 @Composable
 private fun NowPlayingTopBar(
     hasTrack: Boolean,
     isPlaying: Boolean,
     isPreparing: Boolean,
-    onOpenSettings: () -> Unit,
-    onOpenQueue: () -> Unit
+    audioOutputState: AudioOutputState,
+    onCollapse: () -> Unit,
+    onOpenAudioOutput: () -> Unit,
+    onOpenQueue: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val statusText = when {
         !hasTrack -> stringResource(R.string.status_idle)
@@ -618,79 +787,139 @@ private fun NowPlayingTopBar(
         isPlaying -> stringResource(R.string.now_playing_label)
         else -> stringResource(R.string.status_paused)
     }
-    val pillColor = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(
-        MaterialTheme.colorScheme.background,
-        0.92f
-    )
+    val glassSurfaceColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)
+    val glassBorder = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+    val headerContentTint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
+    val dividerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("now_playing_top_header"),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
-            shape = CircleShape,
-            color = pillColor,
-            modifier = Modifier.testTag("now_playing_status_pill")
+        // Left Group: Unified 42dp clickable glassmorphic pill (minimize chevron + divider + status)
+        Box(
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .padding(end = 10.dp)
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                AudioPulseBars(
-                    isPlaying = isPlaying,
-                    tint = MaterialTheme.colorScheme.primary,
-                    barHeight = 13.dp
-                )
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            FilledTonalIconButton(
-                onClick = onOpenSettings,
                 modifier = Modifier
-                    .size(48.dp)
-                    .testTag("settings_button"),
-                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = MaterialTheme.colorScheme.onSurface
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Settings,
-                    contentDescription = stringResource(R.string.action_settings),
-                    modifier = Modifier.size(21.dp)
-                )
-            }
-
-            if (hasTrack) {
-                FilledTonalIconButton(
-                    onClick = onOpenQueue,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("queue_button"),
-                    colors = IconButtonDefaults.filledTonalIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = MaterialTheme.colorScheme.onSurface
+                    .height(42.dp)
+                    .clip(CircleShape)
+                    .background(glassSurfaceColor, CircleShape)
+                    .border(glassBorder, CircleShape)
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = stringResource(R.string.action_collapse_player),
+                        onClick = onCollapse
                     )
+                    .testTag("collapse_now_playing_button"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier.padding(start = 12.dp, end = 10.dp),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
-                        contentDescription = stringResource(R.string.action_queue),
-                        modifier = Modifier.size(22.dp)
+                        imageVector = Icons.Rounded.KeyboardArrowDown,
+                        contentDescription = stringResource(R.string.action_collapse_player),
+                        tint = headerContentTint,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(18.dp)
+                        .background(dividerColor)
+                )
+
+                Row(
+                    modifier = Modifier
+                        .padding(start = 12.dp, end = 16.dp)
+                        .testTag("now_playing_status_pill"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp)
+                ) {
+                    AudioPulseBars(
+                        isPlaying = isPlaying,
+                        tint = MaterialTheme.colorScheme.primary,
+                        barHeight = 14.dp,
+                        barCount = 3
+                    )
+                    Text(
+                        text = statusText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 1.4.sp,
+                        color = headerContentTint,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
         }
+
+        // Right Group: Two matching 42dp glassmorphic circular buttons separated by 10dp
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            GlassHeaderCircleButton(
+                icon = audioOutputIconFor(audioOutputState.activeRoute),
+                contentDescription = "${stringResource(R.string.action_audio_output)}: ${audioOutputState.activeDeviceName}",
+                onClick = onOpenAudioOutput,
+                testTag = "audio_output_button"
+            )
+
+            if (hasTrack) {
+                GlassHeaderCircleButton(
+                    icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                    contentDescription = stringResource(R.string.action_queue),
+                    onClick = onOpenQueue,
+                    testTag = "queue_button"
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GlassHeaderCircleButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    testTag: String,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f), CircleShape)
+            .border(
+                BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
+                CircleShape
+            )
+            .clickable(
+                role = Role.Button,
+                onClickLabel = contentDescription,
+                onClick = onClick
+            )
+            .testTag(testTag),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f),
+            modifier = Modifier.size(20.dp)
+        )
     }
 }
 
@@ -701,6 +930,19 @@ private fun TrackIdentityBlock(
     onOpenTrackMenu: () -> Unit
 ) {
     val performanceMode = LocalPerformanceMode.current
+    val audioSpec = remember(
+        track.id,
+        track.codec,
+        track.mimeType,
+        track.localUriString,
+        track.bitDepth,
+        track.sampleRateHz,
+        track.bitrateKbps
+    ) {
+        track.resolveAudioQualitySpec()
+    }
+    var audioSpecsExpanded by remember(track.id) { mutableStateOf(false) }
+
     val favScale = if (performanceMode) {
         1f
     } else {
@@ -714,119 +956,113 @@ private fun TrackIdentityBlock(
         ).value
     }
 
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+        horizontalAlignment = Alignment.Start
     ) {
-        if (performanceMode) {
-            TrackTitleColumn(track = track, modifier = Modifier.weight(1f))
-        } else {
-            AnimatedContent(
-                targetState = track.id,
-                transitionSpec = {
-                    (slideInVertically { it / 4 } + fadeIn()) togetherWith
-                        (slideOutVertically { -it / 4 } + fadeOut())
-                },
-                modifier = Modifier.weight(1f),
-                label = "track_title_transition"
-            ) { _ ->
-                TrackTitleColumn(track = track)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (performanceMode) {
+                TrackTitleColumn(track = track, modifier = Modifier.weight(1f))
+            } else {
+                AnimatedContent(
+                    targetState = track.id,
+                    transitionSpec = {
+                        (slideInVertically { it / 4 } + fadeIn()) togetherWith
+                            (slideOutVertically { -it / 4 } + fadeOut())
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = "track_title_transition"
+                ) { _ ->
+                    TrackTitleColumn(track = track)
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onToggleFavorite,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("favorite_button")
+                ) {
+                    Icon(
+                        imageVector = if (track.isFavorite) Icons.Rounded.Favorite else Icons.Outlined.FavoriteBorder,
+                        contentDescription = stringResource(R.string.action_favorite),
+                        tint = if (track.isFavorite) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier
+                            .size(26.dp)
+                            .let { if (favScale != 1f) it.scale(favScale) else it }
+                    )
+                }
+                IconButton(
+                    onClick = onOpenTrackMenu,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("now_playing_more_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.MoreVert,
+                        contentDescription = stringResource(R.string.action_more_options),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
         }
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(
-                onClick = onToggleFavorite,
-                modifier = Modifier
-                    .size(48.dp)
-                    .testTag("favorite_button")
-            ) {
-                Icon(
-                    imageVector = if (track.isFavorite) Icons.Rounded.Favorite else Icons.Outlined.FavoriteBorder,
-                    contentDescription = stringResource(R.string.action_favorite),
-                    tint = if (track.isFavorite) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    modifier = Modifier
-                        .size(26.dp)
-                        .let { if (favScale != 1f) it.scale(favScale) else it }
-                )
-            }
-            IconButton(
-                onClick = onOpenTrackMenu,
-                modifier = Modifier
-                    .size(44.dp)
-                    .testTag("now_playing_more_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.MoreVert,
-                    contentDescription = stringResource(R.string.action_more_options),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
+        if (audioSpec != null) {
+            Spacer(Modifier.height(10.dp))
+            ExpandableAudioQualityBadge(
+                spec = audioSpec,
+                expanded = audioSpecsExpanded,
+                onToggleExpanded = { audioSpecsExpanded = !audioSpecsExpanded },
+                backgroundBehind = MaterialTheme.colorScheme.background
+            )
         }
     }
 }
 
 @Composable
 private fun TrackTitleColumn(track: Track, modifier: Modifier = Modifier) {
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.Start
+    ) {
         Text(
             text = track.title,
-            style = MaterialTheme.typography.headlineLarge,
-            color = MaterialTheme.colorScheme.onBackground,
-            maxLines = 1,
+            style = MaterialTheme.typography.headlineSmall.copy(
+                fontSize = 23.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 28.sp,
+                letterSpacing = (-0.2).sp
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.testTag("now_playing_title")
         )
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = track.artist,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
-            )
-            Box(
-                modifier = Modifier
-                    .size(4.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.outline)
-            )
-            Text(
-                text = track.genreTag,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (track.isHiFi) {
-            Spacer(Modifier.height(2.dp))
-            HiFiQualityBadge(
-                label = track.hiFiLabel,
-                specDetail = track.hiFiSpecSummary,
-                backgroundBehind = MaterialTheme.colorScheme.background,
-                modifier = Modifier.testTag("now_playing_hifi_badge")
-            )
-        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = track.artist,
+            style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.testTag("now_playing_artist")
+        )
     }
 }
 
-/**
- * Strictly decoupled progress container:
- * - WavyExpressiveSlider reads progress in Draw phase via lambda (0 recompositions during playback!)
- * - ElapsedTimeText only recomposes when the displayed whole second changes (1x/sec max)
- * - DurationText only recomposes when track duration changes
- */
 @Composable
 private fun ScrubberSection(
     progressFlow: StateFlow<PlaybackProgress>,
@@ -924,6 +1160,14 @@ private fun DurationTimeText(
     )
 }
 
+/**
+ * Transport Controls Row with exact M3 Expressive shapes and uniform 10dp horizontal spacing:
+ * - Shuffle (44dp circle)
+ * - Previous (58x64dp asymmetric D-shape: 32dp outer / 16dp inner corners)
+ * - Play/Pause (76dp morphing full circle <-> 24dp squircle)
+ * - Next (58x64dp asymmetric D-shape: 16dp inner / 32dp outer corners)
+ * - Repeat (44dp circle)
+ */
 @Composable
 private fun ExpressiveTransportCluster(
     uiState: NowPlayingUiState,
@@ -939,14 +1183,17 @@ private fun ExpressiveTransportCluster(
     )
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("transport_controls_row"),
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically
     ) {
         FilledTonalIconButton(
             onClick = onToggleShuffle,
+            shape = CircleShape,
             modifier = Modifier
-                .size(48.dp)
+                .size(44.dp)
                 .testTag("shuffle_button"),
             colors = IconButtonDefaults.filledTonalIconButtonColors(
                 containerColor = if (uiState.shuffleEnabled) {
@@ -968,70 +1215,66 @@ private fun ExpressiveTransportCluster(
             )
         }
 
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            FilledTonalIconButton(
-                onClick = onPrevious,
-                shape = RoundedCornerShape(
-                    topStart = 28.dp,
-                    bottomStart = 28.dp,
-                    topEnd = 16.dp,
-                    bottomEnd = 16.dp
-                ),
-                modifier = Modifier
-                    .width(56.dp)
-                    .height(60.dp)
-                    .testTag("previous_button"),
-                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.SkipPrevious,
-                    contentDescription = stringResource(R.string.action_previous),
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-
-            MorphingPlayPauseButton(
-                isPlaying = uiState.isPlaying,
-                isPreparing = uiState.isPreparing,
-                onClick = onTogglePlayPause
+        FilledTonalIconButton(
+            onClick = onPrevious,
+            shape = RoundedCornerShape(
+                topStart = 32.dp,
+                bottomStart = 32.dp,
+                topEnd = 16.dp,
+                bottomEnd = 16.dp
+            ),
+            modifier = Modifier
+                .width(58.dp)
+                .height(64.dp)
+                .testTag("previous_button"),
+            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
             )
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.SkipPrevious,
+                contentDescription = stringResource(R.string.action_previous),
+                modifier = Modifier.size(28.dp)
+            )
+        }
 
-            FilledTonalIconButton(
-                onClick = onNext,
-                shape = RoundedCornerShape(
-                    topStart = 16.dp,
-                    bottomStart = 16.dp,
-                    topEnd = 28.dp,
-                    bottomEnd = 28.dp
-                ),
-                modifier = Modifier
-                    .width(56.dp)
-                    .height(60.dp)
-                    .testTag("next_button"),
-                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.SkipNext,
-                    contentDescription = stringResource(R.string.action_next),
-                    modifier = Modifier.size(28.dp)
-                )
-            }
+        MorphingPlayPauseButton(
+            isPlaying = uiState.isPlaying,
+            isPreparing = uiState.isPreparing,
+            onClick = onTogglePlayPause
+        )
+
+        FilledTonalIconButton(
+            onClick = onNext,
+            shape = RoundedCornerShape(
+                topStart = 16.dp,
+                bottomStart = 16.dp,
+                topEnd = 32.dp,
+                bottomEnd = 32.dp
+            ),
+            modifier = Modifier
+                .width(58.dp)
+                .height(64.dp)
+                .testTag("next_button"),
+            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.SkipNext,
+                contentDescription = stringResource(R.string.action_next),
+                modifier = Modifier.size(28.dp)
+            )
         }
 
         val repeatActive = uiState.repeatMode != RepeatMode.OFF
         FilledTonalIconButton(
             onClick = onCycleRepeat,
+            shape = CircleShape,
             modifier = Modifier
-                .size(48.dp)
+                .size(44.dp)
                 .testTag("repeat_button"),
             colors = IconButtonDefaults.filledTonalIconButtonColors(
                 containerColor = if (repeatActive) {
@@ -1059,20 +1302,20 @@ private fun ExpressiveTransportCluster(
     }
 }
 
+/**
+ * 3-Pill bottom utility strip: Lyrics, Timer, Match Mood.
+ * (Playback speed moved into Audio DSP sheet & track overflow menu.)
+ */
 @Composable
 private fun UtilityPillStrip(
-    playbackSpeed: Float,
     suggestedPalette: com.example.ui.theme.ExpressivePalette,
     activePalette: com.example.ui.theme.ExpressivePalette,
     sleepTimerFlow: StateFlow<SleepTimerState>,
-    onCycleSpeed: () -> Unit,
+    onOpenLyrics: () -> Unit,
     onOpenTimer: () -> Unit,
     onMatchMood: () -> Unit
 ) {
     val sleepTimer by sleepTimerFlow.collectAsStateWithLifecycle()
-    val speedLabel = remember(playbackSpeed) {
-        "${"%.2f".format(playbackSpeed).trimEnd('0').trimEnd('.')}×"
-    }
     val timerLabel = when {
         sleepTimer.option == SleepTimerOption.OFF -> "Timer"
         sleepTimer.option == SleepTimerOption.END_OF_TRACK -> "Track end"
@@ -1082,16 +1325,18 @@ private fun UtilityPillStrip(
     val moodMatches = activePalette == suggestedPalette
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("utility_pill_strip"),
         horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically
     ) {
         ExpressiveMiniActionPill(
-            icon = Icons.Rounded.Speed,
-            label = speedLabel,
-            active = playbackSpeed != 1.0f,
-            onClick = onCycleSpeed,
-            testTag = "speed_pill"
+            icon = Icons.Rounded.Lyrics,
+            label = stringResource(R.string.action_lyrics),
+            active = false,
+            onClick = onOpenLyrics,
+            testTag = "lyrics_pill"
         )
 
         ExpressiveMiniActionPill(

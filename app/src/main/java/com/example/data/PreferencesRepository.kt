@@ -2,6 +2,7 @@ package com.example.data
 
 import android.app.ActivityManager
 import android.content.Context
+import androidx.annotation.Keep
 import androidx.compose.runtime.Immutable
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
@@ -23,6 +24,13 @@ import kotlinx.coroutines.flow.map
 
 private val Context.cadenceDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "cadence_preferences"
+)
+
+@Keep
+@Immutable
+data class UserProfile(
+    val displayName: String = "",
+    val hasCompletedOnboarding: Boolean = false
 )
 
 @Immutable
@@ -112,7 +120,30 @@ class PreferencesRepository(private val context: Context) {
         val LEGACY_FAVORITES = stringSetPreferencesKey("favorite_track_ids")
         val LEGACY_IMPORTED_URIS = stringSetPreferencesKey("imported_track_uris")
         val LEGACY_MIGRATED = booleanPreferencesKey("room_migration_v1_done")
+        val USER_DISPLAY_NAME = stringPreferencesKey("user_display_name")
+        val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
     }
+
+    val userProfileFlow: Flow<UserProfile> = context.cadenceDataStore.data.map { prefs ->
+        val rawName = prefs[Keys.USER_DISPLAY_NAME]
+        val rawDone = prefs[Keys.ONBOARDING_COMPLETED]
+        val resolvedName = sanitizeDisplayName(
+            rawName ?: syncThemePrefs.getString(SYNC_KEY_USER_DISPLAY_NAME, "").orEmpty()
+        )
+        val resolvedDone = rawDone ?: syncThemePrefs.getBoolean(SYNC_KEY_ONBOARDING_COMPLETED, false)
+        if ((rawName != null && !syncThemePrefs.contains(SYNC_KEY_USER_DISPLAY_NAME)) ||
+            (rawDone != null && !syncThemePrefs.contains(SYNC_KEY_ONBOARDING_COMPLETED))
+        ) {
+            syncThemePrefs.edit()
+                .putString(SYNC_KEY_USER_DISPLAY_NAME, resolvedName)
+                .putBoolean(SYNC_KEY_ONBOARDING_COMPLETED, resolvedDone)
+                .apply()
+        }
+        UserProfile(
+            displayName = resolvedName,
+            hasCompletedOnboarding = resolvedDone
+        )
+    }.distinctUntilChanged()
 
     val themePreferencesFlow: Flow<ThemePreferences> = context.cadenceDataStore.data.map { prefs ->
         val manualPerf = prefs[Keys.PERFORMANCE_MODE]
@@ -198,6 +229,28 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun markLegacyMigrationDone() {
         context.cadenceDataStore.edit { it[Keys.LEGACY_MIGRATED] = true }
+    }
+
+    suspend fun setUserDisplayName(name: String) {
+        val cleaned = sanitizeDisplayName(name)
+        syncThemePrefs.edit().putString(SYNC_KEY_USER_DISPLAY_NAME, cleaned).apply()
+        context.cadenceDataStore.edit { it[Keys.USER_DISPLAY_NAME] = cleaned }
+    }
+
+    suspend fun completeOnboarding(displayName: String? = null) {
+        val cleaned = displayName?.let { sanitizeDisplayName(it) }
+        syncThemePrefs.edit().apply {
+            putBoolean(SYNC_KEY_ONBOARDING_COMPLETED, true)
+            if (cleaned != null) {
+                putString(SYNC_KEY_USER_DISPLAY_NAME, cleaned)
+            }
+        }.apply()
+        context.cadenceDataStore.edit { prefs ->
+            prefs[Keys.ONBOARDING_COMPLETED] = true
+            if (cleaned != null) {
+                prefs[Keys.USER_DISPLAY_NAME] = cleaned
+            }
+        }
     }
 
     suspend fun setPalette(palette: ExpressivePalette) {
@@ -286,10 +339,30 @@ class PreferencesRepository(private val context: Context) {
         internal const val SYNC_KEY_AMBIENT_AURA = "ambient_aura_enabled"
         internal const val SYNC_KEY_HAS_MANUAL_PERF = "has_manual_performance_mode"
         internal const val SYNC_KEY_PERFORMANCE_MODE = "performance_mode_enabled"
+        internal const val SYNC_KEY_USER_DISPLAY_NAME = "user_display_name"
+        internal const val SYNC_KEY_ONBOARDING_COMPLETED = "onboarding_completed"
+
+        internal fun sanitizeDisplayName(raw: String): String =
+            raw.trim().replace(Regex("\\s+"), " ").take(40)
 
         private fun isDeviceLowRam(context: Context): Boolean {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
             return am?.isLowRamDevice == true
+        }
+
+        /**
+         * Reads the mirrored user profile synchronously from SharedPreferences so
+         * cold start renders the personalized greeting and onboarding gate with zero frame-1 flicker.
+         */
+        fun readStartupUserProfileSnapshot(context: Context): UserProfile {
+            val prefs = context.applicationContext.getSharedPreferences(
+                SYNC_THEME_PREFS_NAME,
+                Context.MODE_PRIVATE
+            )
+            return UserProfile(
+                displayName = sanitizeDisplayName(prefs.getString(SYNC_KEY_USER_DISPLAY_NAME, "").orEmpty()),
+                hasCompletedOnboarding = prefs.getBoolean(SYNC_KEY_ONBOARDING_COMPLETED, false)
+            )
         }
 
         /**

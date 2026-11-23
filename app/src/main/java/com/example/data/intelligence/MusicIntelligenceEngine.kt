@@ -16,8 +16,11 @@ import kotlin.math.roundToInt
 data class MusicIntelligenceRequest(
     val seedTrackId: String? = null,
     val targetMood: String? = null,
+    val energyFilter: String? = null,
+    val discoveryBalance: Float = 0.5f,
     val maxTracks: Int = 12,
-    val timeOfDay: String? = currentTimeOfDayBucket()
+    val timeOfDay: String? = currentTimeOfDayBucket(),
+    val nowMs: Long = System.currentTimeMillis()
 )
 
 @Keep
@@ -119,8 +122,11 @@ class MusicIntelligenceEngine {
         val reqObj = JSONObject().apply {
             put("seedTrackId", request.seedTrackId ?: JSONObject.NULL)
             put("targetMood", request.targetMood ?: JSONObject.NULL)
+            put("energyFilter", request.energyFilter ?: JSONObject.NULL)
+            put("discoveryBalance", request.discoveryBalance.coerceIn(0f, 1f).toDouble())
             put("maxTracks", request.maxTracks.coerceIn(1, 50))
             put("timeOfDay", request.timeOfDay ?: JSONObject.NULL)
+            put("nowMs", request.nowMs)
         }
         root.put("request", reqObj)
 
@@ -144,8 +150,12 @@ class MusicIntelligenceEngine {
                     put("bpm", t.bpm)
                     put("durationMs", t.durationMs)
                     put("playCount", t.playCount)
+                    put("completedPlayCount", t.completedPlayCount)
+                    put("skipCount", t.skipCount)
                     put("lastPlayedAt", t.lastPlayedAt)
+                    put("dateAdded", t.dateAdded)
                     put("isFavorite", t.isFavorite)
+                    put("isHiFi", t.isHiFi)
                 }
             )
         }
@@ -215,19 +225,27 @@ class MusicIntelligenceEngine {
         skippedTrackIds: List<String> = emptyList(),
         nowMs: Long = System.currentTimeMillis(),
         shuffleNonce: Int = 0,
-        maxTracksPerSection: Int = 10
+        maxTracksPerSection: Int = 10,
+        tuneConfig: DiscoverTuneConfig = DiscoverTuneConfig()
     ): DiscoverFeed = DiscoverFeedGenerator(this).generate(
         libraryTracks = libraryTracks,
         currentTrackId = currentTrackId,
         skippedTrackIds = skippedTrackIds,
         nowMs = nowMs,
         shuffleNonce = shuffleNonce,
-        maxTracksPerSection = maxTracksPerSection
+        maxTracksPerSection = maxTracksPerSection,
+        tuneConfig = tuneConfig
     )
 
     internal fun effectiveBpmFor(track: Track): Int =
         if (track.bpm > 0) track.bpm.coerceIn(45, 200)
         else inferBpm(track.genre, track.title, track.album, track.durationMs)
+
+    internal fun energyLevelFor(bpm: Int): String = when {
+        bpm < 90 -> "low"
+        bpm <= 116 -> "medium"
+        else -> "high"
+    }
 
     internal fun tempoDescriptorFor(bpm: Int): String = classifyTempoDescriptor(bpm)
 
@@ -252,8 +270,13 @@ class MusicIntelligenceEngine {
 
         val seedTrackId = reqObj.optString("seedTrackId", "").takeIf { it.isNotBlank() && !reqObj.isNull("seedTrackId") }
         val rawTargetMood = reqObj.optString("targetMood", "").takeIf { it.isNotBlank() && !reqObj.isNull("targetMood") }
+        val energyFilter = reqObj.optString("energyFilter", "").trim().lowercase(Locale.ROOT)
+            .takeIf { it in setOf("low", "medium", "high") && !reqObj.isNull("energyFilter") }
+        val discoveryBalance = reqObj.optDouble("discoveryBalance", 0.5)
+            .takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.5
         val maxTracks = reqObj.optInt("maxTracks", 12).coerceIn(1, 50)
         val timeOfDay = reqObj.optString("timeOfDay", "").takeIf { it.isNotBlank() && !reqObj.isNull("timeOfDay") }
+        val nowMs = reqObj.optLong("nowMs", System.currentTimeMillis()).takeIf { it > 0L } ?: System.currentTimeMillis()
 
         val recentIds = historyObj.optJSONArray("recentTrackIds").toStringList()
         val skippedIds = historyObj.optJSONArray("skippedTrackIds").toStringList().toSet()
@@ -275,8 +298,12 @@ class MusicIntelligenceEngine {
             val rawBpm = obj.optInt("bpm", 0)
             val durationMs = obj.optLong("durationMs", 0L).coerceAtLeast(0L)
             val playCount = obj.optInt("playCount", 0).coerceAtLeast(0)
+            val completedPlayCount = obj.optInt("completedPlayCount", 0).coerceAtLeast(0)
+            val skipCount = obj.optInt("skipCount", 0).coerceAtLeast(0)
             val lastPlayedAt = obj.optLong("lastPlayedAt", 0L)
+            val dateAdded = obj.optLong("dateAdded", 0L)
             val isFavorite = obj.optBoolean("isFavorite", false) || id in favoriteIds
+            val isHiFi = obj.optBoolean("isHiFi", false)
 
             val inferred = rawBpm <= 0
             val effectiveBpm = if (inferred) inferBpm(genre, title, album, durationMs) else rawBpm.coerceIn(45, 200)
@@ -294,8 +321,12 @@ class MusicIntelligenceEngine {
                 bpmInferred = inferred,
                 tempoDescriptor = tempoDesc,
                 playCount = playCount,
+                completedPlayCount = completedPlayCount,
+                skipCount = skipCount,
                 lastPlayedAt = lastPlayedAt,
+                dateAdded = dateAdded,
                 isFavorite = isFavorite,
+                isHiFi = isHiFi,
                 moodScores = moodScores,
                 primaryMood = primaryMood
             )
@@ -307,14 +338,19 @@ class MusicIntelligenceEngine {
 
         val seedTrack = seedTrackId?.let { id -> candidates.firstOrNull { it.id == id } }
         val normalizedTargetMood = normalizeRequestedMood(rawTargetMood, timeOfDay, seedTrack)
-        val anchorBpm = seedTrack?.bpm ?: targetBpmForContext(normalizedTargetMood, timeOfDay)
+        val anchorBpm = seedTrack?.bpm ?: when (energyFilter) {
+            "low" -> 76
+            "medium" -> 102
+            "high" -> 128
+            else -> targetBpmForContext(normalizedTargetMood, timeOfDay)
+        }
         val maxPlayCount = candidates.maxOf { it.playCount }.coerceAtLeast(1)
         val recentTopThree = recentIds.take(3).toSet()
 
         val scored = candidates.map { c ->
             val isSeed = seedTrack != null && c.id == seedTrack.id
 
-            // 1. Mood & Context Alignment (35%)
+            // 1. Mood, Energy & Context Alignment (35%)
             val targetAffinity = c.moodScores[normalizedTargetMood] ?: 0.45
             val seedMoodSimilarity = if (seedTrack != null) {
                 cosineMoodSimilarity(c.moodScores, seedTrack.moodScores)
@@ -322,10 +358,21 @@ class MusicIntelligenceEngine {
                 targetAffinity
             }
             val timeAffinity = timeOfDayAlignment(c.bpm, c.primaryMood, timeOfDay)
-            val moodAlignment = (targetAffinity * 0.50 + seedMoodSimilarity * 0.30 + timeAffinity * 0.20)
+            val energyBonus = if (energyFilter != null) {
+                val trackEnergy = energyLevelFor(c.bpm)
+                when {
+                    trackEnergy == energyFilter -> 0.16
+                    (energyFilter == "low" && trackEnergy == "high") ||
+                        (energyFilter == "high" && trackEnergy == "low") -> -0.22
+                    else -> -0.04
+                }
+            } else {
+                0.0
+            }
+            val moodAlignment = (targetAffinity * 0.50 + seedMoodSimilarity * 0.30 + timeAffinity * 0.20 + energyBonus)
                 .coerceIn(0.0, 1.0)
 
-            // 2. Tempo & Flow Continuity (25%)
+            // 2. Tempo & Flow Continuity (22%)
             val bpmDelta = abs(c.bpm - anchorBpm)
             val tempoContinuity = when {
                 bpmDelta <= 8 -> 1.0
@@ -334,27 +381,56 @@ class MusicIntelligenceEngine {
                 else -> (0.42 - ((bpmDelta - 30) * 0.008)).coerceAtLeast(0.15)
             }
 
-            // 3. User Affinity (25%)
+            // 3. Completion Affinity & Familiar vs Fresh Balance (26%)
             val playNorm = (c.playCount.toDouble() / maxPlayCount.toDouble()).coerceIn(0.0, 1.0)
-            val favBonus = if (c.isFavorite) 0.20 else 0.0
-            val genreMatch = if (c.genre.lowercase(Locale.ROOT) in topGenres) 0.15 else 0.0
-            val affinity = (0.45 + playNorm * 0.35 + favBonus + genreMatch).coerceIn(0.0, 1.0)
+            val completionRatio = (c.completedPlayCount.toDouble() / (c.playCount + 1).toDouble()).coerceIn(0.0, 1.0)
+            val skipRatio = (c.skipCount.toDouble() / (c.playCount + c.skipCount + 2).toDouble()).coerceIn(0.0, 1.0)
+            val favBonus = if (c.isFavorite) 0.22 else 0.0
+            val genreMatch = if (c.genre.lowercase(Locale.ROOT) in topGenres) 0.14 else 0.0
+            val hiFiMicroBoost = if (c.isHiFi) 0.03 else 0.0
 
-            // 4. Anti-Fatigue & Diversity (15%)
-            var freshness = 0.85
-            if (c.id in skippedIds && !isSeed) {
-                freshness -= 0.35
+            val familiarityScore = (0.35 + playNorm * 0.28 + completionRatio * 0.25 + favBonus + genreMatch + hiFiMicroBoost - skipRatio * 0.38)
+                .coerceIn(0.0, 1.0)
+
+            val ageMs = if (c.lastPlayedAt > 0L) (nowMs - c.lastPlayedAt).coerceAtLeast(0L) else Long.MAX_VALUE
+            val unplayedOrStaleBonus = when {
+                c.playCount == 0 -> 0.42
+                ageMs >= SEVEN_DAYS_MS -> 0.34
+                ageMs >= ONE_DAY_MS -> 0.16
+                else -> 0.0
+            }
+            val freshDiscoveryScore = (0.38 + unplayedOrStaleBonus + completionRatio * 0.16 + (if (c.isFavorite && ageMs >= SEVEN_DAYS_MS) 0.14 else 0.0) + hiFiMicroBoost - skipRatio * 0.40)
+                .coerceIn(0.0, 1.0)
+
+            val affinity = ((1.0 - discoveryBalance) * familiarityScore + discoveryBalance * freshDiscoveryScore)
+                .coerceIn(0.0, 1.0)
+
+            // 4. Recency Decay, Anti-Repetition & Skip Penalty (17%)
+            var freshness = 0.86
+            val playedWithinSixHours = c.lastPlayedAt > 0L && ageMs in 0L..SIX_HOURS_MS
+            if (playedWithinSixHours && !isSeed) {
+                val hoursAgo = ageMs.toDouble() / ONE_HOUR_MS.toDouble()
+                val recencyDecay = (1.0 - (hoursAgo / 6.0)).coerceIn(0.0, 1.0)
+                freshness -= 0.34 * recencyDecay
+            }
+            if ((c.id in skippedIds || c.skipCount > 0) && !isSeed) {
+                val sessionSkipPenalty = if (c.id in skippedIds) 0.32 else 0.0
+                val historicalSkipPenalty = skipRatio * 0.36
+                freshness -= (sessionSkipPenalty + historicalSkipPenalty).coerceAtMost(0.60)
             }
             if (c.id in recentTopThree && !isSeed) {
-                freshness -= 0.18
+                freshness -= 0.14
             }
-            freshness = freshness.coerceIn(0.10, 1.0)
+            if (ageMs >= SEVEN_DAYS_MS && (c.completedPlayCount > 0 || c.isFavorite) && !isSeed) {
+                freshness += 0.12
+            }
+            freshness = freshness.coerceIn(0.08, 1.0)
 
             var composite = (
                 moodAlignment * 0.35 +
-                    tempoContinuity * 0.25 +
-                    affinity * 0.25 +
-                    freshness * 0.15
+                    tempoContinuity * 0.22 +
+                    affinity * 0.26 +
+                    freshness * 0.17
                 ).coerceIn(0.0, 1.0)
 
             if (isSeed) {
@@ -366,8 +442,8 @@ class MusicIntelligenceEngine {
                 isSeed = isSeed,
                 bpmDelta = bpmDelta,
                 targetMood = normalizedTargetMood,
-                wasDampenedForRecency = c.id in recentTopThree && !isSeed,
-                wasSkipped = c.id in skippedIds && !isSeed
+                wasDampenedForRecency = (c.id in recentTopThree || playedWithinSixHours) && !isSeed,
+                wasSkipped = (c.id in skippedIds || c.skipCount >= 2) && !isSeed
             )
 
             ScoredCandidate(
@@ -375,7 +451,7 @@ class MusicIntelligenceEngine {
                 score = round2(composite),
                 reason = reason
             )
-        }.sortedByDescending { it.score }
+        }.sortedWith(compareByDescending<ScoredCandidate> { it.score }.thenBy { it.candidate.id })
 
         // Select top maxTracks with artist-spacing diversity so consecutive tracks avoid repeating artist
         val selected = selectWithArtistSpacing(scored, maxTracks)
@@ -563,8 +639,12 @@ class MusicIntelligenceEngine {
         val bpmInferred: Boolean,
         val tempoDescriptor: String,
         val playCount: Int,
+        val completedPlayCount: Int,
+        val skipCount: Int,
         val lastPlayedAt: Long,
+        val dateAdded: Long,
         val isFavorite: Boolean,
+        val isHiFi: Boolean,
         val moodScores: Map<String, Double>,
         val primaryMood: String
     )
@@ -937,6 +1017,10 @@ class MusicIntelligenceEngine {
 
     companion object {
         const val SCHEMA_VERSION = "1.0"
+        private const val ONE_HOUR_MS = 60L * 60L * 1000L
+        private const val SIX_HOURS_MS = 6L * ONE_HOUR_MS
+        private const val ONE_DAY_MS = 24L * ONE_HOUR_MS
+        private const val SEVEN_DAYS_MS = 7L * ONE_DAY_MS
 
         val CANONICAL_MOODS = listOf(
             "calm", "warm", "focused", "melancholic", "nocturnal",

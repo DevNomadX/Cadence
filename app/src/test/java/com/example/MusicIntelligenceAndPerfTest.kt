@@ -7,9 +7,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,13 +27,21 @@ import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.performTextClearance
+import androidx.compose.ui.test.performTextInput
+import com.example.data.AudioSettings
+import com.example.data.LibraryCategory
 import com.example.data.PreferencesRepository
 import com.example.data.StableList
 import com.example.data.ThemePreferences
@@ -37,23 +49,41 @@ import com.example.data.Track
 import com.example.data.db.CadenceDatabase
 import com.example.data.db.TrackEntity
 import com.example.data.intelligence.DiscoverCategory
+import com.example.data.intelligence.DiscoverTuneConfig
 import com.example.data.intelligence.ListeningHistoryInput
 import com.example.data.intelligence.MusicIntelligenceEngine
 import com.example.data.intelligence.MusicIntelligenceRequest
 import com.example.data.library.ScanState
 import com.example.data.toStableList
+import android.media.AudioDeviceInfo
+import com.example.data.lyrics.OfflineLyricsLoader
+import com.example.playback.AudioOutputMonitor
+import com.example.playback.AudioOutputRouteType
 import com.example.playback.PlaybackProgress
+import coil.size.Size as CoilSize
+import coil.transition.Transition
 import com.example.ui.CadenceTab
+import com.example.ui.ExpandableNowPlayingOverlay
 import com.example.ui.FloatingBottomDockOverlay
 import com.example.ui.FloatingExpressiveNavDock
+import com.example.ui.FloatingNavBarState
+import com.example.ui.PersistentTabHost
+import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
+import com.example.ui.components.buildArtworkImageRequest
 import com.example.ui.player.DiscoverUiState
+import com.example.ui.player.HomeUiState
 import com.example.ui.player.LibraryUiState
 import com.example.ui.player.NowPlayingUiState
 import com.example.ui.player.SleepTimerState
 import com.example.ui.player.SmartPlaylistUiState
 import com.example.ui.screens.DiscoverScreen
+import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.NowPlayingScreen
+import com.example.ui.screens.OnboardingScreen
+import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.formatHomeGreeting
+import kotlinx.coroutines.flow.first
 import com.example.ui.theme.AppearanceMode
 import com.example.ui.theme.CadenceTheme
 import com.example.ui.theme.ExpressiveArtworkShape
@@ -416,8 +446,8 @@ class MusicIntelligenceAndPerfTest {
     }
 
     @Test
-    fun `FloatingExpressiveNavDock expands only active tab and collapses inactive tabs into icons`() {
-        var activeTab by mutableStateOf(CadenceTab.NOW_PLAYING)
+    fun `FloatingExpressiveNavDock expands only active tab among Home Library Discover and collapses inactive tabs into icons`() {
+        var activeTab by mutableStateOf(CadenceTab.HOME)
 
         composeRule.setContent {
             CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
@@ -429,25 +459,44 @@ class MusicIntelligenceAndPerfTest {
         }
 
         composeRule.waitForIdle()
-        // Only Now Playing label visible initially
-        composeRule.onNodeWithTag("nav_label_now_playing", useUnmergedTree = true).assertIsDisplayed()
+        // Only Home label visible initially; Home pill is expanded while inactive tabs stay 50dp circles
+        composeRule.onNodeWithTag("nav_label_home", useUnmergedTree = true).assertIsDisplayed()
         composeRule.onNodeWithTag("nav_label_library", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithTag("nav_label_discover", useUnmergedTree = true).assertDoesNotExist()
+        val homeActiveW = composeRule.onNodeWithTag("nav_home").getUnclippedBoundsInRoot().let { it.right - it.left }
+        val libInactiveW = composeRule.onNodeWithTag("nav_library").getUnclippedBoundsInRoot().let { it.right - it.left }
+        assertTrue("Active Home pill must expand wider than inactive circular tab ($homeActiveW vs $libInactiveW)", homeActiveW > libInactiveW + 20.dp)
+        assertTrue("Inactive circular tab width must stay ~50dp, was $libInactiveW", kotlin.math.abs((libInactiveW - 50.dp).value) <= 2f)
 
-        // Tap Discover -> Discover expands with label, Now Playing collapses
+        // Tap Discover -> Discover expands with label, Home collapses cleanly to 50dp circle
         composeRule.onNodeWithTag("nav_discover").performClick()
         composeRule.waitForIdle()
         assertEquals(CadenceTab.DISCOVER, activeTab)
         composeRule.onNodeWithTag("nav_label_discover", useUnmergedTree = true).assertIsDisplayed()
-        composeRule.onNodeWithTag("nav_label_now_playing", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithTag("nav_label_home", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithTag("nav_label_library", useUnmergedTree = true).assertDoesNotExist()
+        val homeCollapsedW = composeRule.onNodeWithTag("nav_home").getUnclippedBoundsInRoot().let { it.right - it.left }
+        val discoverActiveW = composeRule.onNodeWithTag("nav_discover").getUnclippedBoundsInRoot().let { it.right - it.left }
+        assertTrue("Collapsed Home tab must return to ~50dp circle, was $homeCollapsedW", kotlin.math.abs((homeCollapsedW - 50.dp).value) <= 2f)
+        assertTrue("Expanded Discover tab must be wider than collapsed Home tab", discoverActiveW > homeCollapsedW + 20.dp)
 
-        // Tap Library -> Library expands with label, Discover collapses
+        // Tap Library -> Library expands with label, Discover collapses cleanly
         composeRule.onNodeWithTag("nav_library").performClick()
         composeRule.waitForIdle()
         assertEquals(CadenceTab.LIBRARY, activeTab)
         composeRule.onNodeWithTag("nav_label_library", useUnmergedTree = true).assertIsDisplayed()
         composeRule.onNodeWithTag("nav_label_discover", useUnmergedTree = true).assertDoesNotExist()
+
+        // Tap Home again -> smooth round-trip back to Home
+        composeRule.onNodeWithTag("nav_home").performClick()
+        composeRule.waitForIdle()
+        assertEquals(CadenceTab.HOME, activeTab)
+        composeRule.onNodeWithTag("nav_label_home", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("nav_label_library", useUnmergedTree = true).assertDoesNotExist()
+
+        // Route restoration defaults to Home
+        assertEquals(CadenceTab.HOME, CadenceTab.fromRoute("home"))
+        assertEquals(CadenceTab.HOME, CadenceTab.fromRoute("unknown_route"))
     }
 
     @Test
@@ -682,7 +731,7 @@ class MusicIntelligenceAndPerfTest {
             )
         }
 
-        var activeTab by mutableStateOf(CadenceTab.NOW_PLAYING)
+        var activeTab by mutableStateOf(CadenceTab.HOME)
         var usePopulatedLibrary by mutableStateOf(false)
         var refreshNonce by mutableStateOf(0)
 
@@ -882,7 +931,7 @@ class MusicIntelligenceAndPerfTest {
     }
 
     @Test
-    fun `NowPlayingScreen fits header artwork transport and utility pills above floating nav dock without scrolling`() {
+    fun `NowPlayingScreen fits drag handle 2-group 42dp glass header artwork 10dp transport row and 3 utility pills without scrolling`() {
         val hiFiTrack = sampleLibraryTracks.first().copy(
             id = "hifi_now_playing",
             title = "Velvet Nocturne (Master)",
@@ -896,8 +945,9 @@ class MusicIntelligenceAndPerfTest {
         )
         val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 64_000L, durationMs = 248_000L))
         val sleepTimerFlow = MutableStateFlow(SleepTimerState())
-        var speedClicked = false
+        var lyricsClicked = false
         var moodClicked = false
+        var collapsed = false
 
         composeRule.setContent {
             CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
@@ -926,33 +976,9 @@ class MusicIntelligenceAndPerfTest {
                         onToggleShuffle = {},
                         onCycleRepeat = {},
                         onToggleFavorite = {},
-                        onCycleSpeed = { speedClicked = true },
                         onMatchMood = { moodClicked = true },
-                        onOpenSettings = {},
-                        onAddFolder = {},
-                        onScanDevice = {},
-                        onSelectQueueIndex = {},
-                        onMoveQueueItem = { _, _ -> },
-                        onRemoveQueueItem = {},
-                        onClearQueue = {},
-                        onSaveQueueAsPlaylist = {},
-                        onAddCurrentToPlaylist = {},
-                        onCreatePlaylistWithCurrent = {},
-                        onPlayNextCurrent = {},
-                        onAddCurrentToQueue = {},
-                        onSelectSleepTimer = {}
-                    )
-
-                    FloatingBottomDockOverlay(
-                        activeTab = CadenceTab.NOW_PLAYING,
-                        currentTrack = hiFiTrack,
-                        isPlaying = false,
-                        artworkShape = ExpressiveArtworkShape.SCALLOP,
-                        onSelectTab = {},
-                        onExpandMiniPlayer = {},
-                        onTogglePlayPause = {},
-                        onNext = {},
-                        modifier = Modifier.align(Alignment.BottomCenter)
+                        onCollapse = { collapsed = true },
+                        onRequestLyrics = { lyricsClicked = true }
                     )
                 }
             }
@@ -963,10 +989,12 @@ class MusicIntelligenceAndPerfTest {
         // Standard portrait layout must NOT require scrolling
         composeRule.onNodeWithTag("now_playing_portrait_container").assert(!hasScrollAction())
 
-        // Every major control from top bar down to utility pills must be simultaneously visible
+        // Every major control from drag handle + 2-group top bar down to 3-pill utility row must be simultaneously visible
         val expectedVisibleTags = listOf(
-            "now_playing_status_pill",
-            "settings_button",
+            "now_playing_drag_handle",
+            "now_playing_top_header",
+            "collapse_now_playing_button",
+            "audio_output_button",
             "queue_button",
             "hero_album_artwork",
             "now_playing_title",
@@ -977,39 +1005,1013 @@ class MusicIntelligenceAndPerfTest {
             "play_pause_button",
             "next_button",
             "repeat_button",
-            "speed_pill",
+            "lyrics_pill",
             "timer_pill",
-            "match_mood_pill",
-            "floating_nav_dock"
+            "match_mood_pill"
         )
         expectedVisibleTags.forEach { tag ->
             composeRule.onNodeWithTag(tag).assertIsDisplayed()
         }
 
+        // Verify unified left pill contains status text and matches equal 42dp height with both right 42dp circles
+        composeRule.onNodeWithTag("now_playing_status_pill", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("PAUSED", useUnmergedTree = true).assertIsDisplayed()
+
+        val dragHandleBounds = composeRule.onNodeWithTag("now_playing_drag_handle").getUnclippedBoundsInRoot()
+        val unifiedPillBounds = composeRule.onNodeWithTag("collapse_now_playing_button").getUnclippedBoundsInRoot()
+        val outputBounds = composeRule.onNodeWithTag("audio_output_button").getUnclippedBoundsInRoot()
+        val queueBounds = composeRule.onNodeWithTag("queue_button").getUnclippedBoundsInRoot()
+
+        assertTrue("Drag handle must sit above 2-group header", dragHandleBounds.bottom <= unifiedPillBounds.top + 1.dp)
+        val pillH = unifiedPillBounds.bottom - unifiedPillBounds.top
+        val outputH = outputBounds.bottom - outputBounds.top
+        val outputW = outputBounds.right - outputBounds.left
+        val queueH = queueBounds.bottom - queueBounds.top
+        val queueW = queueBounds.right - queueBounds.left
+
+        assertTrue("Unified left pill height must be 42dp, was $pillH", kotlin.math.abs((pillH - 42.dp).value) <= 1f)
+        assertTrue("Audio output circle must be 42dp x 42dp, was $outputW x $outputH", kotlin.math.abs((outputH - 42.dp).value) <= 1f && kotlin.math.abs((outputW - 42.dp).value) <= 1f)
+        assertTrue("Queue circle must be 42dp x 42dp, was $queueW x $queueH", kotlin.math.abs((queueH - 42.dp).value) <= 1f && kotlin.math.abs((queueW - 42.dp).value) <= 1f)
+        assertTrue("Right action circles must be separated by 10dp", kotlin.math.abs(((queueBounds.left - outputBounds.right) - 10.dp).value) <= 1f)
+        assertTrue("Left unified pill must not overlap Audio output circle", unifiedPillBounds.right < outputBounds.left)
+
         // Artwork must adapt cleanly and stay within 260dp cap
         val artBounds = composeRule.onNodeWithTag("hero_album_artwork").getUnclippedBoundsInRoot()
         val artHeight = artBounds.bottom - artBounds.top
         val artWidth = artBounds.right - artBounds.left
-        assertTrue("Hero artwork must be visible (> 100dp), was $artHeight", artHeight >= 100.dp)
+        assertTrue("Hero artwork must be visible (> 120dp), was $artHeight", artHeight >= 120.dp)
         assertTrue("Hero artwork must stay capped <= 260dp, was $artHeight", artHeight <= 261.dp)
         assertTrue("Hero artwork must remain square ($artWidth x $artHeight)", kotlin.math.abs((artWidth - artHeight).value) <= 2f)
 
-        // Utility pills (1x, Timer, Match Mood) must sit at least 12dp above the floating nav dock
-        val dockBounds = composeRule.onNodeWithTag("floating_nav_dock").getUnclippedBoundsInRoot()
-        listOf("speed_pill", "timer_pill", "match_mood_pill").forEach { tag ->
-            val pillBounds = composeRule.onNodeWithTag(tag).getUnclippedBoundsInRoot()
-            val gap = dockBounds.top - pillBounds.bottom
-            assertTrue(
-                "$tag bottom (${pillBounds.bottom}) must sit at least 12.dp above floating_nav_dock top (${dockBounds.top}), actual gap: $gap",
-                gap >= 12.dp
-            )
+        // Verify uniform ~10dp gaps between all 5 transport buttons (no touching/cramping)
+        val shuffleBounds = composeRule.onNodeWithTag("shuffle_button").getUnclippedBoundsInRoot()
+        val prevBounds = composeRule.onNodeWithTag("previous_button").getUnclippedBoundsInRoot()
+        val playBounds = composeRule.onNodeWithTag("play_pause_button").getUnclippedBoundsInRoot()
+        val nextBounds = composeRule.onNodeWithTag("next_button").getUnclippedBoundsInRoot()
+        val repeatBounds = composeRule.onNodeWithTag("repeat_button").getUnclippedBoundsInRoot()
+
+        assertTrue("Shuffle->Prev gap must be >= 9dp", prevBounds.left - shuffleBounds.right >= 9.dp)
+        assertTrue("Prev->Play gap must be >= 9dp", playBounds.left - prevBounds.right >= 9.dp)
+        assertTrue("Play->Next gap must be >= 9dp", nextBounds.left - playBounds.right >= 9.dp)
+        assertTrue("Next->Repeat gap must be >= 9dp", repeatBounds.left - nextBounds.right >= 9.dp)
+
+        // Verify utility pills & unified collapse pill respond directly without scrolling
+        composeRule.onNodeWithTag("collapse_now_playing_button").performClick()
+        composeRule.onNodeWithTag("match_mood_pill").performClick()
+        composeRule.onNodeWithTag("lyrics_pill").performClick()
+        composeRule.waitForIdle()
+        assertTrue(collapsed)
+        assertTrue(moodClicked)
+        assertTrue(lyricsClicked)
+    }
+
+    @Test
+    fun `NowPlayingScreen long title aligns cleanly without colliding with icons and expanding audio badge keeps utility pills visible`() {
+        val longTitleHiResTrack = sampleLibraryTracks.first().copy(
+            id = "long_title_hires",
+            title = "Midnight Reverie Across the Quiet Coastal Harbor (Extended Analog Studio Master Edition)",
+            artist = "The Velvet Horizon Orchestra",
+            genre = "Ambient",
+            durationMs = 312_000L,
+            mimeType = "audio/flac",
+            codec = "FLAC",
+            bitrateKbps = 1411,
+            sampleRateHz = 96_000,
+            bitDepth = 24
+        )
+        val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 45_000L, durationMs = 312_000L))
+        val sleepTimerFlow = MutableStateFlow(SleepTimerState())
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+                Box(modifier = Modifier.size(width = 360.dp, height = 640.dp)) {
+                    NowPlayingScreen(
+                        uiState = NowPlayingUiState(
+                            currentTrack = longTitleHiResTrack,
+                            isPlaying = true,
+                            isInitialLibraryLoaded = true,
+                            queueTracks = listOf(longTitleHiResTrack).toStableList(),
+                            currentQueueIndex = 0
+                        ),
+                        themePrefs = ThemePreferences(
+                            palette = ExpressivePalette.TERRACOTTA,
+                            appearanceMode = AppearanceMode.DARK
+                        ),
+                        progressFlow = progressFlow,
+                        sleepTimerFlow = sleepTimerFlow,
+                        playlists = StableList(),
+                        onTogglePlayPause = {},
+                        onNext = {},
+                        onPrevious = {},
+                        onSeek = {},
+                        onToggleShuffle = {},
+                        onCycleRepeat = {},
+                        onToggleFavorite = {},
+                        onMatchMood = {}
+                    )
+                }
+            }
         }
 
-        // Confirm utility pills are directly clickable with zero scrolling
-        composeRule.onNodeWithTag("speed_pill").performClick()
-        composeRule.onNodeWithTag("match_mood_pill").performClick()
         composeRule.waitForIdle()
-        assertTrue(speedClicked)
-        assertTrue(moodClicked)
+
+        // 3-tier hierarchy alignment: Title, Artist, and Audio Quality Badge share leading start edge
+        val titleBounds = composeRule.onNodeWithTag("now_playing_title").getUnclippedBoundsInRoot()
+        val artistBounds = composeRule.onNodeWithTag("now_playing_artist").getUnclippedBoundsInRoot()
+        val badgeBounds = composeRule.onNodeWithTag("now_playing_hifi_badge").getUnclippedBoundsInRoot()
+        val favBounds = composeRule.onNodeWithTag("favorite_button").getUnclippedBoundsInRoot()
+        val moreBounds = composeRule.onNodeWithTag("now_playing_more_button").getUnclippedBoundsInRoot()
+
+        assertTrue("Long title must never collide with Favorite icon (${titleBounds.right} vs ${favBounds.left})", titleBounds.right <= favBounds.left)
+        assertTrue("Long title must never collide with More icon (${titleBounds.right} vs ${moreBounds.left})", titleBounds.right <= moreBounds.left)
+        assertTrue("Artist must sit below Title", artistBounds.top >= titleBounds.bottom + 3.dp)
+        assertTrue("Audio badge must sit ~10dp below Artist", badgeBounds.top >= artistBounds.bottom + 8.dp)
+        assertTrue("Title and Artist must share leading start edge", kotlin.math.abs((titleBounds.left - artistBounds.left).value) <= 1.5f)
+        assertTrue("Title and Audio Badge must share leading start edge", kotlin.math.abs((titleBounds.left - badgeBounds.left).value) <= 1.5f)
+
+        // Tap audio quality badge -> expands real extracted metadata specs
+        composeRule.onNodeWithTag("now_playing_hifi_badge")
+            .assertTextContains("HI-RES • 24-BIT")
+            .performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("now_playing_audio_specs_panel").assertIsDisplayed()
+        composeRule.onNodeWithTag("audio_spec_format").assertTextContains("FLAC")
+        composeRule.onNodeWithTag("audio_spec_bit_depth").assertTextContains("24-bit")
+        composeRule.onNodeWithTag("audio_spec_sample_rate").assertTextContains("96 kHz")
+        composeRule.onNodeWithTag("audio_spec_bitrate").assertTextContains("1,411 kbps")
+
+        // Even with 2-line long title + expanded audio specs on 360x640 viewport, zero scrolling & all utility pills stay visible!
+        composeRule.onNodeWithTag("now_playing_portrait_container").assert(!hasScrollAction())
+        composeRule.onNodeWithTag("playback_scrubber").assertIsDisplayed()
+        composeRule.onNodeWithTag("play_pause_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("lyrics_pill").assertIsDisplayed()
+        composeRule.onNodeWithTag("timer_pill").assertIsDisplayed()
+        composeRule.onNodeWithTag("match_mood_pill").assertIsDisplayed()
+
+        // Tap again -> collapses smoothly
+        composeRule.onNodeWithTag("now_playing_hifi_badge").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("now_playing_audio_specs_panel").assertDoesNotExist()
+    }
+
+    @Test
+    fun `MiniPlayer expands into full-screen NowPlaying sheet unmounts when minimized and collapses via button and swipe down`() {
+        val track = sampleLibraryTracks.first()
+        val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 15_000L, durationMs = track.durationMs))
+        val sleepTimerFlow = MutableStateFlow(SleepTimerState())
+
+        var activeTab by mutableStateOf(CadenceTab.HOME)
+        var isExpanded by mutableStateOf(false)
+        var isPlaying by mutableStateOf(false)
+        var nextClicks = 0
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                Box(modifier = Modifier.size(width = 390.dp, height = 780.dp)) {
+                    when (activeTab) {
+                        CadenceTab.HOME -> HomeScreen(
+                            uiState = HomeUiState(
+                                allTracks = sampleLibraryTracks.toStableList(),
+                                recentlyPlayed = sampleLibraryTracks.toStableList(),
+                                recentlyAdded = sampleLibraryTracks.toStableList(),
+                                isInitialLibraryLoaded = true
+                            ),
+                            currentTrack = track,
+                            isPlaying = isPlaying,
+                            artworkShape = ExpressiveArtworkShape.SCALLOP,
+                            onExpandNowPlaying = { isExpanded = true },
+                            onTogglePlayPause = { isPlaying = !isPlaying },
+                            onSelectTrack = { _, _ -> },
+                            onPlayTracks = { _, _ -> },
+                            onToggleFavorite = {},
+                            onOpenSettings = {},
+                            onAddFolder = {},
+                            onScanDevice = {}
+                        )
+
+                        else -> androidx.compose.material3.Text(
+                            text = "Tab ${activeTab.route}",
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+
+                    FloatingBottomDockOverlay(
+                        activeTab = activeTab,
+                        currentTrack = track,
+                        isPlaying = isPlaying,
+                        artworkShape = ExpressiveArtworkShape.SCALLOP,
+                        onSelectTab = { activeTab = it },
+                        onExpandMiniPlayer = { isExpanded = true },
+                        onTogglePlayPause = { isPlaying = !isPlaying },
+                        onNext = { nextClicks++ },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+
+                    ExpandableNowPlayingOverlay(
+                        isExpanded = isExpanded,
+                        onCollapse = { isExpanded = false },
+                        ambientAuraEnabled = false,
+                        isPlaying = isPlaying
+                    ) { dismissDragModifier ->
+                        NowPlayingScreen(
+                            uiState = NowPlayingUiState(
+                                currentTrack = track,
+                                queueTracks = sampleLibraryTracks.toStableList(),
+                                isPlaying = isPlaying,
+                                isInitialLibraryLoaded = true
+                            ),
+                            themePrefs = ThemePreferences(
+                                palette = ExpressivePalette.TERRACOTTA,
+                                appearanceMode = AppearanceMode.LIGHT
+                            ),
+                            progressFlow = progressFlow,
+                            sleepTimerFlow = sleepTimerFlow,
+                            playlists = StableList(),
+                            onTogglePlayPause = { isPlaying = !isPlaying },
+                            onNext = { nextClicks++ },
+                            onPrevious = {},
+                            onSeek = {},
+                            onToggleShuffle = {},
+                            onCycleRepeat = {},
+                            onToggleFavorite = {},
+                            onMatchMood = {},
+                            onCollapse = { isExpanded = false },
+                            dismissDragModifier = dismissDragModifier
+                        )
+                    }
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+
+        // 1. Home is default, Mini-Player is docked, and full-screen Now Playing is NOT composed when minimized
+        composeRule.onNodeWithTag("home_header_title").assertIsDisplayed()
+        composeRule.onNodeWithTag("mini_player_pill").assertIsDisplayed()
+        composeRule.onNodeWithTag("now_playing_sheet_overlay").assertDoesNotExist()
+
+        // 2. Mini-Player Play/Pause & Next work independently without expanding
+        composeRule.onNodeWithTag("mini_play_pause_button").performClick()
+        composeRule.onNodeWithTag("mini_next_button").performClick()
+        composeRule.waitForIdle()
+        assertTrue(isPlaying)
+        assertEquals(1, nextClicks)
+        assertFalse(isExpanded)
+
+        // 3. Switch to Library -> Mini-Player remains docked consistently
+        composeRule.onNodeWithTag("nav_library").performClick()
+        composeRule.waitForIdle()
+        assertEquals(CadenceTab.LIBRARY, activeTab)
+        composeRule.onNodeWithTag("mini_player_pill").assertIsDisplayed()
+
+        // 4. Tap Mini-Player body -> expands smoothly into full-screen Now Playing sheet
+        composeRule.onNodeWithTag("mini_player_pill").performClick()
+        composeRule.waitForIdle()
+        assertTrue(isExpanded)
+        composeRule.onNodeWithTag("now_playing_sheet_overlay").assertIsDisplayed()
+        composeRule.onNodeWithTag("hero_album_artwork").assertIsDisplayed()
+
+        // 5. Tap top-left collapse button -> minimizes back to Library & unmounts full-screen sheet
+        composeRule.onNodeWithTag("collapse_now_playing_button").performClick()
+        composeRule.waitForIdle()
+        assertFalse(isExpanded)
+        assertEquals(CadenceTab.LIBRARY, activeTab)
+        composeRule.onNodeWithTag("now_playing_sheet_overlay").assertDoesNotExist()
+
+        // 6. Re-expand and swipe down on top drag handle -> smoothly dismisses back to Library
+        composeRule.onNodeWithTag("mini_player_pill").performClick()
+        composeRule.waitForIdle()
+        assertTrue(isExpanded)
+        composeRule.onNodeWithTag("now_playing_drag_handle").performTouchInput {
+            swipeDown(startY = centerY, endY = centerY + 180.dp.toPx(), durationMillis = 150)
+        }
+        composeRule.waitForIdle()
+        assertFalse(isExpanded)
+        assertEquals(CadenceTab.LIBRARY, activeTab)
+        composeRule.onNodeWithTag("now_playing_sheet_overlay").assertDoesNotExist()
+
+        // 7. Re-expand and swipe down on artwork area -> smoothly dismisses back to Library
+        composeRule.onNodeWithTag("mini_player_pill").performClick()
+        composeRule.waitForIdle()
+        assertTrue(isExpanded)
+        composeRule.onNodeWithTag("hero_album_artwork").performTouchInput {
+            swipeDown(startY = top + 10f, endY = bottom + 220f, durationMillis = 150)
+        }
+        composeRule.waitForIdle()
+        assertFalse(isExpanded)
+        assertEquals(CadenceTab.LIBRARY, activeTab)
+        composeRule.onNodeWithTag("now_playing_sheet_overlay").assertDoesNotExist()
+    }
+
+    @Test
+    fun `OfflineLyricsLoader parses synced LRC and AudioOutputMonitor maps audio routes cleanly`() {
+        val rawLrc = """
+            [ti:Velvet Nocturne]
+            [ar:Miro & Sol]
+            [00:12.50]Soft amber lights across the bay
+            [00:24.00][01:02.25]Drifting slow into the night
+        """.trimIndent()
+        val parsed = OfflineLyricsLoader.parseLyricsText(rawLrc, trackId = "t1", sourceLabel = "Sidecar .lrc")
+        assertTrue(parsed.isSynced)
+        assertEquals(3, parsed.lines.size)
+        assertEquals(12_500L, parsed.lines[0].timestampMs)
+        assertEquals("Soft amber lights across the bay", parsed.lines[0].text)
+        assertEquals(24_000L, parsed.lines[1].timestampMs)
+        assertEquals(62_250L, parsed.lines[2].timestampMs)
+
+        // AudioOutputMonitor maps Android output device types and gracefully defaults to Phone Speaker
+        assertEquals(AudioOutputRouteType.BLUETOOTH, AudioOutputMonitor.mapDeviceType(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP))
+        assertEquals(AudioOutputRouteType.WIRED_HEADSET, AudioOutputMonitor.mapDeviceType(AudioDeviceInfo.TYPE_WIRED_HEADPHONES))
+        assertEquals(AudioOutputRouteType.USB_AUDIO, AudioOutputMonitor.mapDeviceType(AudioDeviceInfo.TYPE_USB_HEADSET))
+        assertEquals(AudioOutputRouteType.EXTERNAL, AudioOutputMonitor.mapDeviceType(AudioDeviceInfo.TYPE_HDMI))
+        assertEquals(AudioOutputRouteType.SPEAKER, AudioOutputMonitor.mapDeviceType(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER))
+
+        val fallbackState = AudioOutputMonitor.resolveStateFromRawDevices(emptyArray())
+        assertEquals(AudioOutputRouteType.SPEAKER, fallbackState.activeRoute)
+        assertEquals("Phone Speaker", fallbackState.activeDeviceName)
+        assertEquals(1, fallbackState.devices.size)
+        assertTrue(fallbackState.devices.first().isActive)
+    }
+
+    @Test
+    fun `OnboardingScreen captures optional display name persists synchronously to PreferencesRepository and supports skip`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = PreferencesRepository(context)
+        var capturedFolderName: String? = null
+        var capturedSkipName: String? = null
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                OnboardingScreen(
+                    onContinueAndScanFolder = { capturedFolderName = it },
+                    onContinueAndScanDevice = {},
+                    onSkip = { capturedSkipName = it }
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("onboarding_screen").assertIsDisplayed()
+        composeRule.onNodeWithTag("onboarding_name_input").performTextInput("Alex")
+        composeRule.onNodeWithTag("onboarding_scan_folder_button").performClick()
+        assertEquals("Alex", capturedFolderName)
+
+        composeRule.onNodeWithTag("onboarding_skip_button").performClick()
+        assertEquals("Alex", capturedSkipName)
+
+        // Verify DataStore + synchronous SharedPreferences startup snapshot persist & clear cleanly
+        prefs.completeOnboarding("Alex")
+        val syncSnapshot = PreferencesRepository.readStartupUserProfileSnapshot(context)
+        assertEquals("Alex", syncSnapshot.displayName)
+        assertTrue(syncSnapshot.hasCompletedOnboarding)
+        assertEquals("Alex", prefs.userProfileFlow.first().displayName)
+
+        prefs.setUserDisplayName("")
+        assertEquals("", PreferencesRepository.readStartupUserProfileSnapshot(context).displayName)
+        assertEquals("", prefs.userProfileFlow.first().displayName)
+    }
+
+    @Test
+    fun `SettingsScreen Display Name dialog updates and clears user display name`() {
+        var displayName by mutableStateOf("Alex")
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                SettingsScreen(
+                    themePrefs = ThemePreferences(),
+                    audioSettings = AudioSettings(),
+                    savedFolders = StableList(),
+                    minTrackDurationSec = 0,
+                    currentTrack = sampleLibraryTracks.first(),
+                    isPlaying = false,
+                    onBack = {},
+                    onSelectPalette = {},
+                    onSelectAppearance = {},
+                    onSelectArtworkShape = {},
+                    onToggleWavyScrubber = {},
+                    onToggleAmbientAura = {},
+                    onTogglePerformanceMode = {},
+                    onAddFolder = {},
+                    onRemoveFolder = {},
+                    onRescanFolders = {},
+                    onSelectMinTrackDurationSec = {},
+                    onToggleGaplessPlayback = {},
+                    onChangeCrossfadeSec = {},
+                    onTogglePauseOnHeadphoneDisconnect = {},
+                    onSelectAudioFocusBehavior = {},
+                    userDisplayName = displayName,
+                    onUpdateDisplayName = { displayName = it }
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("settings_display_name_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_display_name_value", useUnmergedTree = true).assertTextContains("Alex")
+
+        // Edit display name via dialog
+        composeRule.onNodeWithTag("settings_display_name_row").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_display_name_dialog").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_display_name_input").performTextClearance()
+        composeRule.onNodeWithTag("settings_display_name_input").performTextInput("Maya")
+        composeRule.onNodeWithTag("settings_display_name_save").performClick()
+        composeRule.waitForIdle()
+        assertEquals("Maya", displayName)
+
+        // Clear display name via dialog
+        composeRule.onNodeWithTag("settings_display_name_row").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_display_name_clear").performClick()
+        composeRule.waitForIdle()
+        assertEquals("", displayName)
+    }
+
+    @Test
+    fun `HomeScreen renders personalized greeting Continue Listening progress and 2x2 shortcut grid`() {
+        // Verify deterministic time-of-day greeting formatter
+        assertEquals("Good morning, Alex", formatHomeGreeting("Alex", hourOfDay = 8))
+        assertEquals("Good afternoon, Alex", formatHomeGreeting("  Alex  ", hourOfDay = 14))
+        assertEquals("Good evening, Alex", formatHomeGreeting("Alex", hourOfDay = 19))
+        assertEquals("Late night, Alex", formatHomeGreeting("Alex", hourOfDay = 23))
+        assertEquals("Good morning", formatHomeGreeting("   ", hourOfDay = 9))
+
+        val currentTrack = sampleLibraryTracks.first()
+        val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 60_000L, durationMs = 212_000L))
+        var searchOpened = false
+        var playedShuffle = false
+        var playedBatchCount = 0
+        var resumeClicked = false
+        var shortcutCategory: LibraryCategory? = null
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                HomeScreen(
+                    uiState = HomeUiState(
+                        allTracks = sampleLibraryTracks.toStableList(),
+                        recentlyPlayed = sampleLibraryTracks.take(3).toStableList(),
+                        recentlyAdded = sampleLibraryTracks.toStableList(),
+                        likedTracks = sampleLibraryTracks.filter { it.isFavorite }.toStableList(),
+                        mostPlayedTracks = sampleLibraryTracks.sortedByDescending { it.playCount }.toStableList(),
+                        isInitialLibraryLoaded = true
+                    ),
+                    currentTrack = currentTrack,
+                    isPlaying = false,
+                    artworkShape = ExpressiveArtworkShape.SCALLOP,
+                    onExpandNowPlaying = {},
+                    onTogglePlayPause = { resumeClicked = true },
+                    onSelectTrack = { _, _ -> },
+                    onPlayTracks = { list, shuffle ->
+                        playedBatchCount = list.size
+                        playedShuffle = shuffle
+                    },
+                    onToggleFavorite = {},
+                    onOpenSettings = {},
+                    onAddFolder = {},
+                    onScanDevice = {},
+                    userDisplayName = "Alex",
+                    progressFlow = progressFlow,
+                    onOpenSearch = { searchOpened = true },
+                    onOpenLibraryShortcut = { shortcutCategory = it }
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("home_header_title").assertIsDisplayed().assertTextContains("Alex", substring = true)
+        composeRule.onNodeWithTag("home_search_button").performClick()
+        assertTrue(searchOpened)
+
+        // Continue Listening card shows remaining time and one-tap Resume pill
+        composeRule.onNodeWithTag("home_continue_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("home_continue_remaining", useUnmergedTree = true).assertTextContains("2:32 left")
+        composeRule.onNodeWithTag("home_continue_play_button").performClick()
+        assertTrue(resumeClicked)
+
+        // 2x2 Quick-Shortcut Grid cards all display and invoke immediate playback
+        composeRule.onNodeWithTag("home_shortcuts_grid").assertIsDisplayed()
+        composeRule.onNodeWithTag("home_shortcut_liked").assertIsDisplayed().performClick()
+        assertEquals(1, playedBatchCount)
+        assertFalse(playedShuffle)
+
+        composeRule.onNodeWithTag("home_shortcut_most_played").assertIsDisplayed().performClick()
+        assertEquals(sampleLibraryTracks.size, playedBatchCount)
+
+        composeRule.onNodeWithTag("home_shortcut_recent_added").assertIsDisplayed()
+        composeRule.onNodeWithTag("home_shortcut_shuffle_all").assertIsDisplayed().performClick()
+        assertTrue(playedShuffle)
+        assertEquals(null, shortcutCategory)
+    }
+
+    @Test
+    fun `MusicIntelligenceEngine and DiscoverFeedGenerator apply completion affinity skip penalty recency decay Tune Mix Deep Cuts and Listening Insights`() {
+        val engine = MusicIntelligenceEngine()
+        val nowMs = 1_760_000_000_000L
+        val oneHourMs = 60L * 60L * 1000L
+        val oneDayMs = 24L * oneHourMs
+
+        val completedTrack = Track(
+            id = "completed_gem",
+            title = "Amber Dawn",
+            artist = "Klara Lind",
+            album = "Warm Horizon",
+            genre = "Ambient",
+            durationMs = 240_000L,
+            bpm = 82,
+            playCount = 10,
+            completedPlayCount = 9,
+            skipCount = 0,
+            lastPlayedAt = nowMs - (4L * oneDayMs),
+            isFavorite = true,
+            mimeType = "audio/flac",
+            bitrateKbps = 1411,
+            sampleRateHz = 96_000,
+            bitDepth = 24
+        )
+        val heavilySkippedTrack = Track(
+            id = "heavily_skipped",
+            title = "Amber Static",
+            artist = "Klara Lind",
+            album = "Warm Horizon",
+            genre = "Ambient",
+            durationMs = 240_000L,
+            bpm = 82,
+            playCount = 10,
+            completedPlayCount = 1,
+            skipCount = 9,
+            lastPlayedAt = nowMs - (4L * oneDayMs),
+            isFavorite = false
+        )
+        val justPlayedTrack = Track(
+            id = "just_played_10m",
+            title = "Amber Breeze",
+            artist = "Klara Lind",
+            album = "Warm Horizon",
+            genre = "Ambient",
+            durationMs = 240_000L,
+            bpm = 82,
+            playCount = 10,
+            completedPlayCount = 9,
+            skipCount = 0,
+            lastPlayedAt = nowMs - (10L * 60L * 1000L), // 10 minutes ago -> 6-hour anti-repetition decay
+            isFavorite = true
+        )
+        val highEnergyTrack = Track(
+            id = "high_energy_rush",
+            title = "Neon Velocity",
+            artist = "Pulse Unit",
+            album = "Drive",
+            genre = "Electronic",
+            durationMs = 200_000L,
+            bpm = 132,
+            playCount = 4,
+            completedPlayCount = 4,
+            skipCount = 0,
+            lastPlayedAt = nowMs - (3L * oneDayMs)
+        )
+        val deepCutUnplayed = Track(
+            id = "deep_cut_unplayed",
+            title = "Hidden Cassette",
+            artist = "Rare Echo",
+            album = "Vault",
+            genre = "Indie Folk",
+            durationMs = 210_000L,
+            bpm = 96,
+            playCount = 0,
+            completedPlayCount = 0,
+            skipCount = 0,
+            lastPlayedAt = 0L
+        )
+
+        val tracks = listOf(completedTrack, heavilySkippedTrack, justPlayedTrack, highEnergyTrack, deepCutUnplayed)
+        val history = engine.deriveListeningHistory(tracks)
+
+        // 1. Completion affinity beats skip penalty, and 6-hour anti-repetition penalizes just-played track
+        val ranked = engine.analyzeAndRecommend(
+            request = MusicIntelligenceRequest(targetMood = "calm", maxTracks = 5, nowMs = nowMs),
+            history = history,
+            libraryTracks = tracks
+        )
+        val scoreMap = ranked.recommendedTracks.associate { it.trackId to it.score }
+        assertTrue(
+            "High completion track (${scoreMap["completed_gem"]}) must outscore heavily skipped track (${scoreMap["heavily_skipped"]})",
+            (scoreMap["completed_gem"] ?: 0.0) > (scoreMap["heavily_skipped"] ?: 0.0)
+        )
+        assertTrue(
+            "Track played 4 days ago (${scoreMap["completed_gem"]}) must outscore identical track played 10 mins ago (${scoreMap["just_played_10m"]})",
+            (scoreMap["completed_gem"] ?: 0.0) > (scoreMap["just_played_10m"] ?: 0.0)
+        )
+
+        // 2. Tune Mix: High energy filter boosts high-BPM track to #1
+        val highEnergyOut = engine.analyzeAndRecommend(
+            request = MusicIntelligenceRequest(energyFilter = "high", maxTracks = 5, nowMs = nowMs),
+            history = history,
+            libraryTracks = tracks
+        )
+        assertEquals("high_energy_rush", highEnergyOut.recommendedTracks.first().trackId)
+
+        // 3. Tune Mix: Fresh Rediscovery (1.0f) elevates unplayed deep cut over Familiar Favorites (0.0f)
+        val familiarOut = engine.analyzeAndRecommend(
+            request = MusicIntelligenceRequest(discoveryBalance = 0.0f, maxTracks = 5, nowMs = nowMs),
+            history = history,
+            libraryTracks = tracks
+        )
+        val freshOut = engine.analyzeAndRecommend(
+            request = MusicIntelligenceRequest(discoveryBalance = 1.0f, maxTracks = 5, nowMs = nowMs),
+            history = history,
+            libraryTracks = tracks
+        )
+        val familiarDeepScore = familiarOut.recommendedTracks.first { it.trackId == "deep_cut_unplayed" }.score
+        val freshDeepScore = freshOut.recommendedTracks.first { it.trackId == "deep_cut_unplayed" }.score
+        assertTrue("Fresh balance must boost unplayed deep cut score ($freshDeepScore > $familiarDeepScore)", freshDeepScore > familiarDeepScore)
+
+        // 4. DiscoverFeedGenerator: Deep Cuts & Unplayed Gems + Listening Insights
+        val tunedFeed = engine.generateDiscoverFeed(
+            libraryTracks = tracks,
+            nowMs = nowMs,
+            tuneConfig = DiscoverTuneConfig(selectedMood = "energetic", energyFilter = "high", discoveryBalance = 0.8f)
+        )
+        val deepCutsSection = tunedFeed.sections.first { it.category == DiscoverCategory.EXPLORE_YOUR_LIBRARY }
+        assertTrue(deepCutsSection.title.contains("Deep Cuts"))
+        assertTrue(deepCutsSection.tracks.any { it.id == "deep_cut_unplayed" })
+
+        val insights = tunedFeed.insights
+        assertEquals("Klara Lind", insights.topArtist)
+        assertEquals("Ambient", insights.topGenre)
+        assertEquals(5, insights.totalTrackCount)
+        assertEquals(1, insights.hiFiTrackCount)
+        assertEquals(20, insights.hiFiPercentage)
+        assertEquals(23, insights.completedPlaysTotal)
+        assertTrue(insights.totalListeningMs > 0L)
+    }
+
+    @Test
+    fun `DiscoverScreen renders Tune Mix controls on Daily Mix and Listening Insights card`() {
+        val engine = MusicIntelligenceEngine()
+        val hiFiLibrary = sampleLibraryTracks.mapIndexed { idx, t ->
+            if (idx == 0) t.copy(mimeType = "audio/flac", bitrateKbps = 1411, sampleRateHz = 96_000, bitDepth = 24, completedPlayCount = 12)
+            else t.copy(completedPlayCount = 4)
+        }
+        val feed = engine.generateDiscoverFeed(libraryTracks = hiFiLibrary)
+        val smartFlow = MutableStateFlow(SmartPlaylistUiState())
+        var selectedEnergyInSheet: String? = null
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.COBALT, appearanceMode = AppearanceMode.DARK) {
+                DiscoverScreen(
+                    uiState = DiscoverUiState(
+                        allTracks = hiFiLibrary.toStableList(),
+                        sections = feed.sections,
+                        anchorTrackTitle = feed.anchorTrackTitle,
+                        insights = feed.insights,
+                        tuneConfig = DiscoverTuneConfig(),
+                        isInitialLibraryLoaded = true
+                    ),
+                    currentTrackId = hiFiLibrary.first().id,
+                    isPlaying = false,
+                    artworkShape = ExpressiveArtworkShape.SCALLOP,
+                    onSelectTrackFromSection = { _, _ -> },
+                    onPlaySection = {},
+                    onRefreshDiscover = {},
+                    onOpenSettings = {},
+                    onAddFolder = {},
+                    onImportFiles = {},
+                    onSaveMixAsPlaylist = { _, _ -> },
+                    smartPlaylistFlow = smartFlow,
+                    onGenerateTunedSmartPlaylist = { mood, seed, energy, balance ->
+                        selectedEnergyInSheet = energy
+                        smartFlow.value = SmartPlaylistUiState(
+                            selectedMood = mood,
+                            energyFilter = energy,
+                            discoveryBalance = balance,
+                            seedFromCurrent = seed,
+                            isGenerating = false,
+                            output = engine.analyzeAndRecommend(
+                                MusicIntelligenceRequest(
+                                    targetMood = mood,
+                                    energyFilter = energy,
+                                    discoveryBalance = balance,
+                                    maxTracks = 5
+                                ),
+                                engine.deriveListeningHistory(hiFiLibrary),
+                                hiFiLibrary
+                            )
+                        )
+                    }
+                )
+            }
+        }
+
+        // Daily Mix exposes Tune Mix control directly
+        composeRule.onNodeWithTag("discover_tune_daily_mix_button").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("smart_energy_high").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        assertEquals("high", selectedEnergyInSheet)
+        composeRule.onNodeWithTag("smart_balance_slider").assertIsDisplayed()
+
+        // Dismiss sheet by pressing save & verify Listening Insights card scrolls into view cleanly
+        composeRule.onNodeWithTag("smart_mix_save_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("discover_list")
+            .performScrollToNode(hasTestTag("discover_listening_insights_card"))
+        composeRule.onNodeWithTag("discover_listening_insights_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("insight_hifi_percent").assertIsDisplayed()
+    }
+
+    @Test
+    fun `PersistentTabHost keeps Home Library Discover warm preserves scroll state and blocks inactive semantics`() {
+        val manyTracks = (1..24).map { idx ->
+            sampleLibraryTracks[idx % sampleLibraryTracks.size].copy(
+                id = "warm_track_$idx",
+                title = "Warm Track $idx"
+            )
+        }
+        val engine = MusicIntelligenceEngine()
+        val discoverFeed = engine.generateDiscoverFeed(libraryTracks = manyTracks)
+        var homeDisposed = 0
+        var libraryDisposed = 0
+        var discoverDisposed = 0
+        lateinit var homeListState: LazyListState
+        var activeTab by mutableStateOf(CadenceTab.HOME)
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.COBALT, appearanceMode = AppearanceMode.DARK) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    PersistentTabHost(
+                        activeTab = activeTab,
+                        showSettings = false,
+                        modifier = Modifier.fillMaxSize()
+                    ) { tab, isActive ->
+                        when (tab) {
+                            CadenceTab.HOME -> {
+                                DisposableEffect(Unit) { onDispose { homeDisposed++ } }
+                                val listState = rememberLazyListState()
+                                homeListState = listState
+                                HomeScreen(
+                                    uiState = HomeUiState(
+                                        allTracks = manyTracks.toStableList(),
+                                        recentlyPlayed = manyTracks.take(6).toStableList(),
+                                        recentlyAdded = manyTracks.toStableList(),
+                                        isInitialLibraryLoaded = true
+                                    ),
+                                    currentTrack = manyTracks.first(),
+                                    isPlaying = true,
+                                    artworkShape = ExpressiveArtworkShape.SCALLOP,
+                                    onExpandNowPlaying = {},
+                                    onTogglePlayPause = {},
+                                    onSelectTrack = { _, _ -> },
+                                    onPlayTracks = { _, _ -> },
+                                    onToggleFavorite = {},
+                                    onOpenSettings = {},
+                                    onAddFolder = {},
+                                    onScanDevice = {},
+                                    isActiveTab = isActive,
+                                    listState = listState
+                                )
+                            }
+
+                            CadenceTab.LIBRARY -> {
+                                DisposableEffect(Unit) { onDispose { libraryDisposed++ } }
+                                LibraryScreen(
+                                    uiState = LibraryUiState(
+                                        allTracks = manyTracks.toStableList(),
+                                        displayedTracks = manyTracks.toStableList(),
+                                        isInitialLibraryLoaded = true
+                                    ),
+                                    currentTrackId = manyTracks.first().id,
+                                    isPlaying = true,
+                                    artworkShape = ExpressiveArtworkShape.SCALLOP,
+                                    onSelectTrack = { _, _ -> },
+                                    onPlayTracks = { _, _ -> },
+                                    onToggleFavorite = {},
+                                    onSearchChange = {},
+                                    onCategoryChange = {},
+                                    onSortChange = {},
+                                    onOpenDrillDown = {},
+                                    onCloseDrillDown = {},
+                                    onImportFiles = {},
+                                    onAddFolder = {},
+                                    onScanDevice = {},
+                                    onRescanFolders = {},
+                                    onPlayNext = {},
+                                    onAddToQueue = {},
+                                    onAddTrackToPlaylist = { _, _ -> },
+                                    onRemoveTrackFromPlaylist = { _, _ -> },
+                                    onCreatePlaylist = { _, _ -> },
+                                    onRenamePlaylist = { _, _ -> },
+                                    onDeletePlaylist = {},
+                                    onPlayPlaylist = { _, _ -> },
+                                    onRemoveTrack = {},
+                                    isActiveTab = isActive
+                                )
+                            }
+
+                            CadenceTab.DISCOVER -> {
+                                DisposableEffect(Unit) { onDispose { discoverDisposed++ } }
+                                DiscoverScreen(
+                                    uiState = DiscoverUiState(
+                                        allTracks = manyTracks.toStableList(),
+                                        sections = discoverFeed.sections,
+                                        anchorTrackTitle = discoverFeed.anchorTrackTitle,
+                                        insights = discoverFeed.insights,
+                                        isInitialLibraryLoaded = true
+                                    ),
+                                    currentTrackId = manyTracks.first().id,
+                                    isPlaying = true,
+                                    artworkShape = ExpressiveArtworkShape.SCALLOP,
+                                    onSelectTrackFromSection = { _, _ -> },
+                                    onPlaySection = {},
+                                    onRefreshDiscover = {},
+                                    onOpenSettings = {},
+                                    onAddFolder = {},
+                                    onImportFiles = {},
+                                    onSaveMixAsPlaylist = { _, _ -> }
+                                )
+                            }
+                        }
+                    }
+
+                    FloatingExpressiveNavDock(
+                        navState = remember(activeTab) { FloatingNavBarState(activeTab) },
+                        onSelectTab = { activeTab = it },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+            }
+        }
+
+        // Scroll Home down to item 12 before switching tabs
+        composeRule.onNodeWithTag("home_header_title").assertIsDisplayed()
+        composeRule.onNodeWithTag("home_list")
+            .performScrollToNode(hasTestTag("home_track_row_warm_track_12"))
+        composeRule.waitForIdle()
+        val scrolledIndexBeforeSwitch = homeListState.firstVisibleItemIndex
+        assertTrue("Expected Home to scroll before switching tabs", scrolledIndexBeforeSwitch > 0)
+
+        // Switch to Library: Home stays warm (not disposed), inactive semantics cleared
+        composeRule.onNodeWithTag("nav_library").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("library_header_title").assertIsDisplayed()
+        composeRule.onNodeWithTag("home_header_title").assertDoesNotExist()
+        assertEquals(0, homeDisposed)
+
+        // Switch to Discover: Library stays warm (not disposed)
+        composeRule.onNodeWithTag("nav_discover").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("discover_header_title").assertIsDisplayed()
+        composeRule.onNodeWithTag("library_header_title").assertDoesNotExist()
+        assertEquals(0, homeDisposed)
+        assertEquals(0, libraryDisposed)
+
+        // Switch back to Home: exact scroll position preserved & zero teardown across all 3 tabs
+        composeRule.onNodeWithTag("nav_home").performClick()
+        composeRule.waitForIdle()
+        assertEquals(scrolledIndexBeforeSwitch, homeListState.firstVisibleItemIndex)
+        assertEquals(0, homeDisposed)
+        assertEquals(0, libraryDisposed)
+        assertEquals(0, discoverDisposed)
+    }
+
+    @Test
+    fun `Playback progress ticks do not recompose nav bar or screens and Coil thumbnail config uses 160px hardware non-crossfade`() = runTest {
+        val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 10_000L, durationMs = 180_000L))
+        val track = sampleLibraryTracks.first()
+        var activeTab by mutableStateOf(CadenceTab.HOME)
+        var homeCompositions = 0
+        var libraryCompositions = 0
+        var dockCompositions = 0
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.COBALT, appearanceMode = AppearanceMode.DARK) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    PersistentTabHost(
+                        activeTab = activeTab,
+                        showSettings = false,
+                        modifier = Modifier.fillMaxSize()
+                    ) { tab, isActive ->
+                        when (tab) {
+                            CadenceTab.HOME -> {
+                                SideEffect { homeCompositions++ }
+                                HomeScreen(
+                                    uiState = HomeUiState(
+                                        allTracks = sampleLibraryTracks.toStableList(),
+                                        recentlyPlayed = sampleLibraryTracks.take(3).toStableList(),
+                                        recentlyAdded = sampleLibraryTracks.toStableList(),
+                                        isInitialLibraryLoaded = true
+                                    ),
+                                    currentTrack = track,
+                                    isPlaying = true,
+                                    artworkShape = ExpressiveArtworkShape.SCALLOP,
+                                    onExpandNowPlaying = {},
+                                    onTogglePlayPause = {},
+                                    onSelectTrack = { _, _ -> },
+                                    onPlayTracks = { _, _ -> },
+                                    onToggleFavorite = {},
+                                    onOpenSettings = {},
+                                    onAddFolder = {},
+                                    onScanDevice = {},
+                                    progressFlow = progressFlow,
+                                    isActiveTab = isActive
+                                )
+                            }
+
+                            CadenceTab.LIBRARY -> {
+                                SideEffect { libraryCompositions++ }
+                                LibraryScreen(
+                                    uiState = LibraryUiState(
+                                        allTracks = sampleLibraryTracks.toStableList(),
+                                        displayedTracks = sampleLibraryTracks.toStableList(),
+                                        isInitialLibraryLoaded = true
+                                    ),
+                                    currentTrackId = track.id,
+                                    isPlaying = true,
+                                    artworkShape = ExpressiveArtworkShape.SCALLOP,
+                                    onSelectTrack = { _, _ -> },
+                                    onPlayTracks = { _, _ -> },
+                                    onToggleFavorite = {},
+                                    onSearchChange = {},
+                                    onCategoryChange = {},
+                                    onSortChange = {},
+                                    onOpenDrillDown = {},
+                                    onCloseDrillDown = {},
+                                    onImportFiles = {},
+                                    onAddFolder = {},
+                                    onScanDevice = {},
+                                    onRescanFolders = {},
+                                    onPlayNext = {},
+                                    onAddToQueue = {},
+                                    onAddTrackToPlaylist = { _, _ -> },
+                                    onRemoveTrackFromPlaylist = { _, _ -> },
+                                    onCreatePlaylist = { _, _ -> },
+                                    onRenamePlaylist = { _, _ -> },
+                                    onDeletePlaylist = {},
+                                    onPlayPlaylist = { _, _ -> },
+                                    onRemoveTrack = {},
+                                    isActiveTab = isActive
+                                )
+                            }
+
+                            CadenceTab.DISCOVER -> Unit
+                        }
+                    }
+
+                    Box(modifier = Modifier.align(Alignment.BottomCenter)) {
+                        SideEffect { dockCompositions++ }
+                        FloatingBottomDockOverlay(
+                            activeTab = activeTab,
+                            currentTrack = track,
+                            isPlaying = true,
+                            artworkShape = ExpressiveArtworkShape.SCALLOP,
+                            onSelectTab = { activeTab = it },
+                            onExpandMiniPlayer = {},
+                            onTogglePlayPause = {},
+                            onNext = {},
+                            progressFlow = progressFlow
+                        )
+                    }
+                }
+            }
+        }
+
+        // Switch to Library so Home is warm/inactive and Library + Dock + Mini-Player progress are active
+        composeRule.onNodeWithTag("nav_library").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("mini_player_pill").assertIsDisplayed()
+        composeRule.onNodeWithTag("mini_player_progress_bar", useUnmergedTree = true).assertIsDisplayed()
+
+        val homeBefore = homeCompositions
+        val libraryBefore = libraryCompositions
+        val dockBefore = dockCompositions
+
+        // Emit 12 rapid playback progress ticks (simulating 3 seconds of 250ms ticks)
+        repeat(12) { tick ->
+            progressFlow.value = PlaybackProgress(
+                positionMs = 12_000L + (tick * 2_500L),
+                durationMs = 180_000L
+            )
+            composeRule.waitForIdle()
+        }
+
+        assertEquals("Inactive warm Home must not recompose on playback ticks", homeBefore, homeCompositions)
+        assertEquals("Active Library must not recompose on playback ticks", libraryBefore, libraryCompositions)
+        assertEquals("Floating dock & nav bar must not recompose on playback ticks", dockBefore, dockCompositions)
+
+        // Verify Coil fast-scrolling thumbnail ImageRequest configuration
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val request = buildArtworkImageRequest(
+            context = context,
+            artworkPath = "/storage/emulated/0/Music/cover.jpg",
+            decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
+            enableCrossfade = false
+        )
+        assertEquals(CoilSize(160, 160), request.sizeResolver.size())
+        assertTrue("Thumbnail request must enable hardware bitmaps", request.allowHardware)
+        assertEquals("art_/storage/emulated/0/Music/cover.jpg_160", request.memoryCacheKey?.key)
+        assertEquals("art_/storage/emulated/0/Music/cover.jpg_160", request.diskCacheKey)
+        assertEquals(
+            "Fast-scrolling list thumbnails must disable crossfade",
+            Transition.Factory.NONE,
+            request.transitionFactory
+        )
     }
 }
