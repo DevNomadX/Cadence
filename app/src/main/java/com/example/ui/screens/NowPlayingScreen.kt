@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -151,7 +152,7 @@ fun NowPlayingScreen(
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isWide = maxWidth >= 640.dp
-        val isCompactHeight = maxHeight < 680.dp
+        val isUltraShortPortrait = maxHeight < 580.dp
 
         if (currentTrack == null && !uiState.isInitialLibraryLoaded) {
             Box(
@@ -237,16 +238,17 @@ fun NowPlayingScreen(
                     )
                 }
             }
-        } else {
-            val artworkMaxSize = if (isCompactHeight) 224.dp else 292.dp
+        } else if (isUltraShortPortrait) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .navigationBarsPadding()
+                    .padding(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 96.dp)
+                    .testTag("now_playing_portrait_container"),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Spacer(Modifier.height(8.dp))
                 NowPlayingTopBar(
                     hasTrack = true,
                     isPlaying = uiState.isPlaying,
@@ -255,27 +257,22 @@ fun NowPlayingScreen(
                     onOpenQueue = openQueue
                 )
 
-                Spacer(Modifier.height(if (isCompactHeight) 16.dp else 26.dp))
-
                 ExpressiveArtworkFrame(
                     track = currentTrack,
                     artworkShape = themePrefs.artworkShape,
                     isPlaying = uiState.isPlaying,
                     decodeSizePx = 768,
                     modifier = Modifier
-                        .size(artworkMaxSize)
+                        .size(176.dp)
+                        .aspectRatio(1f)
                         .testTag("hero_album_artwork")
                 )
-
-                Spacer(Modifier.height(if (isCompactHeight) 20.dp else 30.dp))
 
                 TrackIdentityBlock(
                     track = currentTrack,
                     onToggleFavorite = onToggleFavorite,
                     onOpenTrackMenu = openTrackMenu
                 )
-
-                Spacer(Modifier.height(14.dp))
 
                 ScrubberSection(
                     progressFlow = progressFlow,
@@ -284,8 +281,6 @@ fun NowPlayingScreen(
                     wavyEnabled = themePrefs.effectiveWavyScrubber,
                     onSeek = onSeek
                 )
-
-                Spacer(Modifier.height(12.dp))
 
                 ExpressiveTransportCluster(
                     uiState = uiState,
@@ -296,8 +291,6 @@ fun NowPlayingScreen(
                     onCycleRepeat = onCycleRepeat
                 )
 
-                Spacer(Modifier.height(20.dp))
-
                 UtilityPillStrip(
                     playbackSpeed = uiState.playbackSpeed,
                     suggestedPalette = currentTrack.suggestedPalette,
@@ -307,8 +300,82 @@ fun NowPlayingScreen(
                     onOpenTimer = openTimer,
                     onMatchMood = onMatchMood
                 )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding()
+                    .padding(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 96.dp)
+                    .testTag("now_playing_portrait_container"),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                NowPlayingTopBar(
+                    hasTrack = true,
+                    isPlaying = uiState.isPlaying,
+                    isPreparing = uiState.isPreparing,
+                    onOpenSettings = onOpenSettings,
+                    onOpenQueue = openQueue
+                )
 
-                Spacer(Modifier.height(24.dp))
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val artworkSize = minOf(maxWidth, maxHeight, 260.dp).coerceAtLeast(0.dp)
+                    ExpressiveArtworkFrame(
+                        track = currentTrack,
+                        artworkShape = themePrefs.artworkShape,
+                        isPlaying = uiState.isPlaying,
+                        decodeSizePx = 768,
+                        modifier = Modifier
+                            .size(artworkSize)
+                            .aspectRatio(1f)
+                            .testTag("hero_album_artwork")
+                    )
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    TrackIdentityBlock(
+                        track = currentTrack,
+                        onToggleFavorite = onToggleFavorite,
+                        onOpenTrackMenu = openTrackMenu
+                    )
+
+                    ScrubberSection(
+                        progressFlow = progressFlow,
+                        fallbackDurationMs = currentTrack.durationMs,
+                        isPlaying = uiState.isPlaying,
+                        wavyEnabled = themePrefs.effectiveWavyScrubber,
+                        onSeek = onSeek
+                    )
+
+                    ExpressiveTransportCluster(
+                        uiState = uiState,
+                        onTogglePlayPause = onTogglePlayPause,
+                        onNext = onNext,
+                        onPrevious = onPrevious,
+                        onToggleShuffle = onToggleShuffle,
+                        onCycleRepeat = onCycleRepeat
+                    )
+
+                    UtilityPillStrip(
+                        playbackSpeed = uiState.playbackSpeed,
+                        suggestedPalette = currentTrack.suggestedPalette,
+                        activePalette = themePrefs.palette,
+                        sleepTimerFlow = sleepTimerFlow,
+                        onCycleSpeed = onCycleSpeed,
+                        onOpenTimer = openTimer,
+                        onMatchMood = onMatchMood
+                    )
+                }
             }
         }
     }
@@ -445,92 +512,95 @@ private fun EmptyNowPlayingContent(
     onAddFolder: () -> Unit,
     onScanDevice: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Spacer(Modifier.height(8.dp))
-        NowPlayingTopBar(
-            hasTrack = false,
-            isPlaying = false,
-            isPreparing = false,
-            onOpenSettings = onOpenSettings,
-            onOpenQueue = {}
-        )
-
-        Spacer(Modifier.height(40.dp))
-
-        ExpressiveArtworkFrame(
-            track = null,
-            artworkShape = artworkShape,
-            isPlaying = false,
-            animateScale = false,
-            modifier = Modifier
-                .size(216.dp)
-                .testTag("empty_now_playing_art")
-        )
-
-        Spacer(Modifier.height(28.dp))
-
-        Text(
-            text = stringResource(R.string.now_playing_empty_title),
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground,
-            textAlign = TextAlign.Center
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        Text(
-            text = stringResource(R.string.now_playing_empty_subtitle),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.widthIn(max = 340.dp)
-        )
-
-        Spacer(Modifier.height(26.dp))
-
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val isUltraShort = maxHeight < 580.dp
         Column(
-            modifier = Modifier.widthIn(max = 320.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .then(if (isUltraShort) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                .navigationBarsPadding()
+                .padding(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 96.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = if (isUltraShort) Arrangement.spacedBy(16.dp) else Arrangement.SpaceBetween
         ) {
-            Button(
-                onClick = onAddFolder,
-                shape = CircleShape,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("empty_scan_folder_button")
+            NowPlayingTopBar(
+                hasTrack = false,
+                isPlaying = false,
+                isPreparing = false,
+                onOpenSettings = onOpenSettings,
+                onOpenQueue = {}
+            )
+
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(8.dp))
+                ExpressiveArtworkFrame(
+                    track = null,
+                    artworkShape = artworkShape,
+                    isPlaying = false,
+                    animateScale = false,
+                    modifier = Modifier
+                        .size(if (isUltraShort) 152.dp else 196.dp)
+                        .testTag("empty_now_playing_art")
+                )
+
+                Spacer(Modifier.height(20.dp))
+
                 Text(
-                    text = stringResource(R.string.action_scan_local_folders),
-                    style = MaterialTheme.typography.labelLarge
+                    text = stringResource(R.string.now_playing_empty_title),
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                Text(
+                    text = stringResource(R.string.now_playing_empty_subtitle),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.widthIn(max = 340.dp)
                 )
             }
-            FilledTonalButton(
-                onClick = onScanDevice,
-                shape = CircleShape,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("empty_scan_device_button")
+
+            Column(
+                modifier = Modifier.widthIn(max = 320.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(Icons.Rounded.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = stringResource(R.string.action_scan_device),
-                    style = MaterialTheme.typography.labelLarge
-                )
+                Button(
+                    onClick = onAddFolder,
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .testTag("empty_scan_folder_button")
+                ) {
+                    Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.action_scan_local_folders),
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+                FilledTonalButton(
+                    onClick = onScanDevice,
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("empty_scan_device_button")
+                ) {
+                    Icon(Icons.Rounded.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.action_scan_device),
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
             }
         }
-
-        Spacer(Modifier.height(32.dp))
     }
 }
 
@@ -560,7 +630,8 @@ private fun NowPlayingTopBar(
     ) {
         Surface(
             shape = CircleShape,
-            color = pillColor
+            color = pillColor,
+            modifier = Modifier.testTag("now_playing_status_pill")
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),

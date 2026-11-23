@@ -1,14 +1,25 @@
 package com.example
 
 import android.content.Context
+import android.graphics.drawable.ColorDrawable
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -16,8 +27,12 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.PreferencesRepository
+import com.example.data.StableList
+import com.example.data.ThemePreferences
 import com.example.data.Track
 import com.example.data.db.CadenceDatabase
 import com.example.data.db.TrackEntity
@@ -27,20 +42,27 @@ import com.example.data.intelligence.MusicIntelligenceEngine
 import com.example.data.intelligence.MusicIntelligenceRequest
 import com.example.data.library.ScanState
 import com.example.data.toStableList
+import com.example.playback.PlaybackProgress
 import com.example.ui.CadenceTab
+import com.example.ui.FloatingBottomDockOverlay
 import com.example.ui.FloatingExpressiveNavDock
 import com.example.ui.player.DiscoverUiState
 import com.example.ui.player.LibraryUiState
+import com.example.ui.player.NowPlayingUiState
+import com.example.ui.player.SleepTimerState
 import com.example.ui.player.SmartPlaylistUiState
 import com.example.ui.screens.DiscoverScreen
 import com.example.ui.screens.LibraryScreen
+import com.example.ui.screens.NowPlayingScreen
 import com.example.ui.theme.AppearanceMode
 import com.example.ui.theme.CadenceTheme
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.ExpressivePalette
 import com.example.ui.theme.LocalPerformanceMode
+import com.example.ui.theme.MatchaLightScheme
 import com.example.ui.theme.ScallopedCircleShape
 import com.example.ui.theme.opaqueOver
+import com.example.ui.theme.toAppCompatNightMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
@@ -51,6 +73,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
@@ -734,5 +757,259 @@ class MusicIntelligenceAndPerfTest {
         composeRule.waitForIdle()
         assertEquals(1, refreshNonce)
         composeRule.onNodeWithTag("discover_section_made_for_you").assertIsDisplayed()
+    }
+
+    @Test
+    fun `PreferencesRepository mirrors theme synchronously and MainActivity opens directly into Light mode with zero flash`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = PreferencesRepository(context)
+
+        // Persist Light mode + Matcha palette and verify synchronous SharedPreferences snapshot
+        repo.setAppearanceMode(AppearanceMode.LIGHT)
+        repo.setPalette(ExpressivePalette.MATCHA)
+        repo.setArtworkShape(ExpressiveArtworkShape.SQUIRCLE)
+
+        val snapshot = PreferencesRepository.readStartupThemeSnapshot(context)
+        assertEquals(AppearanceMode.LIGHT, snapshot.appearanceMode)
+        assertEquals(ExpressivePalette.MATCHA, snapshot.palette)
+        assertEquals(ExpressiveArtworkShape.SQUIRCLE, snapshot.artworkShape)
+
+        assertEquals(AppCompatDelegate.MODE_NIGHT_NO, AppearanceMode.LIGHT.toAppCompatNightMode())
+        assertEquals(AppCompatDelegate.MODE_NIGHT_YES, AppearanceMode.DARK.toAppCompatNightMode())
+        assertEquals(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM, AppearanceMode.SYSTEM.toAppCompatNightMode())
+
+        // Verify MainActivity.onCreate applies AppCompat night mode & Light Matcha window background synchronously
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        try {
+            val activity = controller.get()
+            assertEquals(AppCompatDelegate.MODE_NIGHT_NO, AppCompatDelegate.getDefaultNightMode())
+            val bgDrawable = activity.window.decorView.background as? ColorDrawable
+            assertEquals(
+                "Window background must immediately match Light Matcha surface color on cold start",
+                MatchaLightScheme.background.toArgb(),
+                bgDrawable?.color
+            )
+        } finally {
+            controller.destroy()
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+        }
+    }
+
+    @Test
+    fun `FloatingBottomDockOverlay floats over full-bleed scrolling Library content without hard-clipping list bounds`() {
+        val manyTracks = (1..20).map { idx ->
+            sampleLibraryTracks[idx % sampleLibraryTracks.size].copy(
+                id = "float_track_$idx",
+                title = "Floating Track $idx"
+            )
+        }
+        var activeTab by mutableStateOf(CadenceTab.LIBRARY)
+        var expandedMiniPlayer = false
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    LibraryScreen(
+                        uiState = LibraryUiState(
+                            allTracks = manyTracks.toStableList(),
+                            displayedTracks = manyTracks.toStableList(),
+                            isInitialLibraryLoaded = true
+                        ),
+                        currentTrackId = manyTracks.first().id,
+                        isPlaying = true,
+                        artworkShape = ExpressiveArtworkShape.SCALLOP,
+                        onSelectTrack = { _, _ -> },
+                        onPlayTracks = { _, _ -> },
+                        onToggleFavorite = {},
+                        onSearchChange = {},
+                        onCategoryChange = {},
+                        onSortChange = {},
+                        onOpenDrillDown = {},
+                        onCloseDrillDown = {},
+                        onImportFiles = {},
+                        onAddFolder = {},
+                        onScanDevice = {},
+                        onRescanFolders = {},
+                        onPlayNext = {},
+                        onAddToQueue = {},
+                        onAddTrackToPlaylist = { _, _ -> },
+                        onRemoveTrackFromPlaylist = { _, _ -> },
+                        onCreatePlaylist = { _, _ -> },
+                        onRenamePlaylist = { _, _ -> },
+                        onDeletePlaylist = {},
+                        onPlayPlaylist = { _, _ -> },
+                        onRemoveTrack = {}
+                    )
+
+                    FloatingBottomDockOverlay(
+                        activeTab = activeTab,
+                        currentTrack = manyTracks.first(),
+                        isPlaying = true,
+                        artworkShape = ExpressiveArtworkShape.SCALLOP,
+                        onSelectTab = { activeTab = it },
+                        onExpandMiniPlayer = { expandedMiniPlayer = true },
+                        onTogglePlayPause = {},
+                        onNext = {},
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("floating_bottom_overlay").assertIsDisplayed()
+        composeRule.onNodeWithTag("mini_player_pill").assertIsDisplayed()
+        composeRule.onNodeWithTag("floating_nav_dock").assertIsDisplayed()
+
+        // Verify the scrolling list extends all the way behind the floating mini-player & nav dock
+        val listBounds = composeRule.onNodeWithTag("library_results_list").getUnclippedBoundsInRoot()
+        val miniPlayerBounds = composeRule.onNodeWithTag("mini_player_pill").getUnclippedBoundsInRoot()
+        val dockBounds = composeRule.onNodeWithTag("floating_nav_dock").getUnclippedBoundsInRoot()
+
+        assertTrue(
+            "Library list bottom (${listBounds.bottom}) must extend behind floating mini-player top (${miniPlayerBounds.top})",
+            listBounds.bottom > miniPlayerBounds.top
+        )
+        assertTrue(
+            "Library list bottom (${listBounds.bottom}) must extend to the bottom edge behind the floating nav dock (${dockBounds.bottom})",
+            listBounds.bottom >= dockBounds.bottom - 1.dp
+        )
+
+        // Verify clicking the floating mini-player still responds cleanly
+        composeRule.onNodeWithTag("mini_player_pill").performClick()
+        composeRule.waitForIdle()
+        assertTrue(expandedMiniPlayer)
+    }
+
+    @Test
+    fun `NowPlayingScreen fits header artwork transport and utility pills above floating nav dock without scrolling`() {
+        val hiFiTrack = sampleLibraryTracks.first().copy(
+            id = "hifi_now_playing",
+            title = "Velvet Nocturne (Master)",
+            artist = "Miro & Sol",
+            genre = "Ambient",
+            durationMs = 248_000L,
+            mimeType = "audio/flac",
+            bitrateKbps = 1411,
+            sampleRateHz = 96_000,
+            bitDepth = 24
+        )
+        val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 64_000L, durationMs = 248_000L))
+        val sleepTimerFlow = MutableStateFlow(SleepTimerState())
+        var speedClicked = false
+        var moodClicked = false
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                // Constrain to a compact standard portrait viewport (360dp x 640dp) to prove zero-scroll fit
+                Box(modifier = Modifier.size(width = 360.dp, height = 640.dp)) {
+                    NowPlayingScreen(
+                        uiState = NowPlayingUiState(
+                            currentTrack = hiFiTrack,
+                            isPlaying = false,
+                            isInitialLibraryLoaded = true,
+                            queueTracks = listOf(hiFiTrack).toStableList(),
+                            currentQueueIndex = 0
+                        ),
+                        themePrefs = ThemePreferences(
+                            palette = ExpressivePalette.TERRACOTTA,
+                            appearanceMode = AppearanceMode.LIGHT,
+                            artworkShape = ExpressiveArtworkShape.SCALLOP
+                        ),
+                        progressFlow = progressFlow,
+                        sleepTimerFlow = sleepTimerFlow,
+                        playlists = StableList(),
+                        onTogglePlayPause = {},
+                        onNext = {},
+                        onPrevious = {},
+                        onSeek = {},
+                        onToggleShuffle = {},
+                        onCycleRepeat = {},
+                        onToggleFavorite = {},
+                        onCycleSpeed = { speedClicked = true },
+                        onMatchMood = { moodClicked = true },
+                        onOpenSettings = {},
+                        onAddFolder = {},
+                        onScanDevice = {},
+                        onSelectQueueIndex = {},
+                        onMoveQueueItem = { _, _ -> },
+                        onRemoveQueueItem = {},
+                        onClearQueue = {},
+                        onSaveQueueAsPlaylist = {},
+                        onAddCurrentToPlaylist = {},
+                        onCreatePlaylistWithCurrent = {},
+                        onPlayNextCurrent = {},
+                        onAddCurrentToQueue = {},
+                        onSelectSleepTimer = {}
+                    )
+
+                    FloatingBottomDockOverlay(
+                        activeTab = CadenceTab.NOW_PLAYING,
+                        currentTrack = hiFiTrack,
+                        isPlaying = false,
+                        artworkShape = ExpressiveArtworkShape.SCALLOP,
+                        onSelectTab = {},
+                        onExpandMiniPlayer = {},
+                        onTogglePlayPause = {},
+                        onNext = {},
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+
+        // Standard portrait layout must NOT require scrolling
+        composeRule.onNodeWithTag("now_playing_portrait_container").assert(!hasScrollAction())
+
+        // Every major control from top bar down to utility pills must be simultaneously visible
+        val expectedVisibleTags = listOf(
+            "now_playing_status_pill",
+            "settings_button",
+            "queue_button",
+            "hero_album_artwork",
+            "now_playing_title",
+            "now_playing_hifi_badge",
+            "playback_scrubber",
+            "shuffle_button",
+            "previous_button",
+            "play_pause_button",
+            "next_button",
+            "repeat_button",
+            "speed_pill",
+            "timer_pill",
+            "match_mood_pill",
+            "floating_nav_dock"
+        )
+        expectedVisibleTags.forEach { tag ->
+            composeRule.onNodeWithTag(tag).assertIsDisplayed()
+        }
+
+        // Artwork must adapt cleanly and stay within 260dp cap
+        val artBounds = composeRule.onNodeWithTag("hero_album_artwork").getUnclippedBoundsInRoot()
+        val artHeight = artBounds.bottom - artBounds.top
+        val artWidth = artBounds.right - artBounds.left
+        assertTrue("Hero artwork must be visible (> 100dp), was $artHeight", artHeight >= 100.dp)
+        assertTrue("Hero artwork must stay capped <= 260dp, was $artHeight", artHeight <= 261.dp)
+        assertTrue("Hero artwork must remain square ($artWidth x $artHeight)", kotlin.math.abs((artWidth - artHeight).value) <= 2f)
+
+        // Utility pills (1x, Timer, Match Mood) must sit at least 12dp above the floating nav dock
+        val dockBounds = composeRule.onNodeWithTag("floating_nav_dock").getUnclippedBoundsInRoot()
+        listOf("speed_pill", "timer_pill", "match_mood_pill").forEach { tag ->
+            val pillBounds = composeRule.onNodeWithTag(tag).getUnclippedBoundsInRoot()
+            val gap = dockBounds.top - pillBounds.bottom
+            assertTrue(
+                "$tag bottom (${pillBounds.bottom}) must sit at least 12.dp above floating_nav_dock top (${dockBounds.top}), actual gap: $gap",
+                gap >= 12.dp
+            )
+        }
+
+        // Confirm utility pills are directly clickable with zero scrolling
+        composeRule.onNodeWithTag("speed_pill").performClick()
+        composeRule.onNodeWithTag("match_mood_pill").performClick()
+        composeRule.waitForIdle()
+        assertTrue(speedClicked)
+        assertTrue(moodClicked)
     }
 }

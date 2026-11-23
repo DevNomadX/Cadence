@@ -83,8 +83,12 @@ enum class AppearanceMode(val id: String) {
     DARK("dark");
 
     companion object {
-        fun fromId(id: String?): AppearanceMode =
-            entries.firstOrNull { it.id == id } ?: SYSTEM
+        fun fromId(id: String?): AppearanceMode = when (id?.lowercase()) {
+            "auto", "system" -> SYSTEM
+            "light" -> LIGHT
+            "dark" -> DARK
+            else -> entries.firstOrNull { it.id == id } ?: SYSTEM
+        }
     }
 }
 

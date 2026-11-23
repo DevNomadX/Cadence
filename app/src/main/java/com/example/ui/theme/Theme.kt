@@ -3,8 +3,11 @@ package com.example.ui.theme
 import android.app.Activity
 import android.app.ActivityManager
 import android.content.Context
+import android.content.res.Configuration
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.provider.Settings
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -21,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -94,6 +98,19 @@ private fun shouldSkipThemeColorAnimation(context: Context): Boolean {
     return scale == 0f
 }
 
+fun AppearanceMode.resolveIsDark(configuration: Configuration): Boolean = when (this) {
+    AppearanceMode.LIGHT -> false
+    AppearanceMode.DARK -> true
+    AppearanceMode.SYSTEM ->
+        (configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+}
+
+fun AppearanceMode.toAppCompatNightMode(): Int = when (this) {
+    AppearanceMode.LIGHT -> AppCompatDelegate.MODE_NIGHT_NO
+    AppearanceMode.DARK -> AppCompatDelegate.MODE_NIGHT_YES
+    AppearanceMode.SYSTEM -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+}
+
 fun resolveCadenceColorScheme(
     palette: ExpressivePalette,
     darkTheme: Boolean,
@@ -128,9 +145,11 @@ fun CadenceTheme(
     val resolvedScheme = if (skipColorAnimation) baseScheme else baseScheme.animated()
 
     val view = LocalView.current
+    val bgArgb = baseScheme.background.toArgb()
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as? Activity)?.window ?: return@SideEffect
+            window.setBackgroundDrawable(ColorDrawable(bgArgb))
             val insetsController = WindowCompat.getInsetsController(window, view)
             insetsController.isAppearanceLightStatusBars = !darkTheme
             insetsController.isAppearanceLightNavigationBars = !darkTheme

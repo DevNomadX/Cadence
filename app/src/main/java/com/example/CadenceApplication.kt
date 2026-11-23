@@ -3,10 +3,13 @@ package com.example
 import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
+import androidx.appcompat.app.AppCompatDelegate
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
+import com.example.data.PreferencesRepository
+import com.example.ui.theme.toAppCompatNightMode
 import java.io.File
 
 /**
@@ -16,6 +19,12 @@ import java.io.File
  * - 32 MB disk cache cap to prevent unbounded cache growth
  */
 class CadenceApplication : Application(), ImageLoaderFactory {
+
+    override fun onCreate() {
+        super.onCreate()
+        val startupTheme = PreferencesRepository.readStartupThemeSnapshot(this)
+        AppCompatDelegate.setDefaultNightMode(startupTheme.appearanceMode.toAppCompatNightMode())
+    }
 
     override fun newImageLoader(): ImageLoader {
         val am = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager

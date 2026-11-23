@@ -83,9 +83,12 @@ data class UserPreferences(
 
 class PreferencesRepository(private val context: Context) {
 
+    private val syncThemePrefs by lazy(LazyThreadSafetyMode.NONE) {
+        context.applicationContext.getSharedPreferences(SYNC_THEME_PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
     private val deviceIsLowRam: Boolean by lazy(LazyThreadSafetyMode.NONE) {
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-        am?.isLowRamDevice == true
+        isDeviceLowRam(context)
     }
 
     private object Keys {
@@ -114,7 +117,7 @@ class PreferencesRepository(private val context: Context) {
     val themePreferencesFlow: Flow<ThemePreferences> = context.cadenceDataStore.data.map { prefs ->
         val manualPerf = prefs[Keys.PERFORMANCE_MODE]
         val perfEnabled = manualPerf ?: deviceIsLowRam
-        ThemePreferences(
+        val resolved = ThemePreferences(
             palette = ExpressivePalette.fromId(prefs[Keys.PALETTE]),
             appearanceMode = AppearanceMode.fromId(prefs[Keys.APPEARANCE]),
             artworkShape = ExpressiveArtworkShape.fromId(prefs[Keys.ARTWORK_SHAPE]),
@@ -123,6 +126,23 @@ class PreferencesRepository(private val context: Context) {
             performanceModeEnabled = perfEnabled,
             isAutoPerformanceMode = manualPerf == null && deviceIsLowRam
         )
+        // Backfill synchronous startup mirror if DataStore has values not yet mirrored
+        if (!syncThemePrefs.contains(SYNC_KEY_APPEARANCE) || !syncThemePrefs.contains(SYNC_KEY_PALETTE)) {
+            syncThemePrefs.edit()
+                .putString(SYNC_KEY_PALETTE, resolved.palette.id)
+                .putString(SYNC_KEY_APPEARANCE, resolved.appearanceMode.id)
+                .putString(SYNC_KEY_ARTWORK_SHAPE, resolved.artworkShape.id)
+                .putBoolean(SYNC_KEY_WAVY_SCRUBBER, resolved.wavyScrubberEnabled)
+                .putBoolean(SYNC_KEY_AMBIENT_AURA, resolved.ambientAuraEnabled)
+                .apply {
+                    if (manualPerf != null) {
+                        putBoolean(SYNC_KEY_HAS_MANUAL_PERF, true)
+                        putBoolean(SYNC_KEY_PERFORMANCE_MODE, manualPerf)
+                    }
+                }
+                .apply()
+        }
+        resolved
     }.distinctUntilChanged()
 
     val audioSettingsFlow: Flow<AudioSettings> = context.cadenceDataStore.data.map { prefs ->
@@ -181,26 +201,35 @@ class PreferencesRepository(private val context: Context) {
     }
 
     suspend fun setPalette(palette: ExpressivePalette) {
+        syncThemePrefs.edit().putString(SYNC_KEY_PALETTE, palette.id).apply()
         context.cadenceDataStore.edit { it[Keys.PALETTE] = palette.id }
     }
 
     suspend fun setAppearanceMode(mode: AppearanceMode) {
+        syncThemePrefs.edit().putString(SYNC_KEY_APPEARANCE, mode.id).apply()
         context.cadenceDataStore.edit { it[Keys.APPEARANCE] = mode.id }
     }
 
     suspend fun setArtworkShape(shape: ExpressiveArtworkShape) {
+        syncThemePrefs.edit().putString(SYNC_KEY_ARTWORK_SHAPE, shape.id).apply()
         context.cadenceDataStore.edit { it[Keys.ARTWORK_SHAPE] = shape.id }
     }
 
     suspend fun setWavyScrubberEnabled(enabled: Boolean) {
+        syncThemePrefs.edit().putBoolean(SYNC_KEY_WAVY_SCRUBBER, enabled).apply()
         context.cadenceDataStore.edit { it[Keys.WAVY_SCRUBBER] = enabled }
     }
 
     suspend fun setAmbientAuraEnabled(enabled: Boolean) {
+        syncThemePrefs.edit().putBoolean(SYNC_KEY_AMBIENT_AURA, enabled).apply()
         context.cadenceDataStore.edit { it[Keys.AMBIENT_AURA] = enabled }
     }
 
     suspend fun setPerformanceModeEnabled(enabled: Boolean) {
+        syncThemePrefs.edit()
+            .putBoolean(SYNC_KEY_HAS_MANUAL_PERF, true)
+            .putBoolean(SYNC_KEY_PERFORMANCE_MODE, enabled)
+            .apply()
         context.cadenceDataStore.edit { it[Keys.PERFORMANCE_MODE] = enabled }
     }
 
@@ -249,5 +278,46 @@ class PreferencesRepository(private val context: Context) {
 
     companion object {
         const val DEFAULT_MIN_TRACK_DURATION_SEC = 60
+        const val SYNC_THEME_PREFS_NAME = "cadence_theme_sync_prefs"
+        internal const val SYNC_KEY_PALETTE = "expressive_palette"
+        internal const val SYNC_KEY_APPEARANCE = "appearance_mode"
+        internal const val SYNC_KEY_ARTWORK_SHAPE = "artwork_shape"
+        internal const val SYNC_KEY_WAVY_SCRUBBER = "wavy_scrubber_enabled"
+        internal const val SYNC_KEY_AMBIENT_AURA = "ambient_aura_enabled"
+        internal const val SYNC_KEY_HAS_MANUAL_PERF = "has_manual_performance_mode"
+        internal const val SYNC_KEY_PERFORMANCE_MODE = "performance_mode_enabled"
+
+        private fun isDeviceLowRam(context: Context): Boolean {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            return am?.isLowRamDevice == true
+        }
+
+        /**
+         * Reads the mirrored theme settings synchronously from SharedPreferences so
+         * MainActivity.onCreate() and Compose frame 1 resolve the exact user theme
+         * (Light/Dark/Auto + palette) immediately with zero dark-to-light startup flash.
+         */
+        fun readStartupThemeSnapshot(context: Context): ThemePreferences {
+            val prefs = context.applicationContext.getSharedPreferences(
+                SYNC_THEME_PREFS_NAME,
+                Context.MODE_PRIVATE
+            )
+            val lowRam = isDeviceLowRam(context)
+            val hasManualPerf = prefs.getBoolean(SYNC_KEY_HAS_MANUAL_PERF, false)
+            val perfEnabled = if (hasManualPerf) {
+                prefs.getBoolean(SYNC_KEY_PERFORMANCE_MODE, lowRam)
+            } else {
+                lowRam
+            }
+            return ThemePreferences(
+                palette = ExpressivePalette.fromId(prefs.getString(SYNC_KEY_PALETTE, null)),
+                appearanceMode = AppearanceMode.fromId(prefs.getString(SYNC_KEY_APPEARANCE, null)),
+                artworkShape = ExpressiveArtworkShape.fromId(prefs.getString(SYNC_KEY_ARTWORK_SHAPE, null)),
+                wavyScrubberEnabled = prefs.getBoolean(SYNC_KEY_WAVY_SCRUBBER, true),
+                ambientAuraEnabled = prefs.getBoolean(SYNC_KEY_AMBIENT_AURA, true),
+                performanceModeEnabled = perfEnabled,
+                isAutoPerformanceMode = !hasManualPerf && lowRam
+            )
+        }
     }
 }

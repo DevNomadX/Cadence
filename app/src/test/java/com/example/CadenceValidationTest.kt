@@ -341,13 +341,13 @@ class CadenceValidationTest {
 
         composeRule.onNodeWithTag("now_playing_title").assertIsDisplayed()
         composeRule.onNodeWithTag("settings_button").performClick()
-        composeRule.onNodeWithTag("play_pause_button").performScrollTo().performClick()
-        composeRule.onNodeWithTag("next_button").performScrollTo().performClick()
-        composeRule.onNodeWithTag("previous_button").performScrollTo().performClick()
-        composeRule.onNodeWithTag("shuffle_button").performScrollTo().performClick()
-        composeRule.onNodeWithTag("repeat_button").performScrollTo().performClick()
-        composeRule.onNodeWithTag("favorite_button").performScrollTo().performClick()
-        composeRule.onNodeWithTag("speed_pill").performScrollTo().performClick()
+        composeRule.onNodeWithTag("play_pause_button").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("next_button").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("previous_button").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("shuffle_button").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("repeat_button").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("favorite_button").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("speed_pill").assertIsDisplayed().performClick()
 
         assertTrue(settingsClicked)
         assertTrue(playToggled)
@@ -359,13 +359,13 @@ class CadenceValidationTest {
         assertTrue(speedClicked)
 
         // Open Sleep Timer sheet and select End of Track
-        composeRule.onNodeWithTag("timer_pill").performScrollTo().performClick()
+        composeRule.onNodeWithTag("timer_pill").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("End of track").performClick()
         assertEquals(SleepTimerOption.END_OF_TRACK, selectedTimer)
 
         // Open Up Next Queue sheet and verify queue items render
-        composeRule.onNodeWithTag("queue_button").performScrollTo().performClick()
+        composeRule.onNodeWithTag("queue_button").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("queue_item_0").assertIsDisplayed()
     }

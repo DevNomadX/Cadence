@@ -24,7 +24,8 @@ import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -32,16 +33,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -66,7 +70,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -82,8 +85,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -325,174 +328,162 @@ fun CadenceApp(
                 scanStateFlow = viewModel.scanState,
                 artworkShape = themePrefs.artworkShape
             ) {
-                Scaffold(
-                    containerColor = Color.Transparent,
-                    contentWindowInsets = WindowInsets.safeDrawing,
-                    snackbarHost = {
-                        SnackbarHost(
-                            hostState = snackbarHostState,
-                            modifier = Modifier.padding(bottom = if (useNavigationRail) 12.dp else 8.dp)
-                        )
-                    },
-                bottomBar = {
-                    if (!useNavigationRail && !showSettings) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .navigationBarsPadding()
-                                .padding(horizontal = 18.dp, vertical = 10.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            val currentTrack = nowPlaying.currentTrack
-                            val showMiniPlayer = activeTab != CadenceTab.NOW_PLAYING && currentTrack != null
+                val currentTrack = nowPlaying.currentTrack
+                val showFloatingDock = !useNavigationRail && !showSettings
+                val showMiniPlayer = showFloatingDock && activeTab != CadenceTab.NOW_PLAYING && currentTrack != null
+                val contentKey = if (showSettings) "settings" else activeTab.route
 
-                            if (performanceMode) {
-                                if (currentTrack != null && activeTab != CadenceTab.NOW_PLAYING) {
-                                    FloatingMiniPlayerPill(
-                                        track = currentTrack,
-                                        isPlaying = nowPlaying.isPlaying,
-                                        artworkShape = themePrefs.artworkShape,
-                                        onExpand = onExpandMiniPlayer,
-                                        onTogglePlayPause = onTogglePlayPause,
-                                        onNext = viewModel::nextTrack
-                                    )
-                                }
-                            } else {
-                                AnimatedVisibility(
-                                    visible = showMiniPlayer,
-                                    enter = slideInVertically { it } + fadeIn(),
-                                    exit = slideOutVertically { it } + fadeOut()
-                                ) {
-                                    if (currentTrack != null) {
-                                        FloatingMiniPlayerPill(
-                                            track = currentTrack,
-                                            isPlaying = nowPlaying.isPlaying,
-                                            artworkShape = themePrefs.artworkShape,
-                                            onExpand = onExpandMiniPlayer,
-                                            onTogglePlayPause = onTogglePlayPause,
-                                            onNext = viewModel::nextTrack
-                                        )
-                                    }
-                                }
-                            }
-
-                            FloatingExpressiveNavDock(
-                                activeTab = activeTab,
-                                onSelectTab = onSelectTab
-                            )
-                        }
-                    }
-                }
-            ) { innerPadding ->
-                Row(
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(innerPadding)
+                        .testTag("cadence_floating_root")
                 ) {
-                    if (useNavigationRail) {
-                        val railBg = MaterialTheme.colorScheme.surfaceContainerLow.opaqueOver(
-                            MaterialTheme.colorScheme.background,
-                            0.94f
-                        )
-                        NavigationRail(
-                            containerColor = railBg,
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .statusBarsPadding()
-                        ) {
-                            Spacer(Modifier.height(16.dp))
-                            CadenceTab.entries.forEach { tab ->
-                                val selected = !showSettings && activeTab == tab
+                    // Full-bleed screen content extending all the way behind the floating pills
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("cadence_content_container")
+                    ) {
+                        if (useNavigationRail) {
+                            val railBg = MaterialTheme.colorScheme.surfaceContainerLow.opaqueOver(
+                                MaterialTheme.colorScheme.background,
+                                0.94f
+                            )
+                            NavigationRail(
+                                containerColor = railBg,
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .statusBarsPadding()
+                                    .navigationBarsPadding()
+                            ) {
+                                Spacer(Modifier.height(16.dp))
+                                CadenceTab.entries.forEach { tab ->
+                                    val selected = !showSettings && activeTab == tab
+                                    NavigationRailItem(
+                                        selected = selected,
+                                        onClick = { onSelectTab(tab) },
+                                        icon = {
+                                            Icon(
+                                                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                                contentDescription = stringResource(tab.labelRes)
+                                            )
+                                        },
+                                        label = { Text(stringResource(tab.labelRes)) },
+                                        modifier = Modifier.testTag("nav_${tab.route}")
+                                    )
+                                }
+                                Spacer(Modifier.weight(1f))
                                 NavigationRailItem(
-                                    selected = selected,
-                                    onClick = { onSelectTab(tab) },
+                                    selected = showSettings,
+                                    onClick = onOpenSettings,
                                     icon = {
                                         Icon(
-                                            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                            contentDescription = stringResource(tab.labelRes)
+                                            imageVector = if (showSettings) Icons.Rounded.Settings else Icons.Outlined.Settings,
+                                            contentDescription = stringResource(R.string.nav_settings)
                                         )
                                     },
-                                    label = { Text(stringResource(tab.labelRes)) },
-                                    modifier = Modifier.testTag("nav_${tab.route}")
+                                    label = { Text(stringResource(R.string.nav_settings)) },
+                                    modifier = Modifier
+                                        .padding(bottom = 12.dp)
+                                        .testTag("rail_settings_button")
                                 )
                             }
-                            Spacer(Modifier.weight(1f))
-                            NavigationRailItem(
-                                selected = showSettings,
-                                onClick = onOpenSettings,
-                                icon = {
-                                    Icon(
-                                        imageVector = if (showSettings) Icons.Rounded.Settings else Icons.Outlined.Settings,
-                                        contentDescription = stringResource(R.string.nav_settings)
-                                    )
-                                },
-                                label = { Text(stringResource(R.string.nav_settings)) },
-                                modifier = Modifier
-                                    .padding(bottom = 12.dp)
-                                    .testTag("rail_settings_button")
+                        }
+
+                        val contentInsetsModifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .windowInsetsPadding(
+                                WindowInsets.safeDrawing.only(
+                                    WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                                )
                             )
+
+                        if (performanceMode) {
+                            Box(modifier = contentInsetsModifier) {
+                                CadenceDestinationContent(
+                                    contentKey = contentKey,
+                                    viewModel = viewModel,
+                                    themePrefs = themePrefs,
+                                    nowPlaying = nowPlaying,
+                                    onOpenSettings = onOpenSettings,
+                                    onCloseSettings = onCloseSettings,
+                                    onTogglePlayPause = onTogglePlayPause,
+                                    onToggleFavoriteCurrent = onToggleFavoriteCurrent,
+                                    onAddCurrentToPlaylist = onAddCurrentToPlaylist,
+                                    onCreatePlaylistWithCurrent = onCreatePlaylistWithCurrent,
+                                    onPlayNextCurrent = onPlayNextCurrent,
+                                    onAddCurrentToQueue = onAddCurrentToQueue,
+                                    onSelectTrackFromLibrary = onSelectTrackFromLibrary,
+                                    onPlayTracksFromLibrary = onPlayTracksFromLibrary,
+                                    onPlayPlaylistFromLibrary = onPlayPlaylistFromLibrary,
+                                    onImportFiles = onImportFiles,
+                                    onAddFolder = onAddFolder,
+                                    onScanDevice = triggerDeviceScan,
+                                    onGenerateSmartPlaylist = onGenerateSmartPlaylist
+                                )
+                            }
+                        } else {
+                            AnimatedContent(
+                                targetState = contentKey,
+                                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                                modifier = contentInsetsModifier,
+                                label = "destination_content"
+                            ) { key ->
+                                CadenceDestinationContent(
+                                    contentKey = key,
+                                    viewModel = viewModel,
+                                    themePrefs = themePrefs,
+                                    nowPlaying = nowPlaying,
+                                    onOpenSettings = onOpenSettings,
+                                    onCloseSettings = onCloseSettings,
+                                    onTogglePlayPause = onTogglePlayPause,
+                                    onToggleFavoriteCurrent = onToggleFavoriteCurrent,
+                                    onAddCurrentToPlaylist = onAddCurrentToPlaylist,
+                                    onCreatePlaylistWithCurrent = onCreatePlaylistWithCurrent,
+                                    onPlayNextCurrent = onPlayNextCurrent,
+                                    onAddCurrentToQueue = onAddCurrentToQueue,
+                                    onSelectTrackFromLibrary = onSelectTrackFromLibrary,
+                                    onPlayTracksFromLibrary = onPlayTracksFromLibrary,
+                                    onPlayPlaylistFromLibrary = onPlayPlaylistFromLibrary,
+                                    onImportFiles = onImportFiles,
+                                    onAddFolder = onAddFolder,
+                                    onScanDevice = triggerDeviceScan,
+                                    onGenerateSmartPlaylist = onGenerateSmartPlaylist
+                                )
+                            }
                         }
                     }
 
-                    val contentKey = if (showSettings) "settings" else activeTab.route
-
-                    if (performanceMode) {
-                        Box(modifier = Modifier.weight(1f)) {
-                            CadenceDestinationContent(
-                                contentKey = contentKey,
-                                viewModel = viewModel,
-                                themePrefs = themePrefs,
-                                nowPlaying = nowPlaying,
-                                onOpenSettings = onOpenSettings,
-                                onCloseSettings = onCloseSettings,
-                                onTogglePlayPause = onTogglePlayPause,
-                                onToggleFavoriteCurrent = onToggleFavoriteCurrent,
-                                onAddCurrentToPlaylist = onAddCurrentToPlaylist,
-                                onCreatePlaylistWithCurrent = onCreatePlaylistWithCurrent,
-                                onPlayNextCurrent = onPlayNextCurrent,
-                                onAddCurrentToQueue = onAddCurrentToQueue,
-                                onSelectTrackFromLibrary = onSelectTrackFromLibrary,
-                                onPlayTracksFromLibrary = onPlayTracksFromLibrary,
-                                onPlayPlaylistFromLibrary = onPlayPlaylistFromLibrary,
-                                onImportFiles = onImportFiles,
-                                onAddFolder = onAddFolder,
-                                onScanDevice = triggerDeviceScan,
-                                onGenerateSmartPlaylist = onGenerateSmartPlaylist
-                            )
-                        }
-                    } else {
-                        AnimatedContent(
-                            targetState = contentKey,
-                            transitionSpec = { fadeIn() togetherWith fadeOut() },
-                            modifier = Modifier.weight(1f),
-                            label = "destination_content"
-                        ) { key ->
-                            CadenceDestinationContent(
-                                contentKey = key,
-                                viewModel = viewModel,
-                                themePrefs = themePrefs,
-                                nowPlaying = nowPlaying,
-                                onOpenSettings = onOpenSettings,
-                                onCloseSettings = onCloseSettings,
-                                onTogglePlayPause = onTogglePlayPause,
-                                onToggleFavoriteCurrent = onToggleFavoriteCurrent,
-                                onAddCurrentToPlaylist = onAddCurrentToPlaylist,
-                                onCreatePlaylistWithCurrent = onCreatePlaylistWithCurrent,
-                                onPlayNextCurrent = onPlayNextCurrent,
-                                onAddCurrentToQueue = onAddCurrentToQueue,
-                                onSelectTrackFromLibrary = onSelectTrackFromLibrary,
-                                onPlayTracksFromLibrary = onPlayTracksFromLibrary,
-                                onPlayPlaylistFromLibrary = onPlayPlaylistFromLibrary,
-                                onImportFiles = onImportFiles,
-                                onAddFolder = onAddFolder,
-                                onScanDevice = triggerDeviceScan,
-                                onGenerateSmartPlaylist = onGenerateSmartPlaylist
-                            )
-                        }
+                    // Truly floating bottom overlay with lightweight zero-blur vertical gradient scrim
+                    if (showFloatingDock) {
+                        FloatingBottomDockOverlay(
+                            activeTab = activeTab,
+                            currentTrack = currentTrack,
+                            isPlaying = nowPlaying.isPlaying,
+                            artworkShape = themePrefs.artworkShape,
+                            onSelectTab = onSelectTab,
+                            onExpandMiniPlayer = onExpandMiniPlayer,
+                            onTogglePlayPause = onTogglePlayPause,
+                            onNext = viewModel::nextTrack,
+                            modifier = Modifier.align(Alignment.BottomCenter)
+                        )
                     }
+
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(
+                                bottom = when {
+                                    !showFloatingDock -> 16.dp
+                                    showMiniPlayer -> 154.dp
+                                    else -> 84.dp
+                                }
+                            )
+                    )
                 }
-            }
             }
         }
     }
@@ -641,8 +632,91 @@ private fun CadenceDestinationContent(
     }
 }
 
+/**
+ * Truly floating bottom overlay combining a lightweight zero-blur vertical gradient scrim
+ * with the floating mini-player pill and expanding floating navigation dock.
+ * Parent containers never clip so pill edges remain razor-sharp with zero corner artifacts.
+ */
 @Composable
-private fun FloatingMiniPlayerPill(
+internal fun FloatingBottomDockOverlay(
+    activeTab: CadenceTab,
+    currentTrack: Track?,
+    isPlaying: Boolean,
+    artworkShape: ExpressiveArtworkShape,
+    onSelectTab: (CadenceTab) -> Unit,
+    onExpandMiniPlayer: () -> Unit,
+    onTogglePlayPause: () -> Unit,
+    onNext: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val performanceMode = LocalPerformanceMode.current
+    val bg = MaterialTheme.colorScheme.background
+    val scrimBrush = remember(bg) {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color.Transparent,
+                bg.copy(alpha = 0.92f),
+                bg
+            )
+        )
+    }
+    val showMiniPlayer = activeTab != CadenceTab.NOW_PLAYING && currentTrack != null
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(scrimBrush)
+            .navigationBarsPadding()
+            .padding(top = 28.dp, bottom = 10.dp)
+            .testTag("floating_bottom_overlay")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            if (performanceMode) {
+                if (activeTab != CadenceTab.NOW_PLAYING && currentTrack != null) {
+                    FloatingMiniPlayerPill(
+                        track = currentTrack,
+                        isPlaying = isPlaying,
+                        artworkShape = artworkShape,
+                        onExpand = onExpandMiniPlayer,
+                        onTogglePlayPause = onTogglePlayPause,
+                        onNext = onNext
+                    )
+                }
+            } else {
+                AnimatedVisibility(
+                    visible = showMiniPlayer,
+                    enter = slideInVertically { it } + fadeIn(),
+                    exit = slideOutVertically { it } + fadeOut()
+                ) {
+                    if (currentTrack != null) {
+                        FloatingMiniPlayerPill(
+                            track = currentTrack,
+                            isPlaying = isPlaying,
+                            artworkShape = artworkShape,
+                            onExpand = onExpandMiniPlayer,
+                            onTogglePlayPause = onTogglePlayPause,
+                            onNext = onNext
+                        )
+                    }
+                }
+            }
+
+            FloatingExpressiveNavDock(
+                activeTab = activeTab,
+                onSelectTab = onSelectTab
+            )
+        }
+    }
+}
+
+@Composable
+internal fun FloatingMiniPlayerPill(
     track: Track,
     isPlaying: Boolean,
     artworkShape: ExpressiveArtworkShape,
@@ -650,21 +724,19 @@ private fun FloatingMiniPlayerPill(
     onTogglePlayPause: () -> Unit,
     onNext: () -> Unit
 ) {
-    val performanceMode = LocalPerformanceMode.current
-    val pillBg = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(
-        MaterialTheme.colorScheme.background,
-        0.96f
-    )
+    val bg = MaterialTheme.colorScheme.background
+    val pillBg = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(bg, 0.96f)
+    val pillBorder = MaterialTheme.colorScheme.outlineVariant.opaqueOver(bg, 0.85f)
     Surface(
-        shape = RoundedCornerShape(28.dp),
+        onClick = onExpand,
+        shape = CircleShape,
         color = pillBg,
-        tonalElevation = if (performanceMode) 0.dp else 4.dp,
-        shadowElevation = if (performanceMode) 0.dp else 6.dp,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+        border = BorderStroke(1.dp, pillBorder),
         modifier = Modifier
             .fillMaxWidth()
             .widthIn(max = 460.dp)
-            .clip(RoundedCornerShape(28.dp))
-            .clickable(onClick = onExpand)
             .testTag("mini_player_pill")
     ) {
         Row(
@@ -737,7 +809,8 @@ private fun FloatingMiniPlayerPill(
  * Google Photos-inspired expanding floating bottom navigation dock:
  * - Only the active tab expands into a highlighted pill displaying both icon & text label.
  * - Inactive tabs collapse into compact 50dp circular icon buttons with hidden text labels.
- * - Smoothly animates expansion and collapse on tab switch (instant snap in Performance Mode).
+ * - Uses CircleShape, 0dp shadowElevation, and a crisp 1dp pre-blended outlineVariant border
+ *   so corners render razor-sharp with zero clipped shadow artifacts.
  */
 @Composable
 internal fun FloatingExpressiveNavDock(
@@ -746,10 +819,9 @@ internal fun FloatingExpressiveNavDock(
     modifier: Modifier = Modifier
 ) {
     val performanceMode = LocalPerformanceMode.current
-    val dockBg = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(
-        MaterialTheme.colorScheme.background,
-        0.96f
-    )
+    val bg = MaterialTheme.colorScheme.background
+    val dockBg = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(bg, 0.96f)
+    val dockBorder = MaterialTheme.colorScheme.outlineVariant.opaqueOver(bg, 0.85f)
     val inactiveCircleBg = MaterialTheme.colorScheme.surfaceContainer.opaqueOver(
         dockBg,
         0.82f
@@ -768,8 +840,9 @@ internal fun FloatingExpressiveNavDock(
     Surface(
         shape = CircleShape,
         color = dockBg,
-        tonalElevation = if (performanceMode) 0.dp else 4.dp,
-        shadowElevation = if (performanceMode) 0.dp else 8.dp,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+        border = BorderStroke(1.dp, dockBorder),
         modifier = modifier
             .wrapContentWidth()
             .then(dockAnimModifier)
@@ -796,6 +869,7 @@ internal fun FloatingExpressiveNavDock(
                 }
 
                 Surface(
+                    onClick = onPickTab,
                     shape = CircleShape,
                     color = if (selected) {
                         MaterialTheme.colorScheme.primaryContainer
@@ -807,12 +881,12 @@ internal fun FloatingExpressiveNavDock(
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
                     modifier = Modifier
                         .height(50.dp)
                         .widthIn(min = 50.dp)
                         .then(pillAnimModifier)
-                        .clip(CircleShape)
-                        .clickable(onClick = onPickTab)
                         .testTag("nav_${tab.route}")
                 ) {
                     Row(

@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import android.util.Log
 import androidx.annotation.Keep
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -33,6 +34,7 @@ import com.example.playback.PlaybackProgress
 import com.example.ui.theme.AppearanceMode
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.ExpressivePalette
+import com.example.ui.theme.toAppCompatNightMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -208,11 +210,14 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
     )
 
+    private val initialThemeSnapshot: ThemePreferences =
+        PreferencesRepository.readStartupThemeSnapshot(application)
+
     val themeState: StateFlow<ThemePreferences> = preferencesRepo.themePreferencesFlow
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000L),
-            initialValue = ThemePreferences()
+            initialValue = initialThemeSnapshot
         )
 
     val progressState: StateFlow<PlaybackProgress> = playbackController.progressState
@@ -867,6 +872,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setAppearanceMode(mode: AppearanceMode) {
+        AppCompatDelegate.setDefaultNightMode(mode.toAppCompatNightMode())
         viewModelScope.launch { preferencesRepo.setAppearanceMode(mode) }
     }
 
