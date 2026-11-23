@@ -87,6 +87,7 @@ import com.example.playback.PlaybackProgress
 import com.example.ui.components.AddToPlaylistSheetContent
 import com.example.ui.components.AudioPulseBars
 import com.example.ui.components.ExpressiveArtworkFrame
+import com.example.ui.components.HiFiQualityBadge
 import com.example.ui.components.MorphingPlayPauseButton
 import com.example.ui.components.PlaylistNameDialog
 import com.example.ui.components.QueueSheetContent
@@ -720,7 +721,8 @@ private fun TrackTitleColumn(track: Track, modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
             )
             Box(
                 modifier = Modifier
@@ -734,6 +736,15 @@ private fun TrackTitleColumn(track: Track, modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (track.isHiFi) {
+            Spacer(Modifier.height(2.dp))
+            HiFiQualityBadge(
+                label = track.hiFiLabel,
+                specDetail = track.hiFiSpecSummary,
+                backgroundBehind = MaterialTheme.colorScheme.background,
+                modifier = Modifier.testTag("now_playing_hifi_badge")
             )
         }
     }

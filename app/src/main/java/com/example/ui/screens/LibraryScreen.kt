@@ -2,8 +2,6 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,8 +20,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
@@ -31,7 +33,6 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Favorite
@@ -60,18 +61,24 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -85,29 +92,30 @@ import com.example.data.Track
 import com.example.data.TrackGroup
 import com.example.data.formatDuration
 import com.example.data.library.ScanState
-import com.example.data.toStableMap
 import com.example.ui.components.AddToPlaylistSheetContent
 import com.example.ui.components.AudioPulseBars
 import com.example.ui.components.ExpressiveArtworkFrame
 import com.example.ui.components.FastListThumbnailShape
+import com.example.ui.components.HiFiQualityBadge
 import com.example.ui.components.ImportSourcesSheetContent
 import com.example.ui.components.PlaylistNameDialog
-import com.example.ui.components.SmartPlaylistSheetContent
 import com.example.ui.components.TrackActionsSheetContent
 import com.example.ui.components.TrackDetailsDialog
 import com.example.ui.player.LibraryDrillDown
 import com.example.ui.player.LibraryUiState
-import com.example.ui.player.SmartPlaylistUiState
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 
 private val IdleScanStateFlow: StateFlow<ScanState> = MutableStateFlow(ScanState())
-private val IdleSmartPlaylistFlow: StateFlow<SmartPlaylistUiState> = MutableStateFlow(SmartPlaylistUiState())
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
 fun LibraryScreen(
     uiState: LibraryUiState,
@@ -137,14 +145,9 @@ fun LibraryScreen(
     onRemoveTrack: (Track) -> Unit,
     onOpenSettings: () -> Unit = {},
     scanStateFlow: StateFlow<ScanState> = IdleScanStateFlow,
-    smartPlaylistFlow: StateFlow<SmartPlaylistUiState> = IdleSmartPlaylistFlow,
-    currentTrackTitle: String = "",
-    onGenerateSmartPlaylist: (String?, Boolean) -> Unit = { _, _ -> },
-    onSaveSmartPlaylist: (String, List<String>) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     var showImportSheet by remember { mutableStateOf(false) }
-    var showSmartMixSheet by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
     var activeTrackForMenu by remember { mutableStateOf<Track?>(null) }
     var trackForPlaylistPicker by remember { mutableStateOf<Track?>(null) }
@@ -153,24 +156,68 @@ fun LibraryScreen(
     var pendingTrackForNewPlaylist by remember { mutableStateOf<String?>(null) }
     var playlistToRename by remember { mutableStateOf<PlaylistSummary?>(null) }
 
+    // Immediate local text state so typing renders at 60 FPS with zero ViewModel round-trip lag
+    var rawSearchQuery by rememberSaveable { mutableStateOf(uiState.searchQuery) }
+    val latestOnSearchChange by rememberUpdatedState(onSearchChange)
+    val listState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    // Debounce search dispatches to ViewModel (150ms) so fast typing never floods filtering
+    LaunchedEffect(Unit) {
+        snapshotFlow { rawSearchQuery }
+            .drop(1)
+            .debounce(150L)
+            .distinctUntilChanged()
+            .collect { debounced ->
+                latestOnSearchChange(debounced)
+            }
+    }
+
+    // Reset results list cleanly to top whenever the active filtered query changes
+    LaunchedEffect(uiState.searchQuery) {
+        if (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0) {
+            listState.scrollToItem(0)
+        }
+    }
+
+    // Dismiss keyboard & focus as soon as the user starts scrolling results
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }
+            .distinctUntilChanged()
+            .collect { scrolling ->
+                if (scrolling) {
+                    focusManager.clearFocus(force = false)
+                    keyboardController?.hide()
+                }
+            }
+    }
+
     BackHandler(enabled = uiState.drillDown != null) {
         onCloseDrillDown()
     }
 
     val activePlaylistId = (uiState.drillDown as? LibraryDrillDown.Playlist)?.playlistId
 
-    // Pre-compute opaque blended row surfaces once per theme change so scrolling items do zero alpha-blending
+    // Pre-compute opaque blended row & badge surfaces once per theme change so scrolling items do zero alpha-blending
     val bg = MaterialTheme.colorScheme.background
     val activeRowColor = MaterialTheme.colorScheme.primaryContainer.opaqueOver(bg, 0.80f)
     val idleRowColor = MaterialTheme.colorScheme.surfaceContainerLow.opaqueOver(bg, 0.94f)
+    val idleHiFiBadgeColor = MaterialTheme.colorScheme.tertiaryContainer.opaqueOver(idleRowColor, 0.94f)
+    val activeHiFiBadgeColor = MaterialTheme.colorScheme.tertiaryContainer.opaqueOver(activeRowColor, 0.96f)
+    val hiFiBadgeTextColor = MaterialTheme.colorScheme.onTertiaryContainer
+    val compactHiFiLabel = stringResource(R.string.badge_hifi_short)
 
     // Stabilized item-level callbacks to prevent full LazyColumn recomposition during flings
     val onOpenTrackMenu = remember { { track: Track -> activeTrackForMenu = track } }
     val onOpenImportSheet = remember { { showImportSheet = true } }
-    val onOpenSmartMix = remember(onGenerateSmartPlaylist) {
+    val onClearSearchImmediate = remember(focusManager, keyboardController) {
         {
-            onGenerateSmartPlaylist(null, false)
-            showSmartMixSheet = true
+            rawSearchQuery = ""
+            latestOnSearchChange("")
+            focusManager.clearFocus(force = false)
+            keyboardController?.hide()
+            Unit
         }
     }
     val onSelectDisplayedTrack = remember(uiState.displayedTracks, onSelectTrack) {
@@ -185,18 +232,150 @@ fun LibraryScreen(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.TopCenter
     ) {
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .widthIn(max = 680.dp),
-            contentPadding = PaddingValues(
-                start = 20.dp,
-                end = 20.dp,
-                top = 12.dp,
-                bottom = 180.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .widthIn(max = 680.dp)
         ) {
+            // Keep Header + Search Bar outside LazyColumn so OEM skins never intercept focus/taps
+            if (uiState.drillDown == null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = stringResource(R.string.library_title),
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                                .testTag("library_header_title")
+                        )
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FilledTonalIconButton(
+                                onClick = onOpenSettings,
+                                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    contentColor = MaterialTheme.colorScheme.onSurface
+                                ),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("library_settings_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Settings,
+                                    contentDescription = stringResource(R.string.action_settings),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            FilledTonalIconButton(
+                                onClick = onOpenImportSheet,
+                                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("import_audio_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Add,
+                                    contentDescription = stringResource(R.string.action_import_audio),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    IsolatedScanProgressBanner(scanStateFlow = scanStateFlow)
+
+                    OutlinedTextField(
+                        value = rawSearchQuery,
+                        onValueChange = { rawSearchQuery = it },
+                        placeholder = {
+                            Text(
+                                text = stringResource(R.string.library_search_hint),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Rounded.Search,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        trailingIcon = {
+                            if (rawSearchQuery.isNotEmpty()) {
+                                IconButton(
+                                    onClick = onClearSearchImmediate,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("library_search_clear_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = stringResource(R.string.action_clear_search)
+                                    )
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(
+                            onSearch = {
+                                latestOnSearchChange(rawSearchQuery)
+                                focusManager.clearFocus(force = false)
+                                keyboardController?.hide()
+                            }
+                        ),
+                        shape = CircleShape,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = Color.Transparent
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("library_search_input")
+                    )
+                }
+            }
+
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .testTag("library_results_list"),
+                contentPadding = PaddingValues(
+                    start = 20.dp,
+                    end = 20.dp,
+                    top = if (uiState.drillDown != null) 12.dp else 0.dp,
+                    bottom = 180.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
             if (uiState.drillDown != null) {
                 val drill = uiState.drillDown
                 val drillTitle = when (drill) {
@@ -308,13 +487,17 @@ fun LibraryScreen(
                         key = { it.id },
                         contentType = { "track_row" }
                     ) { track ->
+                        val isCurrentTrack = track.id == currentTrackId
                         LibraryTrackRow(
                             track = track,
                             artworkShape = artworkShape,
-                            isCurrent = track.id == currentTrackId,
+                            isCurrent = isCurrentTrack,
                             isPlaying = isPlaying,
                             activeColor = activeRowColor,
                             idleColor = idleRowColor,
+                            hiFiBadgeColor = if (isCurrentTrack) activeHiFiBadgeColor else idleHiFiBadgeColor,
+                            hiFiBadgeTextColor = hiFiBadgeTextColor,
+                            hiFiLabel = compactHiFiLabel,
                             onTrackClick = onSelectDrillTrack,
                             onToggleFavorite = onToggleFavorite,
                             onMoreClick = onOpenTrackMenu
@@ -322,148 +505,6 @@ fun LibraryScreen(
                     }
                 }
             } else {
-                item(key = "header", contentType = "library_header") {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = stringResource(R.string.library_title),
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = MaterialTheme.colorScheme.onBackground,
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(end = 8.dp)
-                                    .testTag("library_header_title")
-                            )
-
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                FilledTonalIconButton(
-                                    onClick = onOpenSmartMix,
-                                    colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                    ),
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .testTag("smart_mix_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.AutoAwesome,
-                                        contentDescription = stringResource(R.string.smart_mix_button),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-
-                                FilledTonalIconButton(
-                                    onClick = onOpenSettings,
-                                    colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                        contentColor = MaterialTheme.colorScheme.onSurface
-                                    ),
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .testTag("library_settings_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Settings,
-                                        contentDescription = stringResource(R.string.action_settings),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-
-                                FilledTonalIconButton(
-                                    onClick = onOpenImportSheet,
-                                    colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                    ),
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .testTag("import_audio_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Add,
-                                        contentDescription = stringResource(R.string.action_import_audio),
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        Text(
-                            text = stringResource(R.string.library_subtitle),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("library_header_subtitle")
-                        )
-                    }
-                }
-
-                item(key = "scan_banner", contentType = "scan_banner") {
-                    IsolatedScanProgressBanner(scanStateFlow = scanStateFlow)
-                }
-
-                item(key = "search_bar", contentType = "search_bar") {
-                    OutlinedTextField(
-                        value = uiState.searchQuery,
-                        onValueChange = onSearchChange,
-                        placeholder = {
-                            Text(
-                                text = stringResource(R.string.library_search_hint),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Rounded.Search,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        trailingIcon = {
-                            AnimatedVisibility(
-                                visible = uiState.searchQuery.isNotEmpty(),
-                                enter = fadeIn(),
-                                exit = fadeOut()
-                            ) {
-                                IconButton(onClick = { onSearchChange("") }) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Close,
-                                        contentDescription = stringResource(R.string.action_clear_search)
-                                    )
-                                }
-                            }
-                        },
-                        singleLine = true,
-                        shape = CircleShape,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = Color.Transparent
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("library_search_input")
-                    )
-                }
-
                 item(key = "categories", contentType = "category_row") {
                     val categories = remember {
                         listOf(
@@ -605,13 +646,17 @@ fun LibraryScreen(
                                 key = { it.id },
                                 contentType = { "track_row" }
                             ) { track ->
+                                val isCurrentTrack = track.id == currentTrackId
                                 LibraryTrackRow(
                                     track = track,
                                     artworkShape = artworkShape,
-                                    isCurrent = track.id == currentTrackId,
+                                    isCurrent = isCurrentTrack,
                                     isPlaying = isPlaying,
                                     activeColor = activeRowColor,
                                     idleColor = idleRowColor,
+                                    hiFiBadgeColor = if (isCurrentTrack) activeHiFiBadgeColor else idleHiFiBadgeColor,
+                                    hiFiBadgeTextColor = hiFiBadgeTextColor,
+                                    hiFiLabel = compactHiFiLabel,
                                     onTrackClick = onSelectDisplayedTrack,
                                     onToggleFavorite = onToggleFavorite,
                                     onMoreClick = onOpenTrackMenu
@@ -619,9 +664,11 @@ fun LibraryScreen(
                             }
                         } else if (uiState.isInitialLibraryLoaded) {
                             item(key = "empty_tracks", contentType = "empty_card") {
-                                val isEmptyFreshSongs = uiState.category == LibraryCategory.SONGS && uiState.searchQuery.isBlank()
+                                val trimmedQuery = uiState.searchQuery.trim()
+                                val isSearchActive = trimmedQuery.isNotEmpty()
+                                val isEmptyFreshSongs = uiState.category == LibraryCategory.SONGS && !isSearchActive
                                 val msg = when {
-                                    uiState.searchQuery.isNotBlank() -> stringResource(R.string.library_empty_search)
+                                    isSearchActive -> stringResource(R.string.library_empty_search_query, trimmedQuery)
                                     uiState.category == LibraryCategory.FAVORITES -> stringResource(R.string.library_empty_favorites)
                                     uiState.category == LibraryCategory.RECENT -> stringResource(R.string.library_empty_recent)
                                     uiState.category == LibraryCategory.MOST_PLAYED -> stringResource(R.string.library_empty_most_played)
@@ -631,8 +678,10 @@ fun LibraryScreen(
                                     title = if (isEmptyFreshSongs) stringResource(R.string.library_empty_title) else null,
                                     message = msg,
                                     showScanCta = isEmptyFreshSongs,
+                                    isSearchEmpty = isSearchActive,
                                     onScanFolderClick = onAddFolder,
-                                    onImportClick = onOpenImportSheet
+                                    onImportClick = onOpenImportSheet,
+                                    onClearSearchClick = if (isSearchActive) onClearSearchImmediate else null
                                 )
                             }
                         }
@@ -659,12 +708,20 @@ fun LibraryScreen(
 
                         if (uiState.playlists.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_playlists", contentType = "empty_card") {
+                                val trimmedQuery = uiState.searchQuery.trim()
+                                val isSearchActive = trimmedQuery.isNotEmpty()
                                 LibraryEmptyCard(
                                     title = null,
-                                    message = stringResource(R.string.library_empty_playlists),
+                                    message = if (isSearchActive) {
+                                        stringResource(R.string.library_empty_search_query, trimmedQuery)
+                                    } else {
+                                        stringResource(R.string.library_empty_playlists)
+                                    },
                                     showScanCta = false,
+                                    isSearchEmpty = isSearchActive,
                                     onScanFolderClick = {},
-                                    onImportClick = {}
+                                    onImportClick = {},
+                                    onClearSearchClick = if (isSearchActive) onClearSearchImmediate else null
                                 )
                             }
                         } else if (uiState.playlists.isNotEmpty()) {
@@ -689,12 +746,20 @@ fun LibraryScreen(
                     LibraryCategory.ALBUMS -> {
                         if (uiState.albums.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_albums", contentType = "empty_card") {
+                                val trimmedQuery = uiState.searchQuery.trim()
+                                val isSearchActive = trimmedQuery.isNotEmpty()
                                 LibraryEmptyCard(
                                     title = null,
-                                    message = if (uiState.searchQuery.isNotBlank()) stringResource(R.string.library_empty_search) else stringResource(R.string.library_empty_songs),
-                                    showScanCta = uiState.searchQuery.isBlank(),
+                                    message = if (isSearchActive) {
+                                        stringResource(R.string.library_empty_search_query, trimmedQuery)
+                                    } else {
+                                        stringResource(R.string.library_empty_songs)
+                                    },
+                                    showScanCta = !isSearchActive,
+                                    isSearchEmpty = isSearchActive,
                                     onScanFolderClick = onAddFolder,
-                                    onImportClick = onOpenImportSheet
+                                    onImportClick = onOpenImportSheet,
+                                    onClearSearchClick = if (isSearchActive) onClearSearchImmediate else null
                                 )
                             }
                         } else if (uiState.albums.isNotEmpty()) {
@@ -719,12 +784,20 @@ fun LibraryScreen(
                     LibraryCategory.ARTISTS -> {
                         if (uiState.artists.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_artists", contentType = "empty_card") {
+                                val trimmedQuery = uiState.searchQuery.trim()
+                                val isSearchActive = trimmedQuery.isNotEmpty()
                                 LibraryEmptyCard(
                                     title = null,
-                                    message = if (uiState.searchQuery.isNotBlank()) stringResource(R.string.library_empty_search) else stringResource(R.string.library_empty_songs),
-                                    showScanCta = uiState.searchQuery.isBlank(),
+                                    message = if (isSearchActive) {
+                                        stringResource(R.string.library_empty_search_query, trimmedQuery)
+                                    } else {
+                                        stringResource(R.string.library_empty_songs)
+                                    },
+                                    showScanCta = !isSearchActive,
+                                    isSearchEmpty = isSearchActive,
                                     onScanFolderClick = onAddFolder,
-                                    onImportClick = onOpenImportSheet
+                                    onImportClick = onOpenImportSheet,
+                                    onClearSearchClick = if (isSearchActive) onClearSearchImmediate else null
                                 )
                             }
                         } else if (uiState.artists.isNotEmpty()) {
@@ -749,12 +822,20 @@ fun LibraryScreen(
                     LibraryCategory.FOLDERS -> {
                         if (uiState.folders.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_folders", contentType = "empty_card") {
+                                val trimmedQuery = uiState.searchQuery.trim()
+                                val isSearchActive = trimmedQuery.isNotEmpty()
                                 LibraryEmptyCard(
                                     title = null,
-                                    message = stringResource(R.string.library_empty_folders),
-                                    showScanCta = true,
+                                    message = if (isSearchActive) {
+                                        stringResource(R.string.library_empty_search_query, trimmedQuery)
+                                    } else {
+                                        stringResource(R.string.library_empty_folders)
+                                    },
+                                    showScanCta = !isSearchActive,
+                                    isSearchEmpty = isSearchActive,
                                     onScanFolderClick = onAddFolder,
-                                    onImportClick = onOpenImportSheet
+                                    onImportClick = onOpenImportSheet,
+                                    onClearSearchClick = if (isSearchActive) onClearSearchImmediate else null
                                 )
                             }
                         } else if (uiState.folders.isNotEmpty()) {
@@ -779,12 +860,20 @@ fun LibraryScreen(
                     LibraryCategory.GENRES -> {
                         if (uiState.genres.isEmpty() && uiState.isInitialLibraryLoaded) {
                             item(key = "empty_genres", contentType = "empty_card") {
+                                val trimmedQuery = uiState.searchQuery.trim()
+                                val isSearchActive = trimmedQuery.isNotEmpty()
                                 LibraryEmptyCard(
                                     title = null,
-                                    message = "Genres appear automatically when tracks include genre metadata.",
+                                    message = if (isSearchActive) {
+                                        stringResource(R.string.library_empty_search_query, trimmedQuery)
+                                    } else {
+                                        "Genres appear automatically when tracks include genre metadata."
+                                    },
                                     showScanCta = false,
+                                    isSearchEmpty = isSearchActive,
                                     onScanFolderClick = {},
-                                    onImportClick = {}
+                                    onImportClick = {},
+                                    onClearSearchClick = if (isSearchActive) onClearSearchImmediate else null
                                 )
                             }
                         } else if (uiState.genres.isNotEmpty()) {
@@ -807,6 +896,7 @@ fun LibraryScreen(
                     }
                 }
             }
+        }
         }
     }
 
@@ -933,48 +1023,6 @@ fun LibraryScreen(
             onDismiss = { trackForDetails = null }
         )
     }
-
-    if (showSmartMixSheet) {
-        val smartState by smartPlaylistFlow.collectAsStateWithLifecycle()
-        val trackLookup = remember(uiState.allTracks) {
-            uiState.allTracks.associateBy { it.id }.toStableMap()
-        }
-        ModalBottomSheet(
-            onDismissRequest = { showSmartMixSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
-        ) {
-            SmartPlaylistSheetContent(
-                output = smartState.output,
-                isGenerating = smartState.isGenerating,
-                selectedMood = smartState.selectedMood,
-                seedFromCurrent = smartState.seedFromCurrent,
-                currentTrackTitle = currentTrackTitle.ifBlank {
-                    uiState.allTracks.firstOrNull { it.id == currentTrackId }?.title ?: "Current Track"
-                },
-                trackLookup = trackLookup,
-                artworkShape = artworkShape,
-                onSelectMood = { mood ->
-                    onGenerateSmartPlaylist(mood, smartState.seedFromCurrent)
-                },
-                onToggleSeedFromCurrent = { seed ->
-                    onGenerateSmartPlaylist(smartState.selectedMood, seed)
-                },
-                onRegenerate = {
-                    onGenerateSmartPlaylist(smartState.selectedMood, smartState.seedFromCurrent)
-                },
-                onPlaySmartPlaylist = { tracks ->
-                    showSmartMixSheet = false
-                    onPlayTracks(tracks, false)
-                },
-                onSaveSmartPlaylist = { name, ids ->
-                    showSmartMixSheet = false
-                    onSaveSmartPlaylist(name, ids)
-                }
-            )
-        }
-    }
 }
 
 @Composable
@@ -1020,6 +1068,9 @@ private fun LibraryTrackRow(
     isPlaying: Boolean,
     activeColor: Color,
     idleColor: Color,
+    hiFiBadgeColor: Color,
+    hiFiBadgeTextColor: Color,
+    hiFiLabel: String,
     onTrackClick: (Track) -> Unit,
     onToggleFavorite: (String) -> Unit,
     onMoreClick: (Track) -> Unit
@@ -1099,6 +1150,14 @@ private fun LibraryTrackRow(
                         maxLines = 1,
                         softWrap = false
                     )
+                    if (track.isHiFi) {
+                        HiFiQualityBadge(
+                            label = hiFiLabel,
+                            containerColor = hiFiBadgeColor,
+                            contentColor = hiFiBadgeTextColor,
+                            modifier = Modifier.testTag("track_hifi_badge_${track.id}")
+                        )
+                    }
                 }
             }
 
@@ -1341,8 +1400,10 @@ private fun LibraryEmptyCard(
     title: String?,
     message: String,
     showScanCta: Boolean,
+    isSearchEmpty: Boolean = false,
     onScanFolderClick: () -> Unit,
-    onImportClick: () -> Unit
+    onImportClick: () -> Unit,
+    onClearSearchClick: (() -> Unit)? = null
 ) {
     Surface(
         shape = RoundedCornerShape(28.dp),
@@ -1366,7 +1427,11 @@ private fun LibraryEmptyCard(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = if (showScanCta) Icons.Rounded.FolderOpen else Icons.Rounded.MusicNote,
+                        imageVector = when {
+                            isSearchEmpty -> Icons.Rounded.Search
+                            showScanCta -> Icons.Rounded.FolderOpen
+                            else -> Icons.Rounded.MusicNote
+                        },
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.size(30.dp)
@@ -1387,7 +1452,20 @@ private fun LibraryEmptyCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
-            if (showScanCta) {
+            if (onClearSearchClick != null) {
+                Spacer(Modifier.height(4.dp))
+                FilledTonalButton(
+                    onClick = onClearSearchClick,
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("empty_search_clear_button")
+                ) {
+                    Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.size(6.dp))
+                    Text(text = stringResource(R.string.action_clear_search_label))
+                }
+            } else if (showScanCta) {
                 Spacer(Modifier.height(4.dp))
                 Button(
                     onClick = onScanFolderClick,

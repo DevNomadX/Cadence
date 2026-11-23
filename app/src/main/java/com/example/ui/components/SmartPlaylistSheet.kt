@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -243,8 +243,10 @@ fun SmartPlaylistSheetContent(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.primaryContainer
                         ) {
+                            val cohesionPct = ((output.playlistProfile.cohesionScore.takeIf { it.isFinite() } ?: 0.0)
+                                .coerceIn(0.0, 1.0) * 100.0).roundToInt()
                             Text(
-                                text = "${(output.playlistProfile.cohesionScore * 100).roundToInt()}% cohesion",
+                                text = "$cohesionPct% cohesion",
                                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -260,12 +262,14 @@ fun SmartPlaylistSheetContent(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         output.moodClassifications.forEach { mood ->
+                            val confPct = ((mood.confidence.takeIf { it.isFinite() } ?: 0.0)
+                                .coerceIn(0.0, 1.0) * 100.0).roundToInt()
                             Surface(
                                 shape = CircleShape,
                                 color = MaterialTheme.colorScheme.secondaryContainer
                             ) {
                                 Text(
-                                    text = "${mood.mood} ${(mood.confidence * 100).roundToInt()}%",
+                                    text = "${mood.mood} $confPct%",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -330,12 +334,12 @@ fun SmartPlaylistSheetContent(
                         .heightIn(max = 260.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    items(
+                    itemsIndexed(
                         items = output.recommendedTracks,
-                        key = { it.trackId },
-                        contentType = { "smart_track_row" }
-                    ) { rec ->
-                        val track = trackLookup[rec.trackId] ?: return@items
+                        key = { index, rec -> "smart_rec_${index}_${rec.trackId}" },
+                        contentType = { _, _ -> "smart_track_row" }
+                    ) { _, rec ->
+                        val track = trackLookup[rec.trackId] ?: return@itemsIndexed
                         Surface(
                             shape = RoundedCornerShape(18.dp),
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -366,22 +370,24 @@ fun SmartPlaylistSheetContent(
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = track.title,
+                                    text = track.title.ifBlank { "Untitled Track" },
                                     style = MaterialTheme.typography.titleSmall,
                                     color = MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "${track.artist} · ${rec.reason}",
+                                    text = "${track.artist.ifBlank { "Unknown Artist" }} · ${rec.reason}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
+                            val scorePct = ((rec.score.takeIf { it.isFinite() } ?: 0.0)
+                                .coerceIn(0.0, 1.0) * 100.0).roundToInt()
                             Text(
-                                text = "${(rec.score * 100).roundToInt()}",
+                                text = "$scorePct",
                                 style = MaterialTheme.typography.labelMedium.copy(fontFamily = MonoFontFamily),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

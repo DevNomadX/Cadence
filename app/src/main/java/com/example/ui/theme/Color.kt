@@ -61,17 +61,19 @@ enum class ExpressivePalette(
     ),
     DYNAMIC(
         id = "dynamic",
-        displayName = "System You",
-        tagline = "Wallpaper adaptive colors",
-        previewPrimary = Color(0xFF6352B8),
-        previewSecondary = Color(0xFF5F5B78),
-        previewTertiary = Color(0xFFBA4E79),
-        previewContainer = Color(0xFFE7DEFF)
+        displayName = "System",
+        tagline = "Material You wallpaper",
+        previewPrimary = Color(0xFF4F5D75),
+        previewSecondary = Color(0xFF5D636E),
+        previewTertiary = Color(0xFF6B5B7B),
+        previewContainer = Color(0xFFDCE3F0)
     );
 
     companion object {
-        fun fromId(id: String?): ExpressivePalette =
-            entries.firstOrNull { it.id == id } ?: TERRACOTTA
+        fun fromId(id: String?): ExpressivePalette = when (id?.lowercase()) {
+            "system", "dynamic" -> DYNAMIC
+            else -> entries.firstOrNull { it.id == id } ?: TERRACOTTA
+        }
     }
 }
 
@@ -391,11 +393,72 @@ val CitrusDarkScheme = darkColorScheme(
     onError = Color(0xFF690005)
 )
 
+// 6. Neutral M3 Tonal Fallback — Used by "System" palette on Android < 12 (API < 31)
+val NeutralFallbackLightScheme = lightColorScheme(
+    primary = Color(0xFF4A5C72),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFD6E3F5),
+    onPrimaryContainer = Color(0xFF0A1D31),
+    secondary = Color(0xFF58606B),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFDCE4F0),
+    onSecondaryContainer = Color(0xFF151C26),
+    tertiary = Color(0xFF675878),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFEDDCFF),
+    onTertiaryContainer = Color(0xFF221631),
+    background = Color(0xFFF9F9FC),
+    onBackground = Color(0xFF1A1C1E),
+    surface = Color(0xFFF9F9FC),
+    onSurface = Color(0xFF1A1C1E),
+    surfaceVariant = Color(0xFFE0E2E9),
+    onSurfaceVariant = Color(0xFF44474E),
+    outline = Color(0xFF74777F),
+    outlineVariant = Color(0xFFC4C6CE),
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFF3F4F8),
+    surfaceContainer = Color(0xFFEDEFF3),
+    surfaceContainerHigh = Color(0xFFE7E9EE),
+    surfaceContainerHighest = Color(0xFFE2E4E9),
+    error = Color(0xFFBA1A1A),
+    onError = Color(0xFFFFFFFF)
+)
+
+val NeutralFallbackDarkScheme = darkColorScheme(
+    primary = Color(0xFFB3C7E0),
+    onPrimary = Color(0xFF1D3044),
+    primaryContainer = Color(0xFF33465B),
+    onPrimaryContainer = Color(0xFFD6E3F5),
+    secondary = Color(0xFFC0C8D4),
+    onSecondary = Color(0xFF2A313C),
+    secondaryContainer = Color(0xFF404853),
+    onSecondaryContainer = Color(0xFFDCE4F0),
+    tertiary = Color(0xFFD2C0E4),
+    onTertiary = Color(0xFF382B47),
+    tertiaryContainer = Color(0xFF4F415F),
+    onTertiaryContainer = Color(0xFFEDDCFF),
+    background = Color(0xFF121316),
+    onBackground = Color(0xFFE2E2E6),
+    surface = Color(0xFF121316),
+    onSurface = Color(0xFFE2E2E6),
+    surfaceVariant = Color(0xFF44474E),
+    onSurfaceVariant = Color(0xFFC4C6CE),
+    outline = Color(0xFF8E9099),
+    outlineVariant = Color(0xFF44474E),
+    surfaceContainerLowest = Color(0xFF0D0E11),
+    surfaceContainerLow = Color(0xFF1A1C1F),
+    surfaceContainer = Color(0xFF1E2024),
+    surfaceContainerHigh = Color(0xFF282A2F),
+    surfaceContainerHighest = Color(0xFF33353A),
+    error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005)
+)
+
 fun ExpressivePalette.colorScheme(darkTheme: Boolean): ColorScheme = when (this) {
     ExpressivePalette.TERRACOTTA -> if (darkTheme) TerracottaDarkScheme else TerracottaLightScheme
     ExpressivePalette.MATCHA -> if (darkTheme) MatchaDarkScheme else MatchaLightScheme
     ExpressivePalette.COBALT -> if (darkTheme) CobaltDarkScheme else CobaltLightScheme
     ExpressivePalette.BERRY -> if (darkTheme) BerryDarkScheme else BerryLightScheme
     ExpressivePalette.CITRUS -> if (darkTheme) CitrusDarkScheme else CitrusLightScheme
-    ExpressivePalette.DYNAMIC -> if (darkTheme) CobaltDarkScheme else CobaltLightScheme
+    ExpressivePalette.DYNAMIC -> if (darkTheme) NeutralFallbackDarkScheme else NeutralFallbackLightScheme
 }

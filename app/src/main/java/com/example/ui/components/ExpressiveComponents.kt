@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +40,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
@@ -76,8 +78,11 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -87,6 +92,7 @@ import com.example.R
 import com.example.data.Track
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.LocalPerformanceMode
+import com.example.ui.theme.opaqueOver
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.sin
@@ -758,5 +764,50 @@ fun Modifier.ambientAuraBackdrop(
                 drawCircle(brush = bottomBrush, radius = bottomRadius, center = Offset.Zero)
             }
         }
+    }
+}
+
+private val HiFiBadgeShape: Shape = RoundedCornerShape(6.dp)
+
+/**
+ * Lightweight, opaque Material 3 Expressive Hi-Fi audio quality badge.
+ * Low-end GPU safe:
+ * - Zero animations, shadows, elevation layers, or Subcompose layouts
+ * - Pre-blends [MaterialTheme.colorScheme.tertiaryContainer] with [Color.opaqueOver] so there
+ *   is zero translucent alpha-blending overhead during LazyColumn flings
+ * - Automatically adapts to Light/Dark mode and every custom Expressive palette
+ */
+@Composable
+fun HiFiQualityBadge(
+    label: String,
+    modifier: Modifier = Modifier,
+    specDetail: String = "",
+    backgroundBehind: Color = MaterialTheme.colorScheme.surfaceContainerLow,
+    containerColor: Color = MaterialTheme.colorScheme.tertiaryContainer.opaqueOver(backgroundBehind, 0.94f),
+    contentColor: Color = MaterialTheme.colorScheme.onTertiaryContainer
+) {
+    val displayText = if (specDetail.isNotBlank()) "$label · $specDetail" else label
+    val accessibilityDesc = stringResource(R.string.badge_hifi_cd, displayText)
+
+    Box(
+        modifier = modifier
+            .background(color = containerColor, shape = HiFiBadgeShape)
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription = accessibilityDesc
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = displayText,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.6.sp
+            ),
+            color = contentColor,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

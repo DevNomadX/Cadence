@@ -597,9 +597,10 @@ fun TrackDetailsDialog(
     onDismiss: () -> Unit
 ) {
     val formatStr = buildString {
-        append(track.mimeType.substringAfter('/').uppercase().ifBlank { "AUDIO" })
+        append(track.resolvedCodec.ifBlank { track.mimeType.substringAfter('/').uppercase().ifBlank { "AUDIO" } })
+        if (track.bitDepth > 0) append(" · ${track.bitDepth}-bit")
+        if (track.sampleRateHz > 0) append(" · ${com.example.data.formatSampleRateKHz(track.sampleRateHz)}")
         if (track.bitrateKbps > 0) append(" · ${track.bitrateKbps} kbps")
-        if (track.sampleRateHz > 0) append(" · ${"%.1f".format(track.sampleRateHz / 1000.0)} kHz")
     }
 
     AlertDialog(

@@ -2,6 +2,8 @@ package com.example.ui.player
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
+import androidx.annotation.Keep
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -18,10 +20,12 @@ import com.example.data.StableList
 import com.example.data.ThemePreferences
 import com.example.data.Track
 import com.example.data.TrackGroup
+import com.example.data.intelligence.DiscoverSection
 import com.example.data.intelligence.MusicIntelligenceEngine
 import com.example.data.intelligence.MusicIntelligenceOutput
 import com.example.data.intelligence.MusicIntelligenceRequest
 import com.example.data.library.LibraryRepository
+import com.example.data.library.LibrarySearchEngine
 import com.example.data.library.ScanState
 import com.example.data.toStableList
 import com.example.playback.PlaybackController
@@ -29,6 +33,7 @@ import com.example.playback.PlaybackProgress
 import com.example.ui.theme.AppearanceMode
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.ExpressivePalette
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -36,7 +41,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -82,12 +89,24 @@ sealed interface LibraryDrillDown {
     data class Playlist(val playlistId: Long, val playlistName: String) : LibraryDrillDown
 }
 
+@Keep
 @Immutable
 data class SmartPlaylistUiState(
     val selectedMood: String? = null,
     val seedFromCurrent: Boolean = false,
     val isGenerating: Boolean = false,
     val output: MusicIntelligenceOutput? = null
+)
+
+@Keep
+@Immutable
+data class DiscoverUiState(
+    val allTracks: StableList<Track> = StableList(),
+    val sections: StableList<DiscoverSection> = StableList(),
+    val anchorTrackTitle: String? = null,
+    val isInitialLibraryLoaded: Boolean = true,
+    val refreshCount: Int = 0,
+    val errorMessage: String? = null
 )
 
 @Immutable
@@ -122,6 +141,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _smartPlaylistState = MutableStateFlow(SmartPlaylistUiState())
     val smartPlaylistState: StateFlow<SmartPlaylistUiState> = _smartPlaylistState.asStateFlow()
+
+    private val discoverRefreshNonceFlow = MutableStateFlow(0)
 
     private val categoryFlow = MutableStateFlow(LibraryCategory.SONGS)
     private val searchQueryFlow = MutableStateFlow("")
@@ -255,45 +276,51 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         FilterInputs(cat, prefs.sortOrder, prefs.minTrackDurationSec, query, drill, plTracks)
     }
 
-    val libraryState: StateFlow<LibraryUiState> = combine(
+    private val eligibleTracksWithIndexFlow = combine(
         libraryRepo.allTracksFlow,
-        libraryRepo.playlistsFlow,
-        libraryRepo.savedFoldersFlow,
-        filterInputsFlow
-    ) { rawTracks, playlists, savedFolders, inputs ->
-        val minDurMs = inputs.minTrackDurationSec * 1000L
-        val allTracks = if (minDurMs > 0L) {
+        preferencesRepo.playbackPreferencesFlow.map { it.minTrackDurationSec }.distinctUntilChanged()
+    ) { rawTracks, minDurSec ->
+        val minDurMs = minDurSec * 1000L
+        val eligible = if (minDurMs > 0L) {
             rawTracks.filter { it.durationMs >= minDurMs }
         } else {
             rawTracks
         }
+        eligible to LibrarySearchEngine.buildIndex(eligible)
+    }.flowOn(Dispatchers.Default)
 
+    val libraryState: StateFlow<LibraryUiState> = combine(
+        eligibleTracksWithIndexFlow,
+        libraryRepo.playlistsFlow,
+        libraryRepo.savedFoldersFlow,
+        filterInputsFlow
+    ) { (allTracks, indexedTracks), playlists, savedFolders, inputs ->
         val q = inputs.searchQuery.trim()
-        val matchingTracks = if (q.isEmpty()) {
-            allTracks
+        val rankedSearchMatches = if (q.isEmpty()) {
+            null
         } else {
-            allTracks.filter { t ->
-                t.title.contains(q, ignoreCase = true) ||
-                    t.artist.contains(q, ignoreCase = true) ||
-                    t.album.contains(q, ignoreCase = true) ||
-                    t.genre.contains(q, ignoreCase = true) ||
-                    t.folderName.contains(q, ignoreCase = true)
-            }
+            LibrarySearchEngine.searchIndexed(indexedTracks, q)
         }
+        val matchingTracks = rankedSearchMatches ?: allTracks
 
-        val displayed = when (inputs.category) {
-            LibraryCategory.SONGS -> LibraryRepository.sortTracks(matchingTracks, inputs.sortOrder)
-            LibraryCategory.FAVORITES -> LibraryRepository.sortTracks(
-                matchingTracks.filter { it.isFavorite },
-                inputs.sortOrder
-            )
-            LibraryCategory.RECENT -> matchingTracks
-                .filter { it.lastPlayedAt > 0L }
-                .sortedByDescending { it.lastPlayedAt }
-            LibraryCategory.MOST_PLAYED -> matchingTracks
-                .filter { it.playCount > 0 }
-                .sortedWith(compareByDescending<Track> { it.playCount }.thenByDescending { it.lastPlayedAt })
-            else -> LibraryRepository.sortTracks(matchingTracks, inputs.sortOrder)
+        val displayed = when {
+            // When actively searching, preserve relevance order (exact/prefix title matches first)
+            rankedSearchMatches != null -> when (inputs.category) {
+                LibraryCategory.FAVORITES -> rankedSearchMatches.filter { it.isFavorite }
+                LibraryCategory.RECENT -> rankedSearchMatches.filter { it.lastPlayedAt > 0L }
+                LibraryCategory.MOST_PLAYED -> rankedSearchMatches.filter { it.playCount > 0 }
+                else -> rankedSearchMatches
+            }
+            inputs.category == LibraryCategory.SONGS ->
+                LibraryRepository.sortTracks(allTracks, inputs.sortOrder)
+            inputs.category == LibraryCategory.FAVORITES ->
+                LibraryRepository.sortTracks(allTracks.filter { it.isFavorite }, inputs.sortOrder)
+            inputs.category == LibraryCategory.RECENT ->
+                allTracks.filter { it.lastPlayedAt > 0L }.sortedByDescending { it.lastPlayedAt }
+            inputs.category == LibraryCategory.MOST_PLAYED ->
+                allTracks.filter { it.playCount > 0 }
+                    .sortedWith(compareByDescending<Track> { it.playCount }.thenByDescending { it.lastPlayedAt })
+            else -> LibraryRepository.sortTracks(allTracks, inputs.sortOrder)
         }
 
         val drillTracks = when (val drill = inputs.drillDown) {
@@ -317,11 +344,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             is LibraryDrillDown.Playlist -> inputs.playlistTracks
         }
 
-        val filteredPlaylists = if (q.isEmpty()) {
-            playlists
-        } else {
-            playlists.filter { it.name.contains(q, ignoreCase = true) }
-        }
+        val filteredPlaylists = LibrarySearchEngine.filterPlaylists(playlists, q)
 
         LibraryUiState(
             allTracks = allTracks.toStableList(),
@@ -345,6 +368,75 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000L),
             initialValue = LibraryUiState(isInitialLibraryLoaded = false)
+        )
+
+    private val currentTrackIdForDiscoverFlow = playbackController.playbackState
+        .map { it.currentTrackId }
+        .distinctUntilChanged()
+
+    private val minDurationForDiscoverFlow = preferencesRepo.playbackPreferencesFlow
+        .map { it.minTrackDurationSec }
+        .distinctUntilChanged()
+
+    val discoverState: StateFlow<DiscoverUiState> = combine(
+        libraryRepo.allTracksFlow,
+        currentTrackIdForDiscoverFlow,
+        minDurationForDiscoverFlow,
+        discoverRefreshNonceFlow
+    ) { rawTracks, currentTrackId, minDurSec, nonce ->
+        val minDurMs = minDurSec.coerceAtLeast(0) * 1000L
+        val eligibleTracks = (if (minDurMs > 0L) {
+            rawTracks.filter { it.durationMs >= minDurMs }
+        } else {
+            rawTracks
+        })
+            .filter { it.id.isNotBlank() }
+            .distinctBy { it.id }
+
+        val skippedSnapshot = synchronized(recentSkippedTrackIds) { recentSkippedTrackIds.toList() }
+        try {
+            val feed = intelligenceEngine.generateDiscoverFeed(
+                libraryTracks = eligibleTracks,
+                currentTrackId = currentTrackId,
+                skippedTrackIds = skippedSnapshot,
+                shuffleNonce = nonce
+            )
+            DiscoverUiState(
+                allTracks = eligibleTracks.toStableList(),
+                sections = feed.sections,
+                anchorTrackTitle = feed.anchorTrackTitle,
+                isInitialLibraryLoaded = true,
+                refreshCount = nonce,
+                errorMessage = null
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Log.e("PlayerViewModel", "Failed to build Discover feed", t)
+            DiscoverUiState(
+                allTracks = eligibleTracks.toStableList(),
+                sections = StableList(),
+                anchorTrackTitle = null,
+                isInitialLibraryLoaded = true,
+                refreshCount = nonce,
+                errorMessage = t.message?.takeIf { it.isNotBlank() } ?: "Unable to build local mixes right now."
+            )
+        }
+    }
+        .flowOn(Dispatchers.Default)
+        .catch { t ->
+            Log.e("PlayerViewModel", "Discover stream encountered an error", t)
+            emit(
+                DiscoverUiState(
+                    isInitialLibraryLoaded = true,
+                    errorMessage = t.message?.takeIf { it.isNotBlank() } ?: "Unable to load Discover right now."
+                )
+            )
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = DiscoverUiState(isInitialLibraryLoaded = false)
         )
 
     init {
@@ -457,10 +549,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun recordSkippedTrack(trackId: String) {
-        recentSkippedTrackIds.remove(trackId)
-        recentSkippedTrackIds.addFirst(trackId)
-        while (recentSkippedTrackIds.size > 10) {
-            recentSkippedTrackIds.removeLast()
+        synchronized(recentSkippedTrackIds) {
+            recentSkippedTrackIds.remove(trackId)
+            recentSkippedTrackIds.addFirst(trackId)
+            while (recentSkippedTrackIds.size > 10) {
+                recentSkippedTrackIds.removeLast()
+            }
         }
     }
 
@@ -707,6 +801,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     // --- Offline Local Music Intelligence & Smart Playlists ---
 
+    fun refreshDiscoverFeed() {
+        discoverRefreshNonceFlow.value += 1
+    }
+
     fun generateSmartPlaylist(
         targetMood: String? = _smartPlaylistState.value.selectedMood,
         seedFromCurrent: Boolean = _smartPlaylistState.value.seedFromCurrent,
@@ -718,23 +816,33 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             isGenerating = true
         )
         val seedId = if (seedFromCurrent) nowPlayingState.value.currentTrack?.id else null
-        val skippedSnapshot = recentSkippedTrackIds.toList()
+        val skippedSnapshot = synchronized(recentSkippedTrackIds) { recentSkippedTrackIds.toList() }
 
         viewModelScope.launch {
-            val result = withContext(Dispatchers.Default) {
-                val tracks = libraryRepo.getAllTracksOnce()
-                val history = intelligenceEngine.deriveListeningHistory(tracks, skippedSnapshot)
-                val request = MusicIntelligenceRequest(
-                    seedTrackId = seedId,
-                    targetMood = targetMood,
-                    maxTracks = maxTracks
+            try {
+                val result = withContext(Dispatchers.Default) {
+                    val tracks = libraryRepo.getAllTracksOnce()
+                        .filter { it.id.isNotBlank() }
+                        .distinctBy { it.id }
+                    val history = intelligenceEngine.deriveListeningHistory(tracks, skippedSnapshot)
+                    val request = MusicIntelligenceRequest(
+                        seedTrackId = seedId,
+                        targetMood = targetMood,
+                        maxTracks = maxTracks
+                    )
+                    intelligenceEngine.analyzeAndRecommend(request, history, tracks)
+                }
+                _smartPlaylistState.value = _smartPlaylistState.value.copy(
+                    isGenerating = false,
+                    output = result
                 )
-                intelligenceEngine.analyzeAndRecommend(request, history, tracks)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                Log.e("PlayerViewModel", "Failed to generate smart playlist", t)
+                _smartPlaylistState.value = _smartPlaylistState.value.copy(isGenerating = false)
+                showSnackbar("Could not generate Smart Mix right now")
             }
-            _smartPlaylistState.value = _smartPlaylistState.value.copy(
-                isGenerating = false,
-                output = result
-            )
         }
     }
 
@@ -742,7 +850,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         if (trackIds.isEmpty()) return
         viewModelScope.launch {
             libraryRepo.createPlaylist(name, trackIds)
-            showSnackbar("Saved smart playlist \"$name\" (${trackIds.size} tracks)")
+            showSnackbar("Saved playlist \"$name\" (${trackIds.size} tracks)")
         }
     }
 

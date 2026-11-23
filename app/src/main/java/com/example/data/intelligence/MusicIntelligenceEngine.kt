@@ -1,5 +1,6 @@
 package com.example.data.intelligence
 
+import androidx.annotation.Keep
 import androidx.compose.runtime.Immutable
 import com.example.data.Track
 import com.example.ui.theme.ExpressivePalette
@@ -10,6 +11,7 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+@Keep
 @Immutable
 data class MusicIntelligenceRequest(
     val seedTrackId: String? = null,
@@ -18,6 +20,7 @@ data class MusicIntelligenceRequest(
     val timeOfDay: String? = currentTimeOfDayBucket()
 )
 
+@Keep
 @Immutable
 data class ListeningHistoryInput(
     val recentTrackIds: List<String> = emptyList(),
@@ -26,6 +29,7 @@ data class ListeningHistoryInput(
     val topGenres: List<String> = emptyList()
 )
 
+@Keep
 @Immutable
 data class PlaylistProfile(
     val suggestedTitle: String,
@@ -35,6 +39,7 @@ data class PlaylistProfile(
     fun toExpressivePalette(): ExpressivePalette = ExpressivePalette.fromId(suggestedPalette)
 }
 
+@Keep
 @Immutable
 data class MoodClassification(
     val mood: String,
@@ -43,12 +48,14 @@ data class MoodClassification(
     val valence: String
 )
 
+@Keep
 @Immutable
 data class BpmRange(
     val min: Int,
     val max: Int
 )
 
+@Keep
 @Immutable
 data class TempoDescriptors(
     val dominantBpmRange: BpmRange,
@@ -57,6 +64,7 @@ data class TempoDescriptors(
     val tempoInferred: Boolean
 )
 
+@Keep
 @Immutable
 data class RecommendedTrack(
     val rank: Int,
@@ -67,6 +75,7 @@ data class RecommendedTrack(
     val reason: String
 )
 
+@Keep
 @Immutable
 data class MusicIntelligenceOutput(
     val schemaVersion: String,
@@ -93,6 +102,7 @@ fun currentTimeOfDayBucket(hourOfDay: Int = Calendar.getInstance().get(Calendar.
  * Runs deterministically on-device with zero network or server dependencies, and produces/parses
  * strict JSON compatible with on-device LLM runtimes.
  */
+@Keep
 class MusicIntelligenceEngine {
 
     /**
@@ -195,6 +205,42 @@ class MusicIntelligenceEngine {
     }
 
     /**
+     * Builds the 6-section local Discover feed (Made for you, Smart Mix, Rediscover,
+     * Forgotten favorites, Continue the vibe, Explore your library) using only local
+     * metadata and listening history, deduplicating tracks across sections where possible.
+     */
+    fun generateDiscoverFeed(
+        libraryTracks: List<Track>,
+        currentTrackId: String? = null,
+        skippedTrackIds: List<String> = emptyList(),
+        nowMs: Long = System.currentTimeMillis(),
+        shuffleNonce: Int = 0,
+        maxTracksPerSection: Int = 10
+    ): DiscoverFeed = DiscoverFeedGenerator(this).generate(
+        libraryTracks = libraryTracks,
+        currentTrackId = currentTrackId,
+        skippedTrackIds = skippedTrackIds,
+        nowMs = nowMs,
+        shuffleNonce = shuffleNonce,
+        maxTracksPerSection = maxTracksPerSection
+    )
+
+    internal fun effectiveBpmFor(track: Track): Int =
+        if (track.bpm > 0) track.bpm.coerceIn(45, 200)
+        else inferBpm(track.genre, track.title, track.album, track.durationMs)
+
+    internal fun tempoDescriptorFor(bpm: Int): String = classifyTempoDescriptor(bpm)
+
+    internal fun moodVectorFor(track: Track): Map<String, Double> =
+        computeTrackMoodVector(track.genre, track.title, track.album, effectiveBpmFor(track))
+
+    internal fun primaryMoodFor(track: Track): String =
+        moodVectorFor(track).maxByOrNull { it.value }?.key ?: "calm"
+
+    internal fun moodSimilarity(a: Map<String, Double>, b: Map<String, Double>): Double =
+        cosineMoodSimilarity(a, b)
+
+    /**
      * Accepts a raw JSON input string matching the engine Input Schema and outputs a strictly
      * valid RFC 8259 JSON string matching the Required Output JSON Schema with zero server calls.
      */
@@ -217,17 +263,18 @@ class MusicIntelligenceEngine {
             .toSet()
 
         val candidates = ArrayList<CandidateTrack>(tracksArr.length())
+        val seenCandidateIds = HashSet<String>(tracksArr.length())
         for (i in 0 until tracksArr.length()) {
             val obj = tracksArr.optJSONObject(i) ?: continue
             val id = obj.optString("id", "").trim()
-            if (id.isEmpty()) continue
+            if (id.isEmpty() || !seenCandidateIds.add(id)) continue
             val title = obj.optString("title", "Untitled")
             val artist = obj.optString("artist", "Unknown Artist")
             val album = obj.optString("album", "")
             val genre = obj.optString("genre", "")
             val rawBpm = obj.optInt("bpm", 0)
-            val durationMs = obj.optLong("durationMs", 0L)
-            val playCount = obj.optInt("playCount", 0)
+            val durationMs = obj.optLong("durationMs", 0L).coerceAtLeast(0L)
+            val playCount = obj.optInt("playCount", 0).coerceAtLeast(0)
             val lastPlayedAt = obj.optLong("lastPlayedAt", 0L)
             val isFavorite = obj.optBoolean("isFavorite", false) || id in favoriteIds
 
@@ -336,11 +383,15 @@ class MusicIntelligenceEngine {
         // Compute pacing curve & optionally order non-seed tracks for smooth energy flow
         val pacingCurve = determinePacingCurve(normalizedTargetMood, timeOfDay)
         val ordered = applyPacingFlow(selected, seedTrackId, pacingCurve)
+        if (ordered.isEmpty()) {
+            return buildEmptyOutputJson().toString()
+        }
 
         val anyInferred = ordered.any { it.candidate.bpmInferred }
-        val minBpm = ordered.minOf { it.candidate.bpm }
-        val maxBpm = ordered.maxOf { it.candidate.bpm }
-        val avgBpm = ordered.map { it.candidate.bpm }.average().roundToInt()
+        val minBpm = ordered.minOfOrNull { it.candidate.bpm } ?: 0
+        val maxBpm = ordered.maxOfOrNull { it.candidate.bpm } ?: 0
+        val avgBpmRaw = ordered.map { it.candidate.bpm }.average()
+        val avgBpm = if (avgBpmRaw.isFinite()) avgBpmRaw.roundToInt() else 90
         val dominantDescriptor = classifyTempoDescriptor(avgBpm)
 
         val moodClassifications = aggregateMoodClassifications(ordered, normalizedTargetMood)
@@ -435,7 +486,8 @@ class MusicIntelligenceEngine {
                 .ifBlank { "Cadence Smart Mix" },
             suggestedPalette = profileObj.optString("suggestedPalette", "terracotta")
                 .takeIf { it in VALID_PALETTES } ?: "terracotta",
-            cohesionScore = profileObj.optDouble("cohesionScore", 0.0).coerceIn(0.0, 1.0)
+            cohesionScore = profileObj.optDouble("cohesionScore", 0.0)
+                .takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.0
         )
 
         val moodsArr = root.optJSONArray("moodClassifications") ?: JSONArray()
@@ -445,7 +497,8 @@ class MusicIntelligenceEngine {
                 add(
                     MoodClassification(
                         mood = obj.optString("mood", "calm"),
-                        confidence = obj.optDouble("confidence", 0.75).coerceIn(0.0, 1.0),
+                        confidence = obj.optDouble("confidence", 0.75)
+                            .takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.75,
                         energyLevel = obj.optString("energyLevel", "medium"),
                         valence = obj.optString("valence", "neutral")
                     )
@@ -478,7 +531,8 @@ class MusicIntelligenceEngine {
                     RecommendedTrack(
                         rank = size + 1,
                         trackId = trackId,
-                        score = obj.optDouble("score", 0.5).coerceIn(0.0, 1.0),
+                        score = obj.optDouble("score", 0.5)
+                            .takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.5,
                         moodTag = obj.optString("moodTag", "calm"),
                         tempoDescriptor = obj.optString("tempoDescriptor", "downtempo_chill"),
                         reason = obj.optString("reason", "Matched mood and flow")
@@ -749,14 +803,28 @@ class MusicIntelligenceEngine {
         ordered: List<ScoredCandidate>,
         fallbackMood: String
     ): List<MoodClassification> {
-        val avgByMood = CANONICAL_MOODS.associateWith { mood ->
-            ordered.map { it.candidate.moodScores[mood] ?: 0.2 }.average()
+        if (ordered.isEmpty()) {
+            val safeMood = fallbackMood.takeIf { it in CANONICAL_MOODS } ?: "calm"
+            return listOf(
+                MoodClassification(
+                    mood = safeMood,
+                    confidence = 0.50,
+                    energyLevel = energyForMood(safeMood),
+                    valence = valenceForMood(safeMood)
+                )
+            )
         }
+        val avgByMood = CANONICAL_MOODS.associateWith { mood ->
+            val avg = ordered.map { it.candidate.moodScores[mood] ?: 0.2 }.average()
+            if (avg.isFinite()) avg else 0.2
+        }
+        val fallbackEntry = avgByMood.entries.firstOrNull { it.key == fallbackMood }
+            ?: avgByMood.entries.first()
         val topMoods = avgByMood.entries
             .sortedByDescending { it.value }
             .take(3)
             .filter { it.value >= 0.42 }
-            .ifEmpty { listOf(avgByMood.entries.first { it.key == fallbackMood }) }
+            .ifEmpty { listOf(fallbackEntry) }
 
         return topMoods.map { (mood, confidence) ->
             MoodClassification(
@@ -862,7 +930,10 @@ class MusicIntelligenceEngine {
         }
     }
 
-    private fun round2(v: Double): Double = (v * 100.0).roundToInt() / 100.0
+    private fun round2(v: Double): Double {
+        if (!v.isFinite()) return 0.0
+        return (v * 100.0).roundToInt() / 100.0
+    }
 
     companion object {
         const val SCHEMA_VERSION = "1.0"

@@ -44,6 +44,7 @@ import com.example.data.db.PlaylistTrackEntity
 import com.example.data.db.TrackEntity
 import com.example.data.library.ArtworkCacheManager
 import com.example.data.library.LibraryRepository
+import com.example.data.library.LibrarySearchEngine
 import com.example.data.library.ScanState
 import com.example.data.toStableList
 import com.example.playback.CadencePlaybackService
@@ -426,6 +427,8 @@ class CadenceValidationTest {
         assertTrue(settingsOpened)
 
         composeRule.onNodeWithTag("library_search_input").performTextInput("Solstice")
+        composeRule.mainClock.advanceTimeBy(200L)
+        composeRule.waitForIdle()
         assertEquals("Solstice", latestQuery)
 
         composeRule.onNodeWithTag("filter_albums").performClick()
@@ -497,6 +500,9 @@ class CadenceValidationTest {
         }
 
         // Theme Studio controls
+        composeRule.onNodeWithTag("settings_header_title")
+            .assertIsDisplayed()
+            .assertTextContains("Settings")
         composeRule.onNodeWithTag("settings_back_button").performClick()
         assertTrue(backClicked)
 
@@ -949,14 +955,18 @@ class CadenceValidationTest {
         // Before initial Room load completes, no empty card flash
         composeRule.onNodeWithTag("library_empty_card").assertDoesNotExist()
 
-        // Compact circular import icon button (48dp x 48dp) leaves ample width for "Your Sound"
+        // Compact circular import icon button (48dp x 48dp) leaves ample width for "Soundscape"
         val importBounds = composeRule.onNodeWithTag("import_audio_button").getUnclippedBoundsInRoot()
         assertEquals(48f, importBounds.width.value, 2f)
         assertEquals(48f, importBounds.height.value, 2f)
 
+        composeRule.onNodeWithTag("library_header_title")
+            .assertIsDisplayed()
+            .assertTextContains("Soundscape")
+        composeRule.onNodeWithTag("library_header_subtitle").assertDoesNotExist()
         val titleBounds = composeRule.onNodeWithTag("library_header_title").getUnclippedBoundsInRoot()
         assertTrue(
-            "Header title must have generous horizontal width (>= 140dp) so 'Your Sound' never truncates",
+            "Header title must have generous horizontal width (>= 140dp) so 'Soundscape' never truncates",
             titleBounds.width.value >= 140f
         )
 
@@ -989,5 +999,580 @@ class CadenceValidationTest {
         composeRule.onNodeWithTag("scanning_progress_bar").assertIsDisplayed()
         composeRule.onNodeWithTag("scanning_counter_text").assertTextContains("25 / 100 files · 24 added")
         composeRule.onNodeWithTag("scanning_detail_text").assertTextContains("04 - Horizon Drift.flac")
+    }
+
+    // --- 10. Library Search Engine Accuracy, Ranking & Responsive Search UX ---
+
+    @Test
+    fun `LibrarySearchEngine handles diacritics multi-token cross-field filenames and exact-prefix ranking`() {
+        val tracks = listOf(
+            Track(
+                id = "t_cross",
+                title = "Tum Hi Ho",
+                artist = "Arijit Singh",
+                album = "Aashiqui 2",
+                genre = "Bollywood",
+                durationMs = 262_000L,
+                localUriString = "content://media/external/audio/media/10",
+                folderName = "Hindi Hits"
+            ),
+            Track(
+                id = "t_diacritic",
+                title = "Café Del Mar",
+                artist = "Ümit Aksoy",
+                album = "Ibiza Sunset",
+                genre = "Chillout",
+                durationMs = 240_000L,
+                localUriString = "content://com.android.externalstorage/document/primary%3AMusic%2F07_Summer_Breeze_Mix.flac",
+                folderName = "Lounge"
+            ),
+            Track(
+                id = "t_substring",
+                title = "Midnight Rain",
+                artist = "Nova",
+                album = "After Dark",
+                genre = "Synth",
+                durationMs = 200_000L
+            ),
+            Track(
+                id = "t_prefix",
+                title = "Rainy Days",
+                artist = "Echo",
+                album = "Cloudburst",
+                genre = "Indie",
+                durationMs = 190_000L
+            ),
+            Track(
+                id = "t_exact",
+                title = "Rain",
+                artist = "Sora",
+                album = "Monsoon",
+                genre = "Ambient",
+                durationMs = 175_000L
+            )
+        )
+        val indexed = LibrarySearchEngine.buildIndex(tracks)
+
+        // Blank query returns null so callers can keep user sort order untouched
+        assertNull(LibrarySearchEngine.searchIndexed(indexed, "   "))
+
+        // Out-of-order multi-token cross-field query ("arijit tum" -> "Tum Hi Ho" by "Arijit Singh")
+        val crossMatches = LibrarySearchEngine.searchIndexed(indexed, "  arijit   tum  ")
+        assertEquals(listOf("t_cross"), crossMatches?.map { it.id })
+
+        // Diacritic-insensitive matching across title & artist
+        assertEquals(listOf("t_diacritic"), LibrarySearchEngine.searchIndexed(indexed, "cafe umit")?.map { it.id })
+
+        // Filename matching from encoded content URI (separators normalized, extension stripped)
+        assertEquals(listOf("t_diacritic"), LibrarySearchEngine.searchIndexed(indexed, "summer breeze")?.map { it.id })
+
+        // Relevance ordering: exact title ("Rain") > prefix title ("Rainy Days") > substring title ("Midnight Rain")
+        val ranked = LibrarySearchEngine.searchIndexed(indexed, "rain")
+        assertEquals(listOf("t_exact", "t_prefix", "t_substring"), ranked?.map { it.id })
+
+        // Playlist multi-token filtering
+        val playlists = listOf(
+            PlaylistSummary(id = 1L, name = "Café Chillout Sessions", trackCount = 4),
+            PlaylistSummary(id = 2L, name = "Morning Run", trackCount = 8)
+        )
+        assertEquals(listOf(1L), LibrarySearchEngine.filterPlaylists(playlists, "sessions cafe").map { it.id })
+    }
+
+    @Test
+    fun `LibraryScreen search debounces clears via trailing X and shows clearable empty state`() {
+        var activeQuery by mutableStateOf("")
+        var dispatchCount = 0
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+                val filtered = rememberFilteredTestTracks(sampleTracks, activeQuery)
+                LibraryScreen(
+                    uiState = LibraryUiState(
+                        allTracks = sampleTracks.toStableList(),
+                        displayedTracks = filtered.toStableList(),
+                        category = LibraryCategory.SONGS,
+                        searchQuery = activeQuery
+                    ),
+                    currentTrackId = null,
+                    isPlaying = false,
+                    artworkShape = ExpressiveArtworkShape.SQUIRCLE,
+                    onSelectTrack = { _, _ -> },
+                    onPlayTracks = { _, _ -> },
+                    onToggleFavorite = {},
+                    onSearchChange = {
+                        dispatchCount++
+                        activeQuery = it
+                    },
+                    onCategoryChange = {},
+                    onSortChange = {},
+                    onOpenDrillDown = {},
+                    onCloseDrillDown = {},
+                    onImportFiles = {},
+                    onAddFolder = {},
+                    onScanDevice = {},
+                    onRescanFolders = {},
+                    onPlayNext = {},
+                    onAddToQueue = {},
+                    onAddTrackToPlaylist = { _, _ -> },
+                    onRemoveTrackFromPlaylist = { _, _ -> },
+                    onCreatePlaylist = { _, _ -> },
+                    onRenamePlaylist = { _, _ -> },
+                    onDeletePlaylist = {},
+                    onPlayPlaylist = { _, _ -> },
+                    onRemoveTrack = {}
+                )
+            }
+        }
+
+        // Clear button hidden while query is empty
+        composeRule.onNodeWithTag("library_search_clear_button").assertDoesNotExist()
+
+        // Typing updates text immediately and reveals trailing X before debounce fires
+        composeRule.onNodeWithTag("library_search_input").performTextInput("zzzz_missing")
+        composeRule.onNodeWithTag("library_search_clear_button").assertIsDisplayed()
+        assertEquals("Debounce should defer ViewModel dispatch during rapid typing", 0, dispatchCount)
+
+        // After 150ms debounce window, empty search state renders with one-tap Clear Search CTA
+        composeRule.mainClock.advanceTimeBy(200L)
+        composeRule.waitForIdle()
+        assertEquals("zzzz_missing", activeQuery)
+        composeRule.onNodeWithText("No songs match \"zzzz_missing\"").assertIsDisplayed()
+        composeRule.onNodeWithTag("empty_search_clear_button").performClick()
+        composeRule.waitForIdle()
+
+        assertEquals("", activeQuery)
+        composeRule.onNodeWithTag("library_search_clear_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("track_row_${sampleTracks.first().id}").assertIsDisplayed()
+
+        // Trailing X clears search in a single tap as well
+        composeRule.onNodeWithTag("library_search_input").performTextInput("Solstice")
+        composeRule.mainClock.advanceTimeBy(200L)
+        composeRule.waitForIdle()
+        assertEquals("Solstice", activeQuery)
+
+        composeRule.onNodeWithTag("library_search_clear_button").performClick()
+        composeRule.waitForIdle()
+        assertEquals("", activeQuery)
+        composeRule.onNodeWithTag("library_search_clear_button").assertDoesNotExist()
+    }
+
+    private fun rememberFilteredTestTracks(tracks: List<Track>, query: String): List<Track> =
+        LibrarySearchEngine.searchTracks(tracks, query)
+
+    // --- 11. Hi-Fi Audio Quality Heuristics, Room Migration & Expressive Badges ---
+
+    @Test
+    fun `Track Hi-Fi heuristics classify Hi-Res Lossless High-Bitrate and Standard tracks deterministically`() {
+        val hiResFlac = Track(
+            id = "hr_1",
+            title = "Studio Master",
+            artist = "Nordic Quartet",
+            album = "Sessions",
+            durationMs = 245_000L,
+            mimeType = "audio/flac",
+            codec = "FLAC",
+            bitrateKbps = 2840,
+            sampleRateHz = 96_000,
+            bitDepth = 24
+        )
+        assertTrue(hiResFlac.isHiFi)
+        assertTrue(hiResFlac.isLosslessFormat)
+        assertTrue(hiResFlac.isHiRes)
+        assertEquals("HI-RES", hiResFlac.hiFiLabel)
+        assertEquals("24-bit / 96 kHz FLAC", hiResFlac.hiFiSpecSummary)
+
+        val cdLosslessFlac = Track(
+            id = "ls_1",
+            title = "Warm Tape",
+            artist = "Klara Lind",
+            album = "Horizon",
+            durationMs = 210_000L,
+            mimeType = "audio/flac",
+            codec = "FLAC",
+            bitrateKbps = 920,
+            sampleRateHz = 44_100,
+            bitDepth = 16
+        )
+        assertTrue(cdLosslessFlac.isHiFi)
+        assertTrue(cdLosslessFlac.isLosslessFormat)
+        assertFalse(cdLosslessFlac.isHiRes)
+        assertEquals("LOSSLESS", cdLosslessFlac.hiFiLabel)
+        assertEquals("16-bit / 44.1 kHz FLAC", cdLosslessFlac.hiFiSpecSummary)
+
+        val alacTrack = Track(
+            id = "alac_1",
+            title = "Apple Lossless",
+            artist = "Studio",
+            album = "Master",
+            durationMs = 190_000L,
+            mimeType = "audio/alac",
+            codec = "ALAC",
+            sampleRateHz = 48_000,
+            bitDepth = 16
+        )
+        assertTrue(alacTrack.isHiFi)
+        assertEquals("LOSSLESS", alacTrack.hiFiLabel)
+        assertEquals("16-bit / 48 kHz ALAC", alacTrack.hiFiSpecSummary)
+
+        val highBitrateMp3 = Track(
+            id = "mp3_320",
+            title = "Night Drive",
+            artist = "Miro",
+            album = "Afterglow",
+            durationMs = 180_000L,
+            mimeType = "audio/mpeg",
+            codec = "MP3",
+            bitrateKbps = 320,
+            sampleRateHz = 44_100,
+            bitDepth = 0
+        )
+        assertTrue(highBitrateMp3.isHiFi)
+        assertFalse(highBitrateMp3.isLosslessFormat)
+        assertEquals("HI-FI", highBitrateMp3.hiFiLabel)
+        assertEquals("320 kbps MP3", highBitrateMp3.hiFiSpecSummary)
+
+        val standardMp3 = Track(
+            id = "mp3_128",
+            title = "Radio Edit",
+            artist = "Echo",
+            album = "Singles",
+            durationMs = 175_000L,
+            mimeType = "audio/mpeg",
+            codec = "MP3",
+            bitrateKbps = 128,
+            sampleRateHz = 44_100,
+            bitDepth = 0
+        )
+        assertFalse(standardMp3.isHiFi)
+        assertEquals("", standardMp3.hiFiLabel)
+        assertEquals("", standardMp3.hiFiSpecSummary)
+
+        val mediumAac = Track(
+            id = "aac_256",
+            title = "Stream Cut",
+            artist = "Echo",
+            album = "Singles",
+            durationMs = 175_000L,
+            mimeType = "audio/aac",
+            codec = "AAC",
+            bitrateKbps = 256,
+            sampleRateHz = 48_000,
+            bitDepth = 0
+        )
+        assertFalse(mediumAac.isHiFi)
+    }
+
+    @Test
+    fun `Room persists codec and bitDepth and MIGRATION_1_2 upgrades v1 tracks cleanly`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, CadenceDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val hiResTrack = Track(
+                id = "room_hires_1",
+                title = "Analog Rain",
+                artist = "Studio Trio",
+                album = "Masters",
+                durationMs = 240_000L,
+                mimeType = "audio/flac",
+                codec = "FLAC",
+                bitrateKbps = 2840,
+                sampleRateHz = 96_000,
+                bitDepth = 24
+            )
+            db.trackDao().upsertTracks(listOf(TrackEntity.fromDomain(hiResTrack)))
+            val loaded = db.trackDao().getTrackById("room_hires_1")?.toDomain()
+            assertNotNull(loaded)
+            assertEquals("FLAC", loaded!!.codec)
+            assertEquals(2840, loaded.bitrateKbps)
+            assertEquals(96_000, loaded.sampleRateHz)
+            assertEquals(24, loaded.bitDepth)
+            assertTrue(loaded.isHiFi)
+            assertEquals("HI-RES", loaded.hiFiLabel)
+        } finally {
+            db.close()
+        }
+
+        // Verify MIGRATION_1_2 on a real SQLite v1 table schema preserves rows with safe defaults
+        val sqliteDb = android.database.sqlite.SQLiteDatabase.create(null)
+        try {
+            sqliteDb.execSQL(
+                """
+                CREATE TABLE tracks (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    mimeType TEXT NOT NULL,
+                    bitrateKbps INTEGER NOT NULL,
+                    sampleRateHz INTEGER NOT NULL
+                )
+                """.trimIndent()
+            )
+            sqliteDb.execSQL(
+                "INSERT INTO tracks (id, title, mimeType, bitrateKbps, sampleRateHz) VALUES ('v1_t', 'Legacy', 'audio/flac', 900, 44100)"
+            )
+            sqliteDb.execSQL("ALTER TABLE tracks ADD COLUMN codec TEXT NOT NULL DEFAULT ''")
+            sqliteDb.execSQL("ALTER TABLE tracks ADD COLUMN bitDepth INTEGER NOT NULL DEFAULT 0")
+            sqliteDb.rawQuery("SELECT id, codec, bitDepth FROM tracks WHERE id = 'v1_t'", null).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("v1_t", cursor.getString(0))
+                assertEquals("", cursor.getString(1))
+                assertEquals(0, cursor.getInt(2))
+            }
+        } finally {
+            sqliteDb.close()
+        }
+    }
+
+    @Test
+    fun `LibraryScreen renders inline HI-FI badge strictly on Hi-Fi tracks without stretching row height`() {
+        val hiFiTrack = Track(
+            id = "row_hifi",
+            title = "Tum Ho (Lossless Master)",
+            artist = "Mohit Chauhan, Suzanne D'Mello, A. R. Rahman",
+            album = "Rockstar",
+            durationMs = 316_000L,
+            mimeType = "audio/flac",
+            codec = "FLAC",
+            bitrateKbps = 1040,
+            sampleRateHz = 96_000,
+            bitDepth = 24
+        )
+        val stdTrack = Track(
+            id = "row_std",
+            title = "Amber Solstice",
+            artist = "Klara Lind",
+            album = "Warm Horizon",
+            durationMs = 185_000L,
+            mimeType = "audio/mpeg",
+            codec = "MP3",
+            bitrateKbps = 128,
+            sampleRateHz = 44_100
+        )
+        val tracks = listOf(hiFiTrack, stdTrack)
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.COBALT, appearanceMode = AppearanceMode.DARK) {
+                LibraryScreen(
+                    uiState = LibraryUiState(
+                        allTracks = tracks.toStableList(),
+                        displayedTracks = tracks.toStableList(),
+                        category = LibraryCategory.SONGS
+                    ),
+                    currentTrackId = null,
+                    isPlaying = false,
+                    artworkShape = ExpressiveArtworkShape.SQUIRCLE,
+                    onSelectTrack = { _, _ -> },
+                    onPlayTracks = { _, _ -> },
+                    onToggleFavorite = {},
+                    onSearchChange = {},
+                    onCategoryChange = {},
+                    onSortChange = {},
+                    onOpenDrillDown = {},
+                    onCloseDrillDown = {},
+                    onImportFiles = {},
+                    onAddFolder = {},
+                    onScanDevice = {},
+                    onRescanFolders = {},
+                    onPlayNext = {},
+                    onAddToQueue = {},
+                    onAddTrackToPlaylist = { _, _ -> },
+                    onRemoveTrackFromPlaylist = { _, _ -> },
+                    onCreatePlaylist = { _, _ -> },
+                    onRenamePlaylist = { _, _ -> },
+                    onDeletePlaylist = {},
+                    onPlayPlaylist = { _, _ -> },
+                    onRemoveTrack = {}
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("track_hifi_badge_row_hifi")
+            .assertIsDisplayed()
+            .assertTextContains("HI-FI")
+        composeRule.onNodeWithTag("track_hifi_badge_row_std").assertDoesNotExist()
+
+        val hiFiHeight = composeRule.onNodeWithTag("track_row_row_hifi").getUnclippedBoundsInRoot().height.value
+        val stdHeight = composeRule.onNodeWithTag("track_row_row_std").getUnclippedBoundsInRoot().height.value
+        assertEquals(
+            "Inline HI-FI badge must never stretch track row height",
+            stdHeight,
+            hiFiHeight,
+            1.5f
+        )
+        assertTrue("Track row height must remain compact (<= 80dp), got ${hiFiHeight}dp", hiFiHeight <= 80f)
+    }
+
+    @Test
+    fun `NowPlayingScreen displays detailed HiFiQualityBadge for Hi-Res tracks and hides it for standard tracks`() {
+        val hiResTrack = Track(
+            id = "np_hires",
+            title = "Midnight Vinyl",
+            artist = "Studio Trio",
+            album = "After Hours",
+            genre = "Jazz",
+            durationMs = 240_000L,
+            mimeType = "audio/flac",
+            codec = "FLAC",
+            bitrateKbps = 2840,
+            sampleRateHz = 96_000,
+            bitDepth = 24
+        )
+        val stdTrack = Track(
+            id = "np_std",
+            title = "Radio Cut",
+            artist = "Echo",
+            album = "Singles",
+            genre = "Pop",
+            durationMs = 180_000L,
+            mimeType = "audio/mpeg",
+            codec = "MP3",
+            bitrateKbps = 128,
+            sampleRateHz = 44_100
+        )
+        var activeTrack by mutableStateOf(hiResTrack)
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.BERRY, appearanceMode = AppearanceMode.LIGHT) {
+                NowPlayingScreen(
+                    uiState = NowPlayingUiState(
+                        currentTrack = activeTrack,
+                        queueTracks = listOf(hiResTrack, stdTrack).toStableList(),
+                        currentQueueIndex = 0,
+                        isPlaying = false
+                    ),
+                    themePrefs = ThemePreferences(
+                        palette = ExpressivePalette.BERRY,
+                        appearanceMode = AppearanceMode.LIGHT
+                    ),
+                    progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 0L, durationMs = 240_000L)),
+                    sleepTimerFlow = MutableStateFlow(SleepTimerState()),
+                    playlists = StableList(),
+                    onTogglePlayPause = {},
+                    onNext = {},
+                    onPrevious = {},
+                    onSeek = {},
+                    onToggleShuffle = {},
+                    onCycleRepeat = {},
+                    onToggleFavorite = {},
+                    onCycleSpeed = {},
+                    onMatchMood = {},
+                    onOpenSettings = {},
+                    onAddFolder = {},
+                    onScanDevice = {},
+                    onSelectQueueIndex = {},
+                    onMoveQueueItem = { _, _ -> },
+                    onRemoveQueueItem = {},
+                    onClearQueue = {},
+                    onSaveQueueAsPlaylist = {},
+                    onAddCurrentToPlaylist = {},
+                    onCreatePlaylistWithCurrent = {},
+                    onPlayNextCurrent = {},
+                    onAddCurrentToQueue = {},
+                    onSelectSleepTimer = {}
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("now_playing_hifi_badge")
+            .assertIsDisplayed()
+            .assertTextContains("HI-RES · 24-bit / 96 kHz FLAC")
+
+        activeTrack = stdTrack
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("now_playing_hifi_badge").assertDoesNotExist()
+    }
+
+    // --- 12. Android 13+ Monochrome Themed App Icon & System Dynamic Color Palette ---
+
+    @Test
+    fun `adaptive launcher icons include Android 13 monochrome layer and monochrome drawable loads cleanly`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        val monochromeDrawable = context.getDrawable(R.drawable.ic_launcher_monochrome)
+        assertNotNull("ic_launcher_monochrome drawable must exist and inflate cleanly", monochromeDrawable)
+
+        val launcherIcon = context.getDrawable(R.mipmap.ic_launcher)
+        assertTrue(
+            "ic_launcher must resolve to AdaptiveIconDrawable on API 26+",
+            launcherIcon is android.graphics.drawable.AdaptiveIconDrawable
+        )
+        val adaptiveLauncher = launcherIcon as android.graphics.drawable.AdaptiveIconDrawable
+        assertNotNull("ic_launcher must include background layer", adaptiveLauncher.background)
+        assertNotNull("ic_launcher must include foreground layer", adaptiveLauncher.foreground)
+        assertNotNull("ic_launcher must include Android 13+ monochrome layer", adaptiveLauncher.monochrome)
+
+        val roundIcon = context.getDrawable(R.mipmap.ic_launcher_round)
+        assertTrue(
+            "ic_launcher_round must resolve to AdaptiveIconDrawable on API 26+",
+            roundIcon is android.graphics.drawable.AdaptiveIconDrawable
+        )
+        val adaptiveRound = roundIcon as android.graphics.drawable.AdaptiveIconDrawable
+        assertNotNull("ic_launcher_round must include Android 13+ monochrome layer", adaptiveRound.monochrome)
+    }
+
+    @Test
+    fun `System Material You palette renders in Theme Studio resolves dynamically and adapts HiFi badge`() {
+        assertEquals(ExpressivePalette.DYNAMIC, ExpressivePalette.fromId("dynamic"))
+        assertEquals(ExpressivePalette.DYNAMIC, ExpressivePalette.fromId("system"))
+        assertEquals("System", ExpressivePalette.DYNAMIC.displayName)
+
+        var selectedPalette: ExpressivePalette? = null
+        val hiFiTrack = Track(
+            id = "dyn_hifi",
+            title = "Glass Echo",
+            artist = "Nordic Quartet",
+            album = "Masters",
+            durationMs = 210_000L,
+            mimeType = "audio/flac",
+            codec = "FLAC",
+            sampleRateHz = 96_000,
+            bitDepth = 24
+        )
+
+        composeRule.setContent {
+            CadenceTheme(
+                palette = ExpressivePalette.DYNAMIC,
+                appearanceMode = AppearanceMode.DARK,
+                performanceMode = true
+            ) {
+                SettingsScreen(
+                    themePrefs = ThemePreferences(
+                        palette = ExpressivePalette.TERRACOTTA,
+                        appearanceMode = AppearanceMode.DARK,
+                        artworkShape = ExpressiveArtworkShape.SQUIRCLE
+                    ),
+                    audioSettings = AudioSettings(),
+                    savedFolders = StableList(),
+                    minTrackDurationSec = 60,
+                    currentTrack = hiFiTrack,
+                    isPlaying = false,
+                    onBack = {},
+                    onSelectPalette = { selectedPalette = it },
+                    onSelectAppearance = {},
+                    onSelectArtworkShape = {},
+                    onToggleWavyScrubber = {},
+                    onToggleAmbientAura = {},
+                    onTogglePerformanceMode = {},
+                    onAddFolder = {},
+                    onRemoveFolder = {},
+                    onRescanFolders = {},
+                    onSelectMinTrackDurationSec = {},
+                    onToggleGaplessPlayback = {},
+                    onChangeCrossfadeSec = {},
+                    onTogglePauseOnHeadphoneDisconnect = {},
+                    onSelectAudioFocusBehavior = {}
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("settings_list")
+            .performScrollToNode(hasTestTag("palette_${ExpressivePalette.DYNAMIC.id}"))
+        composeRule.onNodeWithTag("palette_${ExpressivePalette.DYNAMIC.id}")
+            .assertIsDisplayed()
+            .assertTextContains("System")
+            .performClick()
+
+        assertEquals(ExpressivePalette.DYNAMIC, selectedPalette)
     }
 }

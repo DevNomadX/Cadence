@@ -8,14 +8,19 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode as AnimRepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -37,13 +42,16 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Album
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Pause
@@ -63,11 +71,13 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.annotation.Keep
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -94,6 +104,7 @@ import com.example.ui.components.ExpressiveArtworkFrame
 import com.example.ui.components.FastListThumbnailShape
 import com.example.ui.components.ambientAuraBackdrop
 import com.example.ui.player.PlayerViewModel
+import com.example.ui.screens.DiscoverScreen
 import com.example.ui.screens.LibraryScreen
 import com.example.ui.screens.NowPlayingScreen
 import com.example.ui.screens.SettingsScreen
@@ -106,6 +117,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
+@Keep
 enum class CadenceTab(
     val route: String,
     val labelRes: Int,
@@ -113,8 +125,19 @@ enum class CadenceTab(
     val unselectedIcon: ImageVector
 ) {
     NOW_PLAYING("now_playing", R.string.nav_now_playing, Icons.Rounded.Album, Icons.Outlined.Album),
-    LIBRARY("library", R.string.nav_library, Icons.Rounded.LibraryMusic, Icons.Outlined.LibraryMusic)
+    LIBRARY("library", R.string.nav_library, Icons.Rounded.LibraryMusic, Icons.Outlined.LibraryMusic),
+    DISCOVER("discover", R.string.nav_discover, Icons.Rounded.AutoAwesome, Icons.Outlined.AutoAwesome);
+
+    companion object {
+        fun fromRoute(route: String?): CadenceTab =
+            entries.firstOrNull { it.route == route } ?: NOW_PLAYING
+    }
 }
+
+private val CadenceTabSaver: Saver<CadenceTab, String> = Saver(
+    save = { it.route },
+    restore = { CadenceTab.fromRoute(it) }
+)
 
 @Composable
 fun CadenceApp(
@@ -125,7 +148,7 @@ fun CadenceApp(
     val nowPlaying by viewModel.nowPlayingState.collectAsStateWithLifecycle()
     val hasDrillDown by viewModel.hasLibraryDrillDown.collectAsStateWithLifecycle()
 
-    var activeTab by rememberSaveable { mutableStateOf(CadenceTab.NOW_PLAYING) }
+    var activeTab by rememberSaveable(stateSaver = CadenceTabSaver) { mutableStateOf(CadenceTab.NOW_PLAYING) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var askedNotificationPermission by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -278,7 +301,7 @@ fun CadenceApp(
         }
     }
 
-    BackHandler(enabled = !showSettings && activeTab != CadenceTab.NOW_PLAYING && !hasDrillDown) {
+    BackHandler(enabled = !showSettings && activeTab != CadenceTab.NOW_PLAYING && !(activeTab == CadenceTab.LIBRARY && hasDrillDown)) {
         activeTab = CadenceTab.NOW_PLAYING
     }
 
@@ -556,11 +579,30 @@ private fun CadenceDestinationContent(
                 onPlayPlaylist = onPlayPlaylistFromLibrary,
                 onRemoveTrack = viewModel::removeTrack,
                 onOpenSettings = onOpenSettings,
-                scanStateFlow = viewModel.scanState,
+                scanStateFlow = viewModel.scanState
+            )
+        }
+
+        CadenceTab.DISCOVER.route -> {
+            val discoverState by viewModel.discoverState.collectAsStateWithLifecycle()
+            val onPlaySection = remember(onPlayTracksFromLibrary) {
+                { tracks: StableList<Track> -> onPlayTracksFromLibrary(tracks, false) }
+            }
+            DiscoverScreen(
+                uiState = discoverState,
+                currentTrackId = nowPlaying.currentTrack?.id,
+                isPlaying = nowPlaying.isPlaying,
+                artworkShape = themePrefs.artworkShape,
+                onSelectTrackFromSection = onSelectTrackFromLibrary,
+                onPlaySection = onPlaySection,
+                onRefreshDiscover = viewModel::refreshDiscoverFeed,
+                onOpenSettings = onOpenSettings,
+                onAddFolder = onAddFolder,
+                onImportFiles = onImportFiles,
+                onSaveMixAsPlaylist = viewModel::saveSmartPlaylist,
                 smartPlaylistFlow = viewModel.smartPlaylistState,
                 currentTrackTitle = nowPlaying.currentTrack?.title.orEmpty(),
-                onGenerateSmartPlaylist = onGenerateSmartPlaylist,
-                onSaveSmartPlaylist = viewModel::saveSmartPlaylist
+                onGenerateSmartPlaylist = onGenerateSmartPlaylist
             )
         }
 
@@ -691,41 +733,74 @@ private fun FloatingMiniPlayerPill(
     }
 }
 
+/**
+ * Google Photos-inspired expanding floating bottom navigation dock:
+ * - Only the active tab expands into a highlighted pill displaying both icon & text label.
+ * - Inactive tabs collapse into compact 50dp circular icon buttons with hidden text labels.
+ * - Smoothly animates expansion and collapse on tab switch (instant snap in Performance Mode).
+ */
 @Composable
-private fun FloatingExpressiveNavDock(
+internal fun FloatingExpressiveNavDock(
     activeTab: CadenceTab,
-    onSelectTab: (CadenceTab) -> Unit
+    onSelectTab: (CadenceTab) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val performanceMode = LocalPerformanceMode.current
     val dockBg = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(
         MaterialTheme.colorScheme.background,
         0.96f
     )
+    val inactiveCircleBg = MaterialTheme.colorScheme.surfaceContainer.opaqueOver(
+        dockBg,
+        0.82f
+    )
+    val dockAnimModifier = if (performanceMode) {
+        Modifier
+    } else {
+        Modifier.animateContentSize(
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        )
+    }
+
     Surface(
         shape = CircleShape,
         color = dockBg,
         tonalElevation = if (performanceMode) 0.dp else 4.dp,
         shadowElevation = if (performanceMode) 0.dp else 8.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 360.dp)
+        modifier = modifier
+            .wrapContentWidth()
+            .then(dockAnimModifier)
+            .testTag("floating_nav_dock")
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             CadenceTab.entries.forEach { tab ->
                 val selected = tab == activeTab
                 val onPickTab = remember(tab, onSelectTab) { { onSelectTab(tab) } }
+                val tabLabel = stringResource(tab.labelRes)
+                val pillAnimModifier = if (performanceMode) {
+                    Modifier
+                } else {
+                    Modifier.animateContentSize(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMedium
+                        )
+                    )
+                }
+
                 Surface(
                     shape = CircleShape,
                     color = if (selected) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
-                        dockBg
+                        inactiveCircleBg
                     },
                     contentColor = if (selected) {
                         MaterialTheme.colorScheme.onPrimaryContainer
@@ -733,28 +808,66 @@ private fun FloatingExpressiveNavDock(
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     modifier = Modifier
-                        .weight(1f)
                         .height(50.dp)
+                        .widthIn(min = 50.dp)
+                        .then(pillAnimModifier)
                         .clip(CircleShape)
                         .clickable(onClick = onPickTab)
                         .testTag("nav_${tab.route}")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
+                        modifier = Modifier.padding(horizontal = if (selected) 18.dp else 0.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+                        horizontalArrangement = Arrangement.Center
                     ) {
                         Icon(
                             imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                            contentDescription = stringResource(tab.labelRes),
-                            modifier = Modifier.size(21.dp)
+                            contentDescription = tabLabel,
+                            modifier = Modifier.size(22.dp)
                         )
-                        Text(
-                            text = stringResource(tab.labelRes),
-                            style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        if (performanceMode) {
+                            if (selected) {
+                                Text(
+                                    text = tabLabel,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .testTag("nav_label_${tab.route}")
+                                )
+                            }
+                        } else {
+                            AnimatedVisibility(
+                                visible = selected,
+                                enter = fadeIn(tween(180)) + expandHorizontally(
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    ),
+                                    expandFrom = Alignment.Start
+                                ),
+                                exit = fadeOut(tween(120)) + shrinkHorizontally(
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    ),
+                                    shrinkTowards = Alignment.Start
+                                )
+                            ) {
+                                Text(
+                                    text = tabLabel,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .testTag("nav_label_${tab.route}")
+                                )
+                            }
+                        }
                     }
                 }
             }

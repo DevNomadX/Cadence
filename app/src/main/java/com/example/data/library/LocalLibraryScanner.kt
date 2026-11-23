@@ -3,6 +3,9 @@ package com.example.data.library
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.media.AudioFormat
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -11,10 +14,12 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.compose.runtime.Immutable
 import androidx.documentfile.provider.DocumentFile
+import com.example.data.Track
 import com.example.data.db.FolderDao
 import com.example.data.db.SavedFolderEntity
 import com.example.data.db.TrackDao
 import com.example.data.db.TrackEntity
+import com.example.data.resolveAudioCodecLabel
 import com.example.ui.theme.ExpressivePalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -514,7 +519,7 @@ class LocalLibraryScanner(
                         val genre = if (genreCol >= 0) {
                             cursor.getString(genreCol)?.takeIf { it.isNotBlank() && it != "<unknown>" }.orEmpty()
                         } else ""
-                        val bitrateKbps = if (bitrateCol >= 0) {
+                        var bitrateKbps = if (bitrateCol >= 0) {
                             (cursor.getInt(bitrateCol) / 1000).coerceAtLeast(0)
                         } else 0
 
@@ -522,6 +527,34 @@ class LocalLibraryScanner(
                         if (dedupeKey in knownDedupeKeys) {
                             duplicates++
                             continue
+                        }
+
+                        var codec = resolveAudioCodecLabel(
+                            codec = "",
+                            mimeType = mime,
+                            uriString = displayName
+                        )
+                        var sampleRateHz = 0
+                        var bitDepth = 0
+
+                        // Inspect container format on Dispatchers.IO for lossless, ambiguous (m4a/mp4),
+                        // or high-bitrate candidates so Hi-Fi / Hi-Res badges have exact specs without UI I/O.
+                        val needsFormatProbe = codec in Track.LOSSLESS_CODECS ||
+                            codec == "M4A" ||
+                            codec.isEmpty() ||
+                            bitrateKbps >= 300 ||
+                            bitrateKbps == 0
+                        if (needsFormatProbe) {
+                            val probed = probeAudioFormatWithExtractor(contentUri)
+                            if (probed != null) {
+                                if (probed.codec.isNotBlank()) codec = probed.codec
+                                if (probed.bitrateKbps > 0 && bitrateKbps <= 0) bitrateKbps = probed.bitrateKbps
+                                if (probed.sampleRateHz > 0) sampleRateHz = probed.sampleRateHz
+                                if (probed.bitDepth > 0) bitDepth = probed.bitDepth
+                            }
+                        }
+                        if (bitrateKbps <= 0 && fileSize > 0L && durationMs >= 1000L) {
+                            bitrateKbps = ((fileSize * 8L) / durationMs).toInt().coerceAtLeast(0)
                         }
 
                         val albumArtUri = if (albumId > 0L) {
@@ -545,8 +578,10 @@ class LocalLibraryScanner(
                             folderName = folderName,
                             folderPath = folderPath,
                             mimeType = mime,
+                            codec = codec,
                             bitrateKbps = bitrateKbps,
-                            sampleRateHz = 0,
+                            sampleRateHz = sampleRateHz,
+                            bitDepth = bitDepth,
                             fileSizeBytes = fileSize,
                             dateAdded = if (dateAdded > 0L) dateAdded else System.currentTimeMillis(),
                             playCount = 0,
@@ -655,8 +690,12 @@ class LocalLibraryScanner(
             val rawGenre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)
             val rawDuration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
             val rawBitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+            val rawMime = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
             val rawSampleRate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)
+            } else null
+            val rawBitsPerSample = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE)
             } else null
 
             val durationMs = rawDuration?.toLongOrNull() ?: 0L
@@ -666,10 +705,42 @@ class LocalLibraryScanner(
             val artist = rawArtist?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
             val album = rawAlbum?.takeIf { it.isNotBlank() } ?: folderName
             val genre = rawGenre?.takeIf { it.isNotBlank() }.orEmpty()
-            val bitrateKbps = (rawBitrate?.toIntOrNull() ?: 0) / 1000
-            val sampleRateHz = rawSampleRate?.toIntOrNull() ?: 0
+            val effectiveMime = rawMime?.takeIf { it.isNotBlank() } ?: mimeType
+            var bitrateKbps = ((rawBitrate?.toIntOrNull() ?: 0) / 1000).coerceAtLeast(0)
+            var sampleRateHz = rawSampleRate?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+            var bitDepth = rawBitsPerSample?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+            var codec = resolveAudioCodecLabel(
+                codec = "",
+                mimeType = effectiveMime,
+                uriString = displayName ?: uri.toString()
+            )
 
-            val artworkPath = artworkCache.cacheArtworkBytes(retriever.embeddedPicture)
+            // Single-pass MediaExtractor probe on Dispatchers.IO whenever sample rate, bit depth,
+            // bitrate, or container codec (e.g. M4A -> ALAC vs AAC) isn't already resolved.
+            val needsExtractorProbe = sampleRateHz == 0 ||
+                (bitDepth == 0 && (codec in Track.LOSSLESS_CODECS || codec == "M4A")) ||
+                codec == "M4A" ||
+                codec.isEmpty() ||
+                bitrateKbps == 0
+            if (needsExtractorProbe) {
+                val probed = probeAudioFormatWithExtractor(uri)
+                if (probed != null) {
+                    if (probed.codec.isNotBlank()) codec = probed.codec
+                    if (probed.bitrateKbps > 0 && bitrateKbps <= 0) bitrateKbps = probed.bitrateKbps
+                    if (probed.sampleRateHz > 0 && sampleRateHz <= 0) sampleRateHz = probed.sampleRateHz
+                    if (probed.bitDepth > 0 && bitDepth <= 0) bitDepth = probed.bitDepth
+                }
+            }
+
+            val embeddedArtBytes = retriever.embeddedPicture
+            if (bitrateKbps <= 0 && fileSize > 0L && durationMs >= 1000L) {
+                val audioBytes = (fileSize - (embeddedArtBytes?.size?.toLong() ?: 0L)).coerceAtLeast(0L)
+                if (audioBytes > 0L) {
+                    bitrateKbps = ((audioBytes * 8L) / durationMs).toInt().coerceAtLeast(0)
+                }
+            }
+
+            val artworkPath = artworkCache.cacheArtworkBytes(embeddedArtBytes)
             val uriStr = uri.toString()
 
             TrackEntity(
@@ -685,9 +756,11 @@ class LocalLibraryScanner(
                 localUriString = uriStr,
                 folderName = folderName,
                 folderPath = folderPath,
-                mimeType = mimeType,
+                mimeType = effectiveMime,
+                codec = codec,
                 bitrateKbps = bitrateKbps,
                 sampleRateHz = sampleRateHz,
+                bitDepth = bitDepth,
                 fileSizeBytes = fileSize.coerceAtLeast(0L),
                 dateAdded = System.currentTimeMillis(),
                 playCount = 0,
@@ -702,6 +775,68 @@ class LocalLibraryScanner(
             null
         } finally {
             runCatching { retriever.release() }
+        }
+    }
+
+    private data class ProbedAudioFormat(
+        val codec: String,
+        val bitrateKbps: Int,
+        val sampleRateHz: Int,
+        val bitDepth: Int
+    )
+
+    private fun probeAudioFormatWithExtractor(uri: Uri): ProbedAudioFormat? {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(context, uri, null)
+            for (trackIndex in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(trackIndex)
+                val trackMime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+                if (!trackMime.startsWith("audio/", ignoreCase = true)) continue
+
+                val codec = resolveAudioCodecLabel(codec = "", mimeType = trackMime)
+                val sampleRateHz = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                    format.getInteger(MediaFormat.KEY_SAMPLE_RATE).coerceAtLeast(0)
+                } else 0
+                val bitrateKbps = if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
+                    (format.getInteger(MediaFormat.KEY_BIT_RATE) / 1000).coerceAtLeast(0)
+                } else 0
+
+                var bitDepth = 0
+                if (format.containsKey("bits-per-sample")) {
+                    bitDepth = format.getInteger("bits-per-sample").coerceAtLeast(0)
+                }
+                if (bitDepth == 0 && format.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                    bitDepth = pcmEncodingToBitDepth(format.getInteger(MediaFormat.KEY_PCM_ENCODING))
+                }
+
+                return ProbedAudioFormat(
+                    codec = codec,
+                    bitrateKbps = bitrateKbps,
+                    sampleRateHz = sampleRateHz,
+                    bitDepth = bitDepth
+                )
+            }
+            null
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    private fun pcmEncodingToBitDepth(pcmEncoding: Int): Int {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            when (pcmEncoding) {
+                AudioFormat.ENCODING_PCM_24BIT_PACKED -> return 24
+                AudioFormat.ENCODING_PCM_32BIT -> return 32
+            }
+        }
+        return when (pcmEncoding) {
+            AudioFormat.ENCODING_PCM_8BIT -> 8
+            AudioFormat.ENCODING_PCM_16BIT -> 16
+            AudioFormat.ENCODING_PCM_FLOAT -> 32
+            else -> 0
         }
     }
 
@@ -738,11 +873,16 @@ class LocalLibraryScanner(
             "flac" -> "audio/flac"
             "mp3" -> "audio/mpeg"
             "wav" -> "audio/wav"
-            "m4a", "alac" -> "audio/mp4"
+            "alac" -> "audio/alac"
+            "m4a" -> "audio/mp4"
             "aac" -> "audio/aac"
-            "ogg" -> "audio/ogg"
+            "ogg", "oga" -> "audio/ogg"
             "opus" -> "audio/opus"
             "aiff", "aif" -> "audio/aiff"
+            "ape" -> "audio/x-ape"
+            "dsf" -> "audio/x-dsf"
+            "dff" -> "audio/x-dff"
+            "wv" -> "audio/x-wavpack"
             else -> "audio/*"
         }
 
@@ -765,7 +905,8 @@ class LocalLibraryScanner(
     companion object {
         private const val BATCH_SIZE = 50
         private val SUPPORTED_EXTENSIONS = setOf(
-            "flac", "mp3", "wav", "aac", "m4a", "ogg", "oga", "opus", "alac", "aiff", "aif", "webm"
+            "flac", "mp3", "wav", "aac", "m4a", "ogg", "oga", "opus",
+            "alac", "aiff", "aif", "ape", "dsf", "dff", "wv", "webm"
         )
     }
 }

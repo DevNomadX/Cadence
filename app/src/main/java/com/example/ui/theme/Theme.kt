@@ -94,6 +94,16 @@ private fun shouldSkipThemeColorAnimation(context: Context): Boolean {
     return scale == 0f
 }
 
+fun resolveCadenceColorScheme(
+    palette: ExpressivePalette,
+    darkTheme: Boolean,
+    context: Context
+): ColorScheme = if (palette == ExpressivePalette.DYNAMIC && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+} else {
+    palette.colorScheme(darkTheme)
+}
+
 @Composable
 fun CadenceTheme(
     palette: ExpressivePalette = ExpressivePalette.TERRACOTTA,
@@ -109,10 +119,8 @@ fun CadenceTheme(
     }
 
     val context = LocalContext.current
-    val baseScheme = if (palette == ExpressivePalette.DYNAMIC && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    } else {
-        palette.colorScheme(darkTheme)
+    val baseScheme = remember(palette, darkTheme, context) {
+        resolveCadenceColorScheme(palette = palette, darkTheme = darkTheme, context = context)
     }
 
     val hardwareSkipAnim = remember(context) { shouldSkipThemeColorAnimation(context) }

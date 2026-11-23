@@ -7,6 +7,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,6 +56,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -75,6 +78,7 @@ import com.example.ui.theme.ExpressivePalette
 import com.example.ui.theme.LocalPerformanceMode
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
+import com.example.ui.theme.resolveCadenceColorScheme
 import kotlin.math.roundToInt
 
 private val ShortClipThresholdsSec = listOf(0, 15, 30, 60)
@@ -110,6 +114,20 @@ fun SettingsScreen(
     val cardColor = MaterialTheme.colorScheme.surfaceContainerLow.opaqueOver(bg, 0.96f)
     val dividerColor = MaterialTheme.colorScheme.outlineVariant.opaqueOver(cardColor, 0.50f)
     val paletteRows = remember { ExpressivePalette.entries.chunked(2) }
+    val context = LocalContext.current
+    val systemDark = isSystemInDarkTheme()
+    val effectiveDark = when (themePrefs.appearanceMode) {
+        AppearanceMode.SYSTEM -> systemDark
+        AppearanceMode.LIGHT -> false
+        AppearanceMode.DARK -> true
+    }
+    val systemPreviewScheme = remember(context, effectiveDark) {
+        resolveCadenceColorScheme(
+            palette = ExpressivePalette.DYNAMIC,
+            darkTheme = effectiveDark,
+            context = context
+        )
+    }
 
     Box(
         modifier = modifier.fillMaxSize(),
@@ -149,25 +167,17 @@ fun SettingsScreen(
                             contentDescription = stringResource(R.string.action_back)
                         )
                     }
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Text(
-                            text = stringResource(R.string.settings_title),
-                            style = MaterialTheme.typography.displaySmall,
-                            color = MaterialTheme.colorScheme.onBackground,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = stringResource(R.string.settings_subtitle),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = stringResource(R.string.settings_title),
+                        style = MaterialTheme.typography.displaySmall,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("settings_header_title")
+                    )
                 }
             }
 
@@ -204,10 +214,14 @@ fun SettingsScreen(
                                     val onPick = remember(palette, onSelectPalette) {
                                         { onSelectPalette(palette) }
                                     }
+                                    val isDynamic = palette == ExpressivePalette.DYNAMIC
                                     PaletteSwatchCard(
                                         palette = palette,
                                         selected = themePrefs.palette == palette,
                                         onClick = onPick,
+                                        swatchPrimary = if (isDynamic) systemPreviewScheme.primary else palette.previewPrimary,
+                                        swatchTertiary = if (isDynamic) systemPreviewScheme.tertiary else palette.previewTertiary,
+                                        swatchContainer = if (isDynamic) systemPreviewScheme.primaryContainer else palette.previewContainer,
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
@@ -874,6 +888,9 @@ private fun PaletteSwatchCard(
     palette: ExpressivePalette,
     selected: Boolean,
     onClick: () -> Unit,
+    swatchPrimary: Color = palette.previewPrimary,
+    swatchTertiary: Color = palette.previewTertiary,
+    swatchContainer: Color = palette.previewContainer,
     modifier: Modifier = Modifier
 ) {
     val performanceMode = LocalPerformanceMode.current
@@ -926,19 +943,19 @@ private fun PaletteSwatchCard(
                         modifier = Modifier
                             .size(22.dp)
                             .clip(CircleShape)
-                            .background(palette.previewPrimary)
+                            .background(swatchPrimary)
                     )
                     Box(
                         modifier = Modifier
                             .size(22.dp)
                             .clip(CircleShape)
-                            .background(palette.previewTertiary)
+                            .background(swatchTertiary)
                     )
                     Box(
                         modifier = Modifier
                             .size(22.dp)
                             .clip(CircleShape)
-                            .background(palette.previewContainer)
+                            .background(swatchContainer)
                     )
                 }
 
