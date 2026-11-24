@@ -551,7 +551,7 @@ class PlaybackController(
 
     companion object {
         internal const val COMPLETION_THRESHOLD_RATIO = 0.80
-        internal const val EARLY_SKIP_MAX_RATIO = 0.20
+        internal const val EARLY_SKIP_MAX_RATIO = 0.25
         internal const val EARLY_SKIP_MIN_MS = 3_000L
     }
 

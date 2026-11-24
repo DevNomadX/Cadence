@@ -20,14 +20,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.BluetoothAudio
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Headphones
-import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Speaker
-import androidx.compose.material.icons.rounded.SpeakerGroup
-import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -57,6 +51,7 @@ import com.example.playback.AudioOutputDevice
 import com.example.playback.AudioOutputRouteType
 import com.example.playback.AudioOutputState
 import com.example.playback.PlaybackProgress
+import com.example.ui.icons.CadenceIcons
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
 import kotlinx.coroutines.flow.StateFlow
@@ -66,11 +61,11 @@ import kotlinx.coroutines.flow.map
 val PLAYBACK_SPEED_OPTIONS: List<Float> = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
 
 fun audioOutputIconFor(routeType: AudioOutputRouteType): ImageVector = when (routeType) {
-    AudioOutputRouteType.BLUETOOTH -> Icons.Rounded.BluetoothAudio
-    AudioOutputRouteType.WIRED_HEADSET -> Icons.Rounded.Headphones
-    AudioOutputRouteType.USB_AUDIO -> Icons.Rounded.Usb
-    AudioOutputRouteType.EXTERNAL -> Icons.Rounded.SpeakerGroup
-    AudioOutputRouteType.SPEAKER -> Icons.Rounded.Speaker
+    AudioOutputRouteType.BLUETOOTH -> CadenceIcons.BluetoothAudio
+    AudioOutputRouteType.WIRED_HEADSET -> CadenceIcons.Headphones
+    AudioOutputRouteType.USB_AUDIO -> CadenceIcons.Usb
+    AudioOutputRouteType.EXTERNAL -> CadenceIcons.SpeakerGroup
+    AudioOutputRouteType.SPEAKER -> CadenceIcons.Speaker
 }
 
 /**
@@ -255,7 +250,7 @@ fun LyricsSheetContent(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = Icons.Rounded.Lyrics,
+                        imageVector = CadenceIcons.Lyrics,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier.size(20.dp)
@@ -322,7 +317,7 @@ fun LyricsSheetContent(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Lyrics,
+                            imageVector = CadenceIcons.Lyrics,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(36.dp)

@@ -6,6 +6,7 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.example.data.Track
+import com.example.data.intelligence.SmartMoodTag
 import com.example.ui.theme.ExpressivePalette
 
 @Keep
@@ -51,7 +52,10 @@ data class TrackEntity(
     val synthProfileName: String? = null,
     val suggestedPaletteId: String,
     val isUserImported: Boolean,
-    val dedupeKey: String
+    val dedupeKey: String,
+    val affinityScore: Float = 0f,
+    val moodTags: String = "",
+    val artworkColorArgb: Int = 0
 ) {
     fun toDomain(): Track = Track(
         id = id,
@@ -82,7 +86,10 @@ data class TrackEntity(
         lastPlayedAt = lastPlayedAt,
         isFavorite = isFavorite,
         suggestedPalette = ExpressivePalette.fromId(suggestedPaletteId),
-        isUserImported = isUserImported
+        isUserImported = isUserImported,
+        affinityScore = affinityScore,
+        moodTags = SmartMoodTag.decode(moodTags),
+        artworkColorArgb = artworkColorArgb
     )
 
     companion object {
@@ -121,7 +128,10 @@ data class TrackEntity(
             synthProfileName = null,
             suggestedPaletteId = track.suggestedPalette.id,
             isUserImported = track.isUserImported,
-            dedupeKey = buildDedupeKey(track.title, track.artist, track.durationMs)
+            dedupeKey = buildDedupeKey(track.title, track.artist, track.durationMs),
+            affinityScore = track.affinityScore,
+            moodTags = SmartMoodTag.encode(track.moodTags),
+            artworkColorArgb = track.artworkColorArgb
         )
     }
 }

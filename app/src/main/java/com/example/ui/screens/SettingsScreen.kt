@@ -31,18 +31,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.CreateNewFolder
-import androidx.compose.material.icons.rounded.DarkMode
-import androidx.compose.material.icons.rounded.FolderOpen
-import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
@@ -87,6 +79,7 @@ import com.example.data.ThemePreferences
 import com.example.data.Track
 import com.example.ui.components.AudioPulseBars
 import com.example.ui.components.ExpressiveArtworkFrame
+import com.example.ui.icons.CadenceIcons
 import com.example.ui.theme.AppearanceMode
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.ExpressivePalette
@@ -121,6 +114,7 @@ fun SettingsScreen(
     onChangeCrossfadeSec: (Int) -> Unit,
     onTogglePauseOnHeadphoneDisconnect: (Boolean) -> Unit,
     onSelectAudioFocusBehavior: (AudioFocusBehavior) -> Unit,
+    onToggleAcousticEnhance: (Boolean) -> Unit = {},
     userDisplayName: String = "",
     onUpdateDisplayName: (String) -> Unit = {},
     modifier: Modifier = Modifier
@@ -397,7 +391,7 @@ fun SettingsScreen(
                                         .testTag("settings_add_folder_button")
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Rounded.CreateNewFolder,
+                                        imageVector = CadenceIcons.CreateNewFolder,
                                         contentDescription = null,
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -498,6 +492,21 @@ fun SettingsScreen(
                                 checked = audioSettings.gaplessPlaybackEnabled,
                                 onCheckedChange = onToggleGaplessPlayback,
                                 testTag = "toggle_gapless"
+                            )
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(dividerColor)
+                            )
+
+                            ExpressiveToggleRow(
+                                title = stringResource(R.string.settings_acoustic_enhance_title),
+                                description = stringResource(R.string.settings_acoustic_enhance_desc),
+                                checked = audioSettings.acousticEnhanceEnabled,
+                                onCheckedChange = onToggleAcousticEnhance,
+                                testTag = "toggle_acoustic_enhance"
                             )
 
                             Box(
@@ -808,7 +817,7 @@ private fun SavedFolderRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Icon(
-                imageVector = Icons.Rounded.FolderOpen,
+                imageVector = CadenceIcons.FolderOpen,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(20.dp)
@@ -828,7 +837,7 @@ private fun SavedFolderRow(
                     .testTag("remove_folder_$index")
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.DeleteOutline,
+                    imageVector = CadenceIcons.DeleteOutline,
                     contentDescription = stringResource(R.string.action_remove_folder),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -953,7 +962,7 @@ private fun ExpressiveLivePreviewCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.AutoAwesome,
+                        imageVector = CadenceIcons.AutoAwesome,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(16.dp)
@@ -1004,9 +1013,9 @@ private fun AppearanceSegmentedRow(
 ) {
     val options = remember {
         listOf(
-            Triple(AppearanceMode.SYSTEM, R.string.appearance_system, Icons.Rounded.BrightnessAuto),
-            Triple(AppearanceMode.LIGHT, R.string.appearance_light, Icons.Rounded.LightMode),
-            Triple(AppearanceMode.DARK, R.string.appearance_dark, Icons.Rounded.DarkMode)
+            Triple(AppearanceMode.SYSTEM, R.string.appearance_system, CadenceIcons.BrightnessAuto),
+            Triple(AppearanceMode.LIGHT, R.string.appearance_light, CadenceIcons.LightMode),
+            Triple(AppearanceMode.DARK, R.string.appearance_dark, CadenceIcons.DarkMode)
         )
     }
 
@@ -1288,7 +1297,7 @@ private fun ExpressiveToggleRow(
                             horizontalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.Speed,
+                                imageVector = CadenceIcons.Speed,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onTertiaryContainer,
                                 modifier = Modifier.size(11.dp)

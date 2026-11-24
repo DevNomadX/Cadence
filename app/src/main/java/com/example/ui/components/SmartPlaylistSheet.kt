@@ -1,25 +1,28 @@
 package com.example.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
@@ -28,56 +31,91 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.StableMap
 import com.example.data.Track
+import com.example.data.formatDuration
 import com.example.data.intelligence.MusicIntelligenceOutput
+import com.example.ui.icons.CadenceIcons
+import com.example.ui.theme.DisplayFontFamily
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.MonoFontFamily
+import com.example.ui.theme.opaqueOver
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+@Immutable
 private data class MoodOption(val id: String?, val label: String)
-private data class EnergyOption(val id: String?, val label: String)
 
 private val SMART_MOOD_OPTIONS = listOf(
     MoodOption(null, "Auto"),
     MoodOption("calm", "Calm"),
     MoodOption("focused", "Focus"),
     MoodOption("warm", "Warm"),
-    MoodOption("late_night", "Late Night"),
-    MoodOption("energetic", "Energetic"),
-    MoodOption("organic", "Organic"),
-    MoodOption("uplifting", "Uplifting")
+    MoodOption("upbeat", "Upbeat")
 )
 
-private val SMART_ENERGY_OPTIONS = listOf(
-    EnergyOption(null, "Any Energy"),
-    EnergyOption("low", "Low"),
-    EnergyOption("medium", "Medium"),
-    EnergyOption("high", "High")
-)
+private val PreviewArtworkShape = RoundedCornerShape(12.dp)
+private val MixHeaderCardShape = RoundedCornerShape(22.dp)
+private val BalanceCardShape = RoundedCornerShape(20.dp)
+private val PreviewRowShape = RoundedCornerShape(16.dp)
+
+internal fun formatSmartMixSubtitle(
+    output: MusicIntelligenceOutput,
+    trackCount: Int
+): String {
+    val minBpm = output.tempoDescriptors.dominantBpmRange.min
+    val maxBpm = output.tempoDescriptors.dominantBpmRange.max
+    val avgBpm = when {
+        minBpm > 0 && maxBpm > 0 -> ((minBpm + maxBpm) / 2.0).roundToInt()
+        maxBpm > 0 -> maxBpm
+        minBpm > 0 -> minBpm
+        else -> 0
+    }
+    val vibeLabel = output.tempoDescriptors.descriptor
+        .replace('_', ' ')
+        .trim()
+        .split(Regex("\\s+"))
+        .filter { it.isNotEmpty() }
+        .joinToString(" ") { word ->
+            word.replaceFirstChar { ch ->
+                if (ch.isLowerCase()) ch.titlecase(Locale.US) else ch.toString()
+            }
+        }
+        .ifBlank { "Curated Flow" }
+    val countLabel = if (trackCount == 1) "1 track" else "$trackCount tracks"
+    return buildList {
+        if (avgBpm > 0) add("$avgBpm BPM")
+        add(vibeLabel)
+        add(countLabel)
+    }.joinToString(" • ")
+}
 
 /**
- * Material 3 Expressive modal bottom sheet for offline local Smart Mix & Daily Mix tuning
+ * Material 3 Expressive Tune Mix modal bottom sheet for offline local Smart Mix & Daily Mix tuning
  * powered by Cadence's zero-server MusicIntelligenceEngine.
  */
 @Composable
@@ -94,13 +132,32 @@ fun SmartPlaylistSheetContent(
     onRegenerate: () -> Unit,
     onPlaySmartPlaylist: (List<Track>) -> Unit,
     onSaveSmartPlaylist: (String, List<String>) -> Unit,
+    currentTrackArtist: String = "",
     selectedEnergy: String? = null,
     discoveryBalance: Float = 0.5f,
-    onSelectEnergy: (String?) -> Unit = {},
     onChangeDiscoveryBalance: (Float) -> Unit = {},
     onResetTune: () -> Unit = {}
 ) {
-    var showRawJson by remember { mutableStateOf(false) }
+    val colorScheme = MaterialTheme.colorScheme
+    val sheetBg = colorScheme.surfaceContainerLow
+
+    // Pre-blended opaque tonal surfaces (zero runtime alpha overdraw)
+    val balanceCardSurface = remember(colorScheme.surfaceContainer, sheetBg) {
+        colorScheme.surfaceContainer.opaqueOver(sheetBg, 0.96f)
+    }
+    val headerCardSurface = remember(colorScheme.surfaceContainerHigh, sheetBg) {
+        colorScheme.surfaceContainerHigh.opaqueOver(sheetBg, 0.96f)
+    }
+    val seedPillSurface = remember(colorScheme.surfaceContainerHigh, sheetBg) {
+        colorScheme.surfaceContainerHigh.opaqueOver(sheetBg, 0.94f)
+    }
+    val saveButtonSurface = remember(colorScheme.secondaryContainer, sheetBg) {
+        colorScheme.secondaryContainer.opaqueOver(sheetBg, 0.96f)
+    }
+    val previewRowSurface = remember(colorScheme.surfaceContainer, sheetBg) {
+        colorScheme.surfaceContainer.opaqueOver(sheetBg, 0.88f)
+    }
+
     val isTuned = selectedMood != null || selectedEnergy != null || abs(discoveryBalance - 0.5f) >= 0.05f
     val balanceSummary = when {
         discoveryBalance <= 0.32f -> "Familiar"
@@ -109,438 +166,327 @@ fun SmartPlaylistSheetContent(
     }
 
     val resolvedTracks = remember(output, trackLookup) {
-        output?.recommendedTracks?.mapNotNull { rec -> trackLookup[rec.trackId] }.orEmpty()
+        output?.recommendedTracks
+            ?.mapNotNull { rec -> trackLookup[rec.trackId] }
+            ?.distinctBy { it.id }
+            .orEmpty()
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .padding(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Column(
+    val mixSubtitle = remember(output, resolvedTracks.size) {
+        output?.let { formatSmartMixSubtitle(it, resolvedTracks.size) }.orEmpty()
+    }
+
+    val seedTrackDisplay = remember(currentTrackTitle, currentTrackArtist) {
+        val cleanTitle = currentTrackTitle.trim().ifBlank { "Current Track" }
+        val cleanArtist = currentTrackArtist.trim()
+        if (cleanArtist.isNotEmpty() && !cleanTitle.equals(cleanArtist, ignoreCase = true)) {
+            "$cleanTitle · $cleanArtist"
+        } else {
+            cleanTitle
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 1. Clean Top Sheet Header: "Tune Mix" on left + Reset & Refresh on right (48.dp targets)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 12.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = stringResource(R.string.discover_tune_mix),
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontFamily = DisplayFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.3).sp
+                ),
+                color = colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("smart_mix_sheet_title")
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                TextButton(
+                    onClick = onResetTune,
+                    enabled = isTuned || !seedFromCurrent,
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("smart_reset_tune_button")
+                ) {
+                    Text(
+                        text = stringResource(R.string.discover_reset_tune),
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+
+                TextButton(
+                    onClick = onRegenerate,
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("smart_mix_regenerate_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.smart_mix_refresh),
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+        }
+
+        // 2. Scrollable Controls + Unified Mix Header + Clean Track Preview LazyColumn
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f, fill = false)
-                .verticalScroll(rememberScrollState()),
+                .testTag("smart_mix_list"),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.AutoAwesome,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Column {
-                        Text(
-                            text = stringResource(R.string.smart_mix_title),
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = stringResource(R.string.smart_mix_subtitle),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isTuned) {
-                        TextButton(
-                            onClick = onResetTune,
-                            modifier = Modifier.testTag("smart_reset_tune_button")
-                        ) {
-                            Text(stringResource(R.string.discover_reset_tune))
-                        }
-                    }
-                    TextButton(
-                        onClick = onRegenerate,
-                        modifier = Modifier.testTag("smart_mix_regenerate_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Refresh,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text("Refresh")
-                    }
-                }
-            }
-
-            // Mood selector chips
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                SMART_MOOD_OPTIONS.forEach { opt ->
-                    val selected = selectedMood == opt.id
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onSelectMood(opt.id) },
-                        label = { Text(opt.label) },
-                        shape = CircleShape,
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                        ),
-                        modifier = Modifier.testTag("smart_mood_${opt.id ?: "auto"}")
-                    )
-                }
-            }
-
-            // Energy level selector chips
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = stringResource(R.string.discover_tune_energy),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                SMART_ENERGY_OPTIONS.forEach { opt ->
-                    val selected = selectedEnergy == opt.id
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onSelectEnergy(opt.id) },
-                        label = { Text(opt.label) },
-                        shape = CircleShape,
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        ),
-                        modifier = Modifier.testTag("smart_energy_${opt.id ?: "any"}")
-                    )
-                }
-            }
-
-            // Familiar Favorites <-> Fresh Rediscovery balance slider
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
+            // Mood Filter Row Only (Auto, Calm, Focus, Warm, Upbeat)
+            item(key = "smart_mood_row", contentType = "smart_mood_row") {
+                LazyRow(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                        .testTag("smart_mood_row"),
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = stringResource(R.string.discover_tune_balance),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = balanceSummary,
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.testTag("smart_balance_label")
-                        )
-                    }
-                    Slider(
-                        value = discoveryBalance.coerceIn(0f, 1f),
-                        onValueChange = onChangeDiscoveryBalance,
-                        valueRange = 0f..1f,
-                        steps = 3,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("smart_balance_slider")
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = stringResource(R.string.discover_balance_familiar),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = stringResource(R.string.discover_balance_fresh),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    items(
+                        items = SMART_MOOD_OPTIONS,
+                        key = { opt -> "mood_${opt.id ?: "auto"}" },
+                        contentType = { "mood_chip" }
+                    ) { opt ->
+                        val selected = selectedMood == opt.id
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSelectMood(opt.id) },
+                            label = {
+                                Text(
+                                    text = opt.label,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            },
+                            shape = CircleShape,
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = colorScheme.primaryContainer,
+                                selectedLabelColor = colorScheme.onPrimaryContainer
+                            ),
+                            modifier = Modifier.testTag("smart_mood_${opt.id ?: "auto"}")
                         )
                     }
                 }
             }
 
-            // Seed toggle chip
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                FilterChip(
-                    selected = seedFromCurrent,
-                    enabled = trackLookup.isNotEmpty(),
-                    onClick = { onToggleSeedFromCurrent(!seedFromCurrent) },
-                    label = {
-                        Text(
-                            text = "Seed: $currentTrackTitle",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    shape = CircleShape,
-                    modifier = Modifier.testTag("smart_seed_toggle")
-                )
-
-                TextButton(
-                    onClick = { showRawJson = !showRawJson },
-                    modifier = Modifier.testTag("smart_toggle_json_button")
+            // Mix Balance Slider (Familiar Favorites <-> Fresh Rediscovery)
+            item(key = "smart_balance_card", contentType = "smart_balance_card") {
+                Surface(
+                    shape = BalanceCardShape,
+                    color = balanceCardSurface,
+                    border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Code,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = stringResource(R.string.discover_tune_balance),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colorScheme.onSurface
+                            )
+                            Text(
+                                text = balanceSummary,
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
+                                color = colorScheme.primary,
+                                modifier = Modifier.testTag("smart_balance_label")
+                            )
+                        }
+                        Slider(
+                            value = discoveryBalance.coerceIn(0f, 1f),
+                            onValueChange = onChangeDiscoveryBalance,
+                            valueRange = 0f..1f,
+                            steps = 3,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("smart_balance_slider")
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = stringResource(R.string.discover_balance_familiar),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = stringResource(R.string.discover_balance_fresh),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Active Seed Track Pill with trailing × button (or tap to re-seed when cleared)
+            if (trackLookup.isNotEmpty()) {
+                item(key = "smart_seed_pill", contentType = "smart_seed_pill") {
+                    SmartSeedPill(
+                        seedFromCurrent = seedFromCurrent,
+                        seedTrackDisplay = seedTrackDisplay,
+                        surfaceColor = seedPillSurface,
+                        onToggleSeed = onToggleSeedFromCurrent,
+                        modifier = Modifier.padding(horizontal = 20.dp)
                     )
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (showRawJson) "Hide JSON" else "JSON")
                 }
             }
 
             if (isGenerating && output == null) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 24.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp)
-                    Spacer(Modifier.width(12.dp))
-                    Text("Analyzing local library…", style = MaterialTheme.typography.bodyMedium)
-                }
-            } else if (output != null) {
-
-            // Profile summary card
-            Surface(
-                shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+                item(key = "smart_mix_loading", contentType = "smart_mix_loading") {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 24.dp),
+                        horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = output.playlistProfile.suggestedTitle,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("smart_mix_result_title")
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.5.dp
                         )
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer
-                        ) {
-                            val cohesionPct = ((output.playlistProfile.cohesionScore.takeIf { it.isFinite() } ?: 0.0)
-                                .coerceIn(0.0, 1.0) * 100.0).roundToInt()
-                            Text(
-                                text = "$cohesionPct% cohesion",
-                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = stringResource(R.string.smart_mix_analyzing),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colorScheme.onSurfaceVariant
+                        )
                     }
-
-                    // Mood classifications
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        output.moodClassifications.forEach { mood ->
-                            val confPct = ((mood.confidence.takeIf { it.isFinite() } ?: 0.0)
-                                .coerceIn(0.0, 1.0) * 100.0).roundToInt()
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.secondaryContainer
-                            ) {
-                                Text(
-                                    text = "${mood.mood} $confPct%",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // Tempo descriptor line
-                    val tempo = output.tempoDescriptors
-                    val inferredSuffix = if (tempo.tempoInferred) " · inferred" else ""
-                    Text(
-                        text = "${tempo.dominantBpmRange.min}–${tempo.dominantBpmRange.max} BPM · ${tempo.descriptor.replace('_', ' ')} · ${tempo.pacingCurve.replace('_', ' ')}$inferredSuffix",
-                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
-            }
-
-                // Optional raw JSON preview for inspection
-                AnimatedVisibility(visible = showRawJson) {
+            } else if (output != null) {
+                // Unified Mix Header Card (Title + Single Concise Vibe & Track Count Subtitle)
+                item(key = "smart_mix_header_card", contentType = "smart_mix_header_card") {
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                        shape = MixHeaderCardShape,
+                        color = headerCardSurface,
+                        border = BorderStroke(1.dp, colorScheme.primary.copy(alpha = 0.18f)),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 150.dp)
+                            .padding(horizontal = 20.dp)
+                            .testTag("smart_mix_header_card")
                     ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .verticalScroll(rememberScrollState())
-                                .padding(12.dp)
-                                .testTag("smart_mix_raw_json")
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                text = output.rawJson,
-                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFontFamily),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = output.playlistProfile.suggestedTitle,
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontFamily = DisplayFontFamily,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                color = colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("smart_mix_result_title")
+                            )
+                            Text(
+                                text = mixSubtitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("smart_mix_result_subtitle")
                             )
                         }
                     }
                 }
 
                 if (resolvedTracks.isEmpty()) {
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "Scan a local music folder or import audio files first to generate offline smart playlists.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(16.dp)
-                        )
+                    item(key = "smart_mix_empty", contentType = "smart_mix_empty") {
+                        Surface(
+                            shape = BalanceCardShape,
+                            color = balanceCardSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.smart_mix_empty),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(16.dp)
+                            )
+                        }
                     }
                 } else {
-                    // Ranked tracks list (bounded <= 15 tracks, smooth single-scroll container)
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        output.recommendedTracks.forEach { rec ->
-                            val track = trackLookup[rec.trackId] ?: return@forEach
-                            Surface(
-                                shape = RoundedCornerShape(18.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("smart_track_${rec.trackId}")
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Text(
-                                        text = "#${rec.rank}",
-                                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = MonoFontFamily),
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    ExpressiveArtworkFrame(
-                                        track = track,
-                                        artworkShape = artworkShape,
-                                        isPlaying = false,
-                                        animateScale = false,
-                                        decodeSizePx = 96,
-                                        shapeOverride = FastListThumbnailShape,
-                                        modifier = Modifier.size(40.dp)
-                                    )
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = track.title.ifBlank { "Untitled Track" },
-                                            style = MaterialTheme.typography.titleSmall,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${track.artist.ifBlank { "Unknown Artist" }} · ${rec.reason}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                    val scorePct = ((rec.score.takeIf { it.isFinite() } ?: 0.0)
-                                        .coerceIn(0.0, 1.0) * 100.0).roundToInt()
-                                    Text(
-                                        text = "$scorePct",
-                                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = MonoFontFamily),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
+                    // Clean Preview Track Rows (44.dp art + Title + Artist + subtle duration)
+                    items(
+                        items = resolvedTracks,
+                        key = { track -> "smart_track_${track.id}" },
+                        contentType = { "smart_track_row" }
+                    ) { track ->
+                        SmartMixPreviewTrackRow(
+                            track = track,
+                            artworkShape = artworkShape,
+                            rowSurface = previewRowSurface,
+                            artworkRimColor = colorScheme.onSurface.copy(alpha = 0.08f),
+                            modifier = Modifier.padding(horizontal = 20.dp)
+                        )
                     }
                 }
             }
         }
 
-        // Pinned action row: Play Mix + Save Playlist (always visible & clickable)
+        // 3. Sticky Bottom Action Bar: Save Playlist + Play Mix (52.dp single-line pills)
         if (output != null) {
+            HorizontalDivider(
+                color = colorScheme.outlineVariant.copy(alpha = 0.35f)
+            )
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .testTag("smart_mix_bottom_bar"),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Button(
-                    onClick = { onPlaySmartPlaylist(resolvedTracks) },
-                    enabled = resolvedTracks.isNotEmpty(),
-                    shape = CircleShape,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("smart_mix_play_button")
-                ) {
-                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Play Mix")
-                }
-
                 FilledTonalButton(
                     onClick = {
                         onSaveSmartPlaylist(
@@ -550,19 +496,217 @@ fun SmartPlaylistSheetContent(
                     },
                     enabled = resolvedTracks.isNotEmpty(),
                     shape = CircleShape,
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = saveButtonSurface,
+                        contentColor = colorScheme.onSecondaryContainer
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
                     modifier = Modifier
                         .weight(1f)
-                        .height(48.dp)
+                        .height(52.dp)
                         .testTag("smart_mix_save_button")
                 ) {
                     Icon(
-                        Icons.AutoMirrored.Rounded.PlaylistAdd,
+                        imageVector = CadenceIcons.PlaylistAdd,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = stringResource(R.string.smart_mix_save_playlist),
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Button(
+                    onClick = { onPlaySmartPlaylist(resolvedTracks) },
+                    enabled = resolvedTracks.isNotEmpty(),
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colorScheme.primary,
+                        contentColor = colorScheme.onPrimary
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(52.dp)
+                        .testTag("smart_mix_play_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
                         contentDescription = null,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("Save Playlist")
+                    Text(
+                        text = stringResource(R.string.smart_mix_play_mix),
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmartSeedPill(
+    seedFromCurrent: Boolean,
+    seedTrackDisplay: String,
+    surfaceColor: Color,
+    onToggleSeed: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val borderColor = if (seedFromCurrent) {
+        colorScheme.primary.copy(alpha = 0.24f)
+    } else {
+        colorScheme.outlineVariant.copy(alpha = 0.45f)
+    }
+
+    Surface(
+        shape = CircleShape,
+        color = surfaceColor,
+        border = BorderStroke(1.dp, borderColor),
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(CircleShape)
+            .clickable(
+                enabled = !seedFromCurrent,
+                role = Role.Button,
+                onClick = { onToggleSeed(true) }
+            )
+            .testTag("smart_seed_toggle")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, end = if (seedFromCurrent) 2.dp else 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = if (seedFromCurrent) CadenceIcons.MusicNote else CadenceIcons.AutoAwesome,
+                contentDescription = null,
+                tint = if (seedFromCurrent) colorScheme.primary else colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = if (seedFromCurrent) {
+                    stringResource(R.string.smart_mix_seed_label, seedTrackDisplay)
+                } else {
+                    stringResource(R.string.smart_mix_add_seed, seedTrackDisplay)
+                },
+                style = MaterialTheme.typography.labelLarge,
+                color = if (seedFromCurrent) colorScheme.onSurface else colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (seedFromCurrent) {
+                IconButton(
+                    onClick = { onToggleSeed(false) },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("smart_seed_clear_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = stringResource(R.string.smart_mix_clear_seed),
+                        tint = colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmartMixPreviewTrackRow(
+    track: Track,
+    artworkShape: ExpressiveArtworkShape,
+    rowSurface: Color,
+    artworkRimColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val durationLabel = remember(track.durationMs) {
+        if (track.durationMs > 0L) formatDuration(track.durationMs) else ""
+    }
+
+    Surface(
+        shape = PreviewRowShape,
+        color = rowSurface,
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("smart_track_${track.id}")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Surface(
+                shape = PreviewArtworkShape,
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, artworkRimColor),
+                modifier = Modifier
+                    .size(44.dp)
+                    .testTag("smart_track_art_${track.id}")
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    ExpressiveArtworkFrame(
+                        track = track,
+                        artworkShape = artworkShape,
+                        isPlaying = false,
+                        animateScale = false,
+                        decodeSizePx = 128,
+                        shapeOverride = PreviewArtworkShape,
+                        showHairlineBorder = false,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = track.title.ifBlank { "Untitled Track" },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = track.artist.ifBlank { "Unknown Artist" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (durationLabel.isNotEmpty()) {
+                Text(
+                    text = durationLabel,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = MonoFontFamily,
+                        fontFeatureSettings = "tnum"
+                    ),
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
         }
     }

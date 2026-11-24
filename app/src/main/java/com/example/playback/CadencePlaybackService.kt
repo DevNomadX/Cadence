@@ -3,12 +3,10 @@ package com.example.playback
 import android.app.PendingIntent
 import android.content.Intent
 import androidx.annotation.OptIn
-import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -28,15 +26,20 @@ import kotlinx.coroutines.launch
 /**
  * Foreground-capable Media3 MediaSessionService hosting ExoPlayer.
  * Observes persisted AudioSettings to live-configure:
+ * - 32-bit float PCM output via FloatOutputRenderersFactory
+ * - Canonical USAGE_MEDIA + AUDIO_CONTENT_TYPE_MUSIC AudioAttributes & global AudioEffect session broadcasts
+ * - Optional lightweight Acoustic Enhance mastering engine with headroom protection
  * - Gapless playback vs brief inter-track separation
  * - Smooth crossfade volume transitions (0–10s)
  * - Automatic pause on headphone disconnect (AUDIO_BECOMING_NOISY)
- * - Audio focus & ducking policy (Duck, Always Pause, or Mix)
+ * - Audio focus handling (enabled unless IGNORE)
  */
 class CadencePlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
     private var exoPlayer: ExoPlayer? = null
+    private lateinit var sessionBroadcaster: AudioEffectSessionBroadcaster
+    private val acousticEnhancer = AcousticEnhanceEngine()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     @Volatile
@@ -44,7 +47,21 @@ class CadencePlaybackService : MediaSessionService() {
     private var fadeMonitorJob: Job? = null
     private var gapDelayJob: Job? = null
 
+    internal val playerForTesting: ExoPlayer?
+        get() = exoPlayer
+
+    internal fun notifyAudioSessionIdForTesting(audioSessionId: Int) {
+        transitionListener.onAudioSessionIdChanged(audioSessionId)
+    }
+
     private val transitionListener = object : Player.Listener {
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            if (::sessionBroadcaster.isInitialized) {
+                sessionBroadcaster.onAudioSessionIdChanged(audioSessionId)
+            }
+            acousticEnhancer.update(currentSettings.acousticEnhanceEnabled, audioSessionId)
+        }
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
                 maybeStartFadeMonitor()
@@ -97,10 +114,9 @@ class CadencePlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        val renderersFactory = DefaultRenderersFactory(this)
-            .setEnableDecoderFallback(true)
-
-        val audioAttributes = buildAudioAttributes(AudioFocusBehavior.DUCK)
+        sessionBroadcaster = AudioEffectSessionBroadcaster(applicationContext)
+        val renderersFactory = FloatOutputRenderersFactory(this)
+        val audioAttributes = buildMusicAudioAttributes()
 
         val player = ExoPlayer.Builder(this, renderersFactory)
             .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
@@ -110,6 +126,12 @@ class CadencePlaybackService : MediaSessionService() {
 
         player.addListener(transitionListener)
         exoPlayer = player
+
+        val initialSessionId = player.audioSessionId
+        if (initialSessionId != C.AUDIO_SESSION_ID_UNSET && initialSessionId > 0) {
+            sessionBroadcaster.onAudioSessionIdChanged(initialSessionId)
+            acousticEnhancer.update(currentSettings.acousticEnhanceEnabled, initialSessionId)
+        }
 
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -139,8 +161,16 @@ class CadencePlaybackService : MediaSessionService() {
 
         player.setHandleAudioBecomingNoisy(settings.pauseOnHeadphoneDisconnect)
 
+        // Always keep USAGE_MEDIA + AUDIO_CONTENT_TYPE_MUSIC so system audio enhancers
+        // (Dirac / Dolby / Bluetooth music codec profiles) stay engaged.
         val handleFocus = settings.audioFocusBehavior != AudioFocusBehavior.IGNORE
-        player.setAudioAttributes(buildAudioAttributes(settings.audioFocusBehavior), handleFocus)
+        player.setAudioAttributes(buildMusicAudioAttributes(), handleFocus)
+
+        val sessionId = player.audioSessionId
+        if (sessionId != C.AUDIO_SESSION_ID_UNSET && sessionId > 0 && ::sessionBroadcaster.isInitialized) {
+            sessionBroadcaster.onAudioSessionIdChanged(sessionId)
+        }
+        acousticEnhancer.update(settings.acousticEnhanceEnabled, sessionId)
 
         if (settings.crossfadeDurationSec > 0 && player.isPlaying) {
             maybeStartFadeMonitor()
@@ -148,19 +178,6 @@ class CadencePlaybackService : MediaSessionService() {
             stopFadeMonitor()
             player.volume = 1.0f
         }
-    }
-
-    private fun buildAudioAttributes(behavior: AudioFocusBehavior): AudioAttributes {
-        // Media3 AudioFocusManager ducks MUSIC on transient focus loss and pauses SPEECH.
-        val contentType = when (behavior) {
-            AudioFocusBehavior.PAUSE -> C.AUDIO_CONTENT_TYPE_SPEECH
-            AudioFocusBehavior.DUCK,
-            AudioFocusBehavior.IGNORE -> C.AUDIO_CONTENT_TYPE_MUSIC
-        }
-        return AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(contentType)
-            .build()
     }
 
     private fun maybeStartFadeMonitor() {
@@ -225,6 +242,10 @@ class CadencePlaybackService : MediaSessionService() {
         stopFadeMonitor()
         gapDelayJob?.cancel()
         serviceScope.cancel()
+        acousticEnhancer.release()
+        if (::sessionBroadcaster.isInitialized) {
+            sessionBroadcaster.closeActiveSession()
+        }
         exoPlayer?.removeListener(transitionListener)
         mediaSession?.run {
             player.release()

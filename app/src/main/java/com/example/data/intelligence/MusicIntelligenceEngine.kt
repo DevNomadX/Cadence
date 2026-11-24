@@ -3,7 +3,6 @@ package com.example.data.intelligence
 import androidx.annotation.Keep
 import androidx.compose.runtime.Immutable
 import com.example.data.Track
-import com.example.ui.theme.ExpressivePalette
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
@@ -38,9 +37,7 @@ data class PlaylistProfile(
     val suggestedTitle: String,
     val suggestedPalette: String,
     val cohesionScore: Double
-) {
-    fun toExpressivePalette(): ExpressivePalette = ExpressivePalette.fromId(suggestedPalette)
-}
+)
 
 @Keep
 @Immutable
@@ -226,7 +223,8 @@ class MusicIntelligenceEngine {
         nowMs: Long = System.currentTimeMillis(),
         shuffleNonce: Int = 0,
         maxTracksPerSection: Int = 10,
-        tuneConfig: DiscoverTuneConfig = DiscoverTuneConfig()
+        tuneConfig: DiscoverTuneConfig = DiscoverTuneConfig(),
+        localHourOfDay: Int = LocalMoodAndAffinityEngine.currentLocalHour(nowMs)
     ): DiscoverFeed = DiscoverFeedGenerator(this).generate(
         libraryTracks = libraryTracks,
         currentTrackId = currentTrackId,
@@ -234,7 +232,8 @@ class MusicIntelligenceEngine {
         nowMs = nowMs,
         shuffleNonce = shuffleNonce,
         maxTracksPerSection = maxTracksPerSection,
-        tuneConfig = tuneConfig
+        tuneConfig = tuneConfig,
+        localHourOfDay = localHourOfDay
     )
 
     internal fun effectiveBpmFor(track: Track): Int =
@@ -247,13 +246,8 @@ class MusicIntelligenceEngine {
         else -> "high"
     }
 
-    internal fun tempoDescriptorFor(bpm: Int): String = classifyTempoDescriptor(bpm)
-
     internal fun moodVectorFor(track: Track): Map<String, Double> =
         computeTrackMoodVector(track.genre, track.title, track.album, effectiveBpmFor(track))
-
-    internal fun primaryMoodFor(track: Track): String =
-        moodVectorFor(track).maxByOrNull { it.value }?.key ?: "calm"
 
     internal fun moodSimilarity(a: Map<String, Double>, b: Map<String, Double>): Double =
         cosineMoodSimilarity(a, b)
@@ -831,22 +825,35 @@ class MusicIntelligenceEngine {
 
     private fun selectWithArtistSpacing(
         sorted: List<ScoredCandidate>,
-        maxTracks: Int
+        maxTracks: Int,
+        maxPerArtist: Int = LocalMoodAndAffinityEngine.MAX_SONGS_PER_ARTIST
     ): List<ScoredCandidate> {
         val remaining = sorted.toMutableList()
         val chosen = ArrayList<ScoredCandidate>(minOf(maxTracks, sorted.size))
+        val artistCounts = HashMap<String, Int>()
+        val safeCap = maxPerArtist.coerceAtLeast(1)
 
         while (chosen.size < maxTracks && remaining.isNotEmpty()) {
-            val prevArtist = chosen.lastOrNull()?.candidate?.artist?.lowercase(Locale.ROOT)
-            val pickIndex = if (prevArtist != null) {
-                val differentArtistIdx = remaining.indexOfFirst {
-                    it.candidate.artist.lowercase(Locale.ROOT) != prevArtist
-                }
-                if (differentArtistIdx in 0..3) differentArtistIdx else 0
-            } else {
-                0
+            val prevArtist = chosen.lastOrNull()?.candidate?.artist?.trim()?.lowercase(Locale.ROOT)
+            val eligibleIdx = remaining.indexOfFirst { item ->
+                val key = LocalMoodAndAffinityEngine.normalizedArtistKey(item.candidate.artist)
+                (artistCounts[key] ?: 0) < safeCap
             }
-            chosen += remaining.removeAt(pickIndex)
+            if (eligibleIdx < 0) break
+
+            val pickIndex = if (prevArtist != null) {
+                val differentArtistIdx = remaining.indexOfFirst { item ->
+                    val key = LocalMoodAndAffinityEngine.normalizedArtistKey(item.candidate.artist)
+                    key != prevArtist && (artistCounts[key] ?: 0) < safeCap
+                }
+                if (differentArtistIdx in 0..4) differentArtistIdx else eligibleIdx
+            } else {
+                eligibleIdx
+            }
+            val selectedItem = remaining.removeAt(pickIndex)
+            val key = LocalMoodAndAffinityEngine.normalizedArtistKey(selectedItem.candidate.artist)
+            artistCounts[key] = (artistCounts[key] ?: 0) + 1
+            chosen += selectedItem
         }
         return chosen
     }

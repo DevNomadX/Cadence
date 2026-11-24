@@ -20,10 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CreateNewFolder
-import androidx.compose.material.icons.rounded.LibraryMusic
-import androidx.compose.material.icons.rounded.PersonOutline
+import com.example.ui.icons.CadenceIcons
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -141,7 +138,7 @@ fun OnboardingScreen(
                         placeholder = { Text(stringResource(R.string.onboarding_name_placeholder)) },
                         leadingIcon = {
                             Icon(
-                                imageVector = Icons.Rounded.PersonOutline,
+                                imageVector = CadenceIcons.PersonOutline,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary
                             )
@@ -184,7 +181,7 @@ fun OnboardingScreen(
                             .testTag("onboarding_scan_folder_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.CreateNewFolder,
+                            imageVector = CadenceIcons.CreateNewFolder,
                             contentDescription = null,
                             modifier = Modifier.size(20.dp)
                         )
@@ -205,7 +202,7 @@ fun OnboardingScreen(
                             .testTag("onboarding_scan_device_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.LibraryMusic,
+                            imageVector = CadenceIcons.LibraryMusic,
                             contentDescription = null,
                             modifier = Modifier.size(19.dp)
                         )

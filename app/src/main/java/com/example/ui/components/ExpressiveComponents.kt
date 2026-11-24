@@ -43,7 +43,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -101,8 +100,8 @@ import coil.request.ImageRequest
 import coil.size.Size as CoilSize
 import com.example.R
 import com.example.data.AudioQualitySpec
-import com.example.data.AudioQualityTier
 import com.example.data.Track
+import com.example.ui.icons.CadenceIcons
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.LocalPerformanceMode
 import com.example.ui.theme.MonoFontFamily
@@ -128,11 +127,16 @@ private fun rememberIsLifecycleResumed(): Boolean {
     return isResumed
 }
 
+internal const val SCRUBBER_UNPLAYED_TRACK_DP = 3f
+internal const val SCRUBBER_THUMB_CORE_DP = 14f
+internal const val SCRUBBER_THUMB_HALO_IDLE_DP = 24f
+internal const val SCRUBBER_THUMB_HALO_DRAG_DP = 30f
+
 /**
- * Material 3 Expressive organic wavy progress scrubber.
+ * Material 3 Expressive organic wavy progress scrubber with circular seek handle.
  * Low-end optimized:
  * - Reads [progressProvider] strictly inside Canvas Draw phase (0 recompositions during playback!)
- * - Defers infinite phase, amplitude, and thumb-scale reads to Draw phase
+ * - Defers infinite phase, amplitude, and halo-size reads to Draw phase
  * - Respects [LocalPerformanceMode] to eliminate wave/spring work on low-RAM hardware
  */
 @Composable
@@ -144,8 +148,8 @@ fun WavyExpressiveSlider(
     modifier: Modifier = Modifier
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
-    val trackBgColor = MaterialTheme.colorScheme.surfaceContainerHighest
-    val thumbColor = MaterialTheme.colorScheme.primary
+    val unplayedTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)
+    val thumbHaloColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
     val performanceMode = LocalPerformanceMode.current
     val isResumed = rememberIsLifecycleResumed()
     val density = LocalDensity.current
@@ -169,16 +173,18 @@ fun WavyExpressiveSlider(
         )
     }
 
-    val thumbHeightScaleState: State<Float> = if (performanceMode) {
-        remember(isDragging) { mutableFloatStateOf(if (isDragging) 1.2f else 1f) }
+    val haloDiameterDpState: State<Float> = if (performanceMode) {
+        remember(isDragging) {
+            mutableFloatStateOf(if (isDragging) SCRUBBER_THUMB_HALO_DRAG_DP else SCRUBBER_THUMB_HALO_IDLE_DP)
+        }
     } else {
         animateFloatAsState(
-            targetValue = if (isDragging) 1.24f else 1f,
+            targetValue = if (isDragging) SCRUBBER_THUMB_HALO_DRAG_DP else SCRUBBER_THUMB_HALO_IDLE_DP,
             animationSpec = spring(
                 dampingRatio = Spring.DampingRatioMediumBouncy,
                 stiffness = Spring.StiffnessMedium
             ),
-            label = "thumb_scale"
+            label = "scrubber_halo_diameter"
         )
     }
 
@@ -198,10 +204,11 @@ fun WavyExpressiveSlider(
     }
 
     val wavePath = remember { Path() }
-    val strokePx = with(density) { 4.5.dp.toPx() }
-    val waveStroke = remember(strokePx) {
+    val activeStrokePx = with(density) { 3.8.dp.toPx() }
+    val unplayedStrokePx = with(density) { SCRUBBER_UNPLAYED_TRACK_DP.dp.toPx() }
+    val waveStroke = remember(activeStrokePx) {
         Stroke(
-            width = strokePx,
+            width = activeStrokePx,
             cap = StrokeCap.Round,
             join = StrokeJoin.Round
         )
@@ -210,11 +217,11 @@ fun WavyExpressiveSlider(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(48.dp)
+            .height(36.dp)
             .testTag("playback_scrubber")
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
-                    val horizontalPad = 10.dp.toPx()
+                    val horizontalPad = 15.dp.toPx()
                     val usable = (size.width - horizontalPad * 2f).coerceAtLeast(1f)
                     val fraction = ((offset.x - horizontalPad) / usable).coerceIn(0f, 1f)
                     latestOnSeek(fraction)
@@ -224,13 +231,13 @@ fun WavyExpressiveSlider(
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
                         isDragging = true
-                        val horizontalPad = 10.dp.toPx()
+                        val horizontalPad = 15.dp.toPx()
                         val usable = (size.width - horizontalPad * 2f).coerceAtLeast(1f)
                         dragFraction = ((offset.x - horizontalPad) / usable).coerceIn(0f, 1f)
                     },
                     onHorizontalDrag = { change, _ ->
                         change.consume()
-                        val horizontalPad = 10.dp.toPx()
+                        val horizontalPad = 15.dp.toPx()
                         val usable = (size.width - horizontalPad * 2f).coerceAtLeast(1f)
                         dragFraction = ((change.position.x - horizontalPad) / usable).coerceIn(0f, 1f)
                     },
@@ -249,44 +256,43 @@ fun WavyExpressiveSlider(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(32.dp)
+                .testTag("playback_scrubber_canvas")
         ) {
             val displayFraction = if (isDragging) dragFraction else progressProvider().coerceIn(0f, 1f)
-            val horizontalPad = 10.dp.toPx()
+            val horizontalPad = 15.dp.toPx()
             val startX = horizontalPad
             val endX = size.width - horizontalPad
             val trackWidth = (endX - startX).coerceAtLeast(1f)
             val centerY = size.height / 2f
             val activeEndX = startX + trackWidth * displayFraction
-            val thumbGap = 7.dp.toPx()
             val waveAmplitudeFactor = waveAmplitudeState.value
             val phase = phaseState.value
-            val thumbHeightScale = thumbHeightScaleState.value
+            val haloRadiusPx = (haloDiameterDpState.value / 2f).dp.toPx()
+            val coreRadiusPx = (SCRUBBER_THUMB_CORE_DP / 2f).dp.toPx()
 
-            // Inactive track rail (right side of thumb)
-            val inactiveStartX = (activeEndX + thumbGap).coerceAtMost(endX)
-            if (inactiveStartX < endX) {
+            // Unplayed straight 3dp track rail (right side of seek handle)
+            if (activeEndX < endX) {
                 drawLine(
-                    color = trackBgColor,
-                    start = Offset(inactiveStartX, centerY),
+                    color = unplayedTrackColor,
+                    start = Offset(activeEndX, centerY),
                     end = Offset(endX, centerY),
-                    strokeWidth = strokePx,
+                    strokeWidth = unplayedStrokePx,
                     cap = StrokeCap.Round
                 )
             }
 
-            // Active expressive wavy track (left side of thumb)
-            val waveEndX = (activeEndX - thumbGap).coerceAtLeast(startX)
-            if (waveEndX > startX) {
+            // Played smooth sinusoidal wavy track (left side up to circular handle center)
+            if (activeEndX > startX) {
                 if (waveAmplitudeFactor <= 0.01f) {
                     drawLine(
                         color = primaryColor,
                         start = Offset(startX, centerY),
-                        end = Offset(waveEndX, centerY),
-                        strokeWidth = strokePx,
+                        end = Offset(activeEndX, centerY),
+                        strokeWidth = activeStrokePx,
                         cap = StrokeCap.Round
                     )
                 } else {
-                    val maxAmp = 4.2.dp.toPx() * waveAmplitudeFactor
+                    val maxAmp = 4.0.dp.toPx() * waveAmplitudeFactor
                     val wavelengthPx = 28.dp.toPx()
                     val stepPx = 3.dp.toPx().coerceAtLeast(3f)
                     val edgeTaperPx = 14.dp.toPx()
@@ -296,9 +302,9 @@ fun WavyExpressiveSlider(
                     wavePath.rewind()
                     var x = startX
                     var isFirst = true
-                    while (x <= waveEndX) {
-                        val distFromEdge = ((waveEndX - x) / edgeTaperPx).coerceIn(0f, 1f)
-                        val startTaper = ((x - startX) / startTaperPx).coerceIn(0f, 1f)
+                    while (x <= activeEndX) {
+                        val distFromEdge = ((activeEndX - x) / edgeTaperPx).coerceIn(0f, 1f)
+                        val startTaper = ((x - startX) / startTaperPx).coerceAtLeast(0f).coerceAtMost(1f)
                         val angle = (x - startX) * twoPiOverWave - phase
                         val y = centerY + sin(angle) * maxAmp * (distFromEdge * startTaper)
                         if (isFirst) {
@@ -309,7 +315,7 @@ fun WavyExpressiveSlider(
                         }
                         x += stepPx
                     }
-                    wavePath.lineTo(waveEndX, centerY)
+                    wavePath.lineTo(activeEndX, centerY)
 
                     drawPath(
                         path = wavePath,
@@ -319,14 +325,17 @@ fun WavyExpressiveSlider(
                 }
             }
 
-            // Sculptural vertical pill thumb
-            val thumbW = 5.5.dp.toPx()
-            val thumbH = 22.dp.toPx() * thumbHeightScale
-            drawRoundRect(
-                color = thumbColor,
-                topLeft = Offset(activeEndX - thumbW / 2f, centerY - thumbH / 2f),
-                size = Size(thumbW, thumbH),
-                cornerRadius = CornerRadius(thumbW / 2f, thumbW / 2f)
+            // Circular seek handle: 24dp translucent halo (expands to 30dp on drag) + 14dp solid primary core
+            val thumbCenter = Offset(activeEndX, centerY)
+            drawCircle(
+                color = thumbHaloColor,
+                radius = haloRadiusPx,
+                center = thumbCenter
+            )
+            drawCircle(
+                color = primaryColor,
+                radius = coreRadiusPx,
+                center = thumbCenter
             )
         }
     }
@@ -409,7 +418,7 @@ fun MorphingPlayPauseButton(
                 )
             } else if (performanceMode) {
                 Icon(
-                    imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    imageVector = if (isPlaying) CadenceIcons.Pause else Icons.Rounded.PlayArrow,
                     contentDescription = null,
                     modifier = Modifier.size(36.dp)
                 )
@@ -429,7 +438,7 @@ fun MorphingPlayPauseButton(
                     label = "play_pause_icon"
                 ) { playing ->
                     Icon(
-                        imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        imageVector = if (playing) CadenceIcons.Pause else Icons.Rounded.PlayArrow,
                         contentDescription = null,
                         modifier = Modifier.size(36.dp)
                     )
@@ -492,7 +501,8 @@ fun ExpressiveArtworkFrame(
     modifier: Modifier = Modifier,
     animateScale: Boolean = true,
     decodeSizePx: Int = 512,
-    shapeOverride: Shape? = null
+    shapeOverride: Shape? = null,
+    showHairlineBorder: Boolean = false
 ) {
     val performanceMode = LocalPerformanceMode.current
     val shape = shapeOverride ?: artworkShape.toComposeShape()
@@ -514,6 +524,8 @@ fun ExpressiveArtworkFrame(
     val surfaceBg = MaterialTheme.colorScheme.surfaceContainerHigh
     val placeholderPainter = remember(surfaceBg) { ColorPainter(surfaceBg) }
 
+    val hairlineBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+
     Surface(
         shape = shape,
         color = surfaceBg,
@@ -521,51 +533,60 @@ fun ExpressiveArtworkFrame(
         shadowElevation = if (shouldScale && isPlaying) 12.dp else if (shouldScale) 4.dp else 0.dp,
         modifier = if (shouldScale) modifier.scale(scale) else modifier
     ) {
-        when {
-            track == null -> {
-                ThemeReactiveBauhausArtwork(
-                    seed = 7,
-                    contentDescription = cd,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            track.artworkResId != null -> {
-                Image(
-                    painter = painterResource(id = track.artworkResId),
-                    contentDescription = cd,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            !track.artworkPath.isNullOrBlank() -> {
-                val context = LocalContext.current
-                val enableCrossfade = decodeSizePx > 256 && !performanceMode
-                val model = remember(context, track.artworkPath, decodeSizePx, enableCrossfade) {
-                    buildArtworkImageRequest(
-                        context = context,
-                        artworkPath = track.artworkPath,
-                        decodeSizePx = decodeSizePx,
-                        enableCrossfade = enableCrossfade
+        Box(modifier = Modifier.fillMaxSize()) {
+            when {
+                track == null -> {
+                    ThemeReactiveBauhausArtwork(
+                        seed = 7,
+                        contentDescription = cd,
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
-                AsyncImage(
-                    model = model,
-                    contentDescription = cd,
-                    placeholder = placeholderPainter,
-                    error = placeholderPainter,
-                    fallback = placeholderPainter,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
 
-            else -> {
-                ThemeReactiveBauhausArtwork(
-                    seed = track.id.hashCode(),
-                    contentDescription = cd,
-                    modifier = Modifier.fillMaxSize()
+                track.artworkResId != null -> {
+                    Image(
+                        painter = painterResource(id = track.artworkResId),
+                        contentDescription = cd,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                !track.artworkPath.isNullOrBlank() -> {
+                    val context = LocalContext.current
+                    val enableCrossfade = decodeSizePx > 256 && !performanceMode
+                    val model = remember(context, track.artworkPath, decodeSizePx, enableCrossfade) {
+                        buildArtworkImageRequest(
+                            context = context,
+                            artworkPath = track.artworkPath,
+                            decodeSizePx = decodeSizePx,
+                            enableCrossfade = enableCrossfade
+                        )
+                    }
+                    AsyncImage(
+                        model = model,
+                        contentDescription = cd,
+                        placeholder = placeholderPainter,
+                        error = placeholderPainter,
+                        fallback = placeholderPainter,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                else -> {
+                    ThemeReactiveBauhausArtwork(
+                        seed = track.id.hashCode(),
+                        contentDescription = cd,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+            if (showHairlineBorder) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .border(1.dp, hairlineBorderColor, shape)
                 )
             }
         }
@@ -866,9 +887,36 @@ fun HiFiQualityBadge(
 private val AudioSpecPanelShape: Shape = RoundedCornerShape(14.dp)
 
 /**
- * Tactile, theme-aware expandable Audio Quality badge for Now Playing.
- * - Collapsed: 29dp CircleShape pill with tier-colored pre-blended container, 1dp hairline border,
- *   headline tier/spec label, and a 14dp chevron that rotates 180° in the GPU draw phase.
+ * Crisp 3-bar vertical rounded audio waveform icon drawn cleanly inside 14dp × 14dp.
+ */
+@Composable
+private fun AudioWaveformMiniIcon(
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val barWidthPx = (size.width * 0.19f).coerceAtLeast(2f)
+        val gapPx = (size.width - barWidthPx * 3f) / 2f
+        val radius = CornerRadius(barWidthPx / 2f, barWidthPx / 2f)
+        val h1 = size.height * 0.54f
+        val h2 = size.height * 0.94f
+        val h3 = size.height * 0.68f
+        val cy = size.height / 2f
+
+        var x = 0f
+        drawRoundRect(tint, Offset(x, cy - h1 / 2f), Size(barWidthPx, h1), radius)
+        x += barWidthPx + gapPx
+        drawRoundRect(tint, Offset(x, cy - h2 / 2f), Size(barWidthPx, h2), radius)
+        x += barWidthPx + gapPx
+        drawRoundRect(tint, Offset(x, cy - h3 / 2f), Size(barWidthPx, h3), radius)
+    }
+}
+
+/**
+ * Tactile, theme-aware 32dp expandable Audio Quality pill for Now Playing.
+ * - Collapsed: 32dp CircleShape glass pill (`surfaceContainerHigh @ 70%`, 1dp hairline border
+ *   `onSurface @ 8%`), leading 14dp 3-bar vertical audio waveform icon (`primary` tint),
+ *   `JetBrains Mono` labelSmall text, and a trailing 14dp chevron rotating 180° in the GPU draw phase.
  * - Expanded: Smooth spring-animated inline metadata breakdown populated strictly from real
  *   extracted Track properties (Format, Bit Depth when lossless/hi-res, Sample Rate, Bitrate).
  */
@@ -883,37 +931,10 @@ fun ExpandableAudioQualityBadge(
     val performanceMode = LocalPerformanceMode.current
     val scheme = MaterialTheme.colorScheme
 
-    val pillContainer: Color
-    val pillBorder: Color
-    val pillContent: Color
-    val panelContainer: Color
-
-    when (spec.tier) {
-        AudioQualityTier.HI_RES -> {
-            pillContainer = scheme.primaryContainer.opaqueOver(backgroundBehind, 0.72f)
-            pillBorder = scheme.primary.opaqueOver(backgroundBehind, 0.34f)
-            pillContent = scheme.onPrimaryContainer
-            panelContainer = scheme.surfaceContainerHigh.opaqueOver(backgroundBehind, 0.88f)
-        }
-        AudioQualityTier.LOSSLESS -> {
-            pillContainer = scheme.tertiaryContainer.opaqueOver(backgroundBehind, 0.72f)
-            pillBorder = scheme.tertiary.opaqueOver(backgroundBehind, 0.34f)
-            pillContent = scheme.onTertiaryContainer
-            panelContainer = scheme.surfaceContainerHigh.opaqueOver(backgroundBehind, 0.88f)
-        }
-        AudioQualityTier.HIGH_QUALITY -> {
-            pillContainer = scheme.secondaryContainer.opaqueOver(backgroundBehind, 0.72f)
-            pillBorder = scheme.secondary.opaqueOver(backgroundBehind, 0.34f)
-            pillContent = scheme.onSecondaryContainer
-            panelContainer = scheme.surfaceContainerHigh.opaqueOver(backgroundBehind, 0.88f)
-        }
-        AudioQualityTier.STANDARD -> {
-            pillContainer = scheme.surfaceContainerHigh.opaqueOver(backgroundBehind, 0.78f)
-            pillBorder = scheme.outlineVariant.opaqueOver(backgroundBehind, 0.85f)
-            pillContent = scheme.onSurfaceVariant
-            panelContainer = scheme.surfaceContainer.opaqueOver(backgroundBehind, 0.90f)
-        }
-    }
+    val pillContainer = scheme.surfaceContainerHigh.copy(alpha = 0.7f)
+    val pillBorder = scheme.onSurface.copy(alpha = 0.08f)
+    val pillContent = scheme.onSurface
+    val panelContainer = scheme.surfaceContainerHigh.opaqueOver(backgroundBehind, 0.88f)
 
     val chevronRotation = if (performanceMode) {
         if (expanded) 180f else 0f
@@ -952,7 +973,8 @@ fun ExpandableAudioQualityBadge(
     ) {
         Row(
             modifier = Modifier
-                .height(29.dp)
+                .testTag("now_playing_hifi_badge")
+                .height(32.dp)
                 .clip(CircleShape)
                 .background(color = pillContainer, shape = CircleShape)
                 .border(BorderStroke(1.dp, pillBorder), CircleShape)
@@ -961,14 +983,20 @@ fun ExpandableAudioQualityBadge(
                     onClickLabel = toggleLabel,
                     onClick = onToggleExpanded
                 )
-                .padding(horizontal = 11.dp)
-                .testTag("now_playing_hifi_badge"),
+                .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            AudioWaveformMiniIcon(
+                tint = scheme.primary,
+                modifier = Modifier
+                    .size(14.dp)
+                    .testTag("audio_badge_waveform_icon")
+            )
             Text(
                 text = spec.headline,
                 style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = MonoFontFamily,
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 0.8.sp
                 ),
@@ -980,10 +1008,11 @@ fun ExpandableAudioQualityBadge(
             Icon(
                 imageVector = Icons.Rounded.KeyboardArrowDown,
                 contentDescription = null,
-                tint = pillContent,
+                tint = scheme.onSurfaceVariant,
                 modifier = Modifier
                     .size(14.dp)
                     .graphicsLayer { rotationZ = chevronRotation }
+                    .testTag("audio_badge_chevron")
             )
         }
 

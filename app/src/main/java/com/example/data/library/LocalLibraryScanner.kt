@@ -19,6 +19,8 @@ import com.example.data.db.FolderDao
 import com.example.data.db.SavedFolderEntity
 import com.example.data.db.TrackDao
 import com.example.data.db.TrackEntity
+import com.example.data.intelligence.LocalMoodAndAffinityEngine
+import com.example.data.intelligence.SmartMoodTag
 import com.example.data.resolveAudioCodecLabel
 import com.example.ui.theme.ExpressivePalette
 import kotlinx.coroutines.Dispatchers
@@ -564,7 +566,26 @@ class LocalLibraryScanner(
                             ).toString()
                         } else null
 
-                        val entity = TrackEntity(
+                        val artworkColorArgb = artworkCache.extractDominantColorFromPath(albumArtUri)
+                        val computedTags = withContext(Dispatchers.Default) {
+                            LocalMoodAndAffinityEngine.classifyTrackMoods(
+                                title = title,
+                                album = album,
+                                artist = artist,
+                                genre = genre,
+                                folderName = folderName,
+                                bpm = 90,
+                                codec = codec,
+                                mimeType = mime,
+                                bitDepth = bitDepth,
+                                sampleRateHz = sampleRateHz,
+                                bitrateKbps = bitrateKbps,
+                                artworkColorArgb = artworkColorArgb,
+                                localUriString = uriStr
+                            )
+                        }
+
+                        val baseEntity = TrackEntity(
                             id = "ms_$mediaId",
                             title = title,
                             artist = artist,
@@ -590,8 +611,14 @@ class LocalLibraryScanner(
                             synthProfileName = null,
                             suggestedPaletteId = paletteForHash(uriStr.hashCode()).id,
                             isUserImported = true,
-                            dedupeKey = dedupeKey
+                            dedupeKey = dedupeKey,
+                            moodTags = SmartMoodTag.encode(computedTags),
+                            artworkColorArgb = artworkColorArgb
                         )
+                        val initialAffinity = withContext(Dispatchers.Default) {
+                            LocalMoodAndAffinityEngine.computeLocalAffinity(baseEntity.toDomain()).score
+                        }
+                        val entity = baseEntity.copy(affinityScore = initialAffinity)
 
                         knownUris += uriStr
                         knownDedupeKeys += dedupeKey
@@ -740,10 +767,30 @@ class LocalLibraryScanner(
                 }
             }
 
-            val artworkPath = artworkCache.cacheArtworkBytes(embeddedArtBytes)
+            val cachedArt = artworkCache.cacheArtworkBytesWithColor(embeddedArtBytes)
+            val artworkPath = cachedArt.path
+            val artworkColorArgb = cachedArt.dominantColorArgb
             val uriStr = uri.toString()
 
-            TrackEntity(
+            val computedTags = withContext(Dispatchers.Default) {
+                LocalMoodAndAffinityEngine.classifyTrackMoods(
+                    title = title,
+                    album = album,
+                    artist = artist,
+                    genre = genre,
+                    folderName = folderName,
+                    bpm = 90,
+                    codec = codec,
+                    mimeType = effectiveMime,
+                    bitDepth = bitDepth,
+                    sampleRateHz = sampleRateHz,
+                    bitrateKbps = bitrateKbps,
+                    artworkColorArgb = artworkColorArgb,
+                    localUriString = uriStr
+                )
+            }
+
+            val baseEntity = TrackEntity(
                 id = "local_${sha256Id(uriStr)}",
                 title = title,
                 artist = artist,
@@ -769,8 +816,14 @@ class LocalLibraryScanner(
                 synthProfileName = null,
                 suggestedPaletteId = paletteForHash(uriStr.hashCode()).id,
                 isUserImported = true,
-                dedupeKey = TrackEntity.buildDedupeKey(title, artist, durationMs)
+                dedupeKey = TrackEntity.buildDedupeKey(title, artist, durationMs),
+                moodTags = SmartMoodTag.encode(computedTags),
+                artworkColorArgb = artworkColorArgb
             )
+            val initialAffinity = withContext(Dispatchers.Default) {
+                LocalMoodAndAffinityEngine.computeLocalAffinity(baseEntity.toDomain()).score
+            }
+            baseEntity.copy(affinityScore = initialAffinity)
         } catch (_: Exception) {
             null
         } finally {

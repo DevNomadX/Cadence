@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         QueueItemEntity::class,
         SavedFolderEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class CadenceDatabase : RoomDatabase() {
@@ -43,6 +43,14 @@ abstract class CadenceDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tracks ADD COLUMN affinityScore REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE tracks ADD COLUMN moodTags TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE tracks ADD COLUMN artworkColorArgb INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): CadenceDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -50,7 +58,7 @@ abstract class CadenceDatabase : RoomDatabase() {
                     CadenceDatabase::class.java,
                     "cadence_library.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

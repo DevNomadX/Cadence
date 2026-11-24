@@ -3,6 +3,8 @@ package com.example.data
 import androidx.annotation.DrawableRes
 import androidx.annotation.Keep
 import androidx.compose.runtime.Immutable
+import com.example.data.intelligence.LocalMoodAndAffinityEngine
+import com.example.data.intelligence.SmartMoodTag
 import com.example.ui.theme.ExpressivePalette
 
 /**
@@ -121,8 +123,21 @@ data class Track(
     val lastPlayedAt: Long = 0L,
     val isFavorite: Boolean = false,
     val suggestedPalette: ExpressivePalette = ExpressivePalette.TERRACOTTA,
-    val isUserImported: Boolean = true
+    val isUserImported: Boolean = true,
+    val affinityScore: Float = 0f,
+    val moodTags: StableList<SmartMoodTag> = StableList(),
+    val artworkColorArgb: Int = 0
 ) {
+    /**
+     * Returns precomputed persisted [moodTags] when available, or deterministically classifies
+     * this track's multi-label moods in memory with zero I/O.
+     */
+    fun resolvedMoodTags(): StableList<SmartMoodTag> =
+        if (moodTags.isNotEmpty()) {
+            moodTags
+        } else {
+            LocalMoodAndAffinityEngine.classifyTrackMoods(this).toList().toStableList()
+        }
     /**
      * Normalized short codec label (e.g., "FLAC", "WAV", "ALAC", "MP3", "AAC").
      * Pure metadata inspection — zero file or disk I/O.

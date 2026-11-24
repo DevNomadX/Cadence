@@ -5,8 +5,10 @@ import android.graphics.drawable.ColorDrawable
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.DisposableEffect
@@ -29,12 +31,16 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.compose.ui.test.assertTextContains
@@ -55,6 +61,7 @@ import com.example.data.intelligence.MusicIntelligenceEngine
 import com.example.data.intelligence.MusicIntelligenceRequest
 import com.example.data.library.ScanState
 import com.example.data.toStableList
+import com.example.data.toStableMap
 import android.media.AudioDeviceInfo
 import com.example.data.lyrics.OfflineLyricsLoader
 import com.example.playback.AudioOutputMonitor
@@ -69,7 +76,13 @@ import com.example.ui.FloatingExpressiveNavDock
 import com.example.ui.FloatingNavBarState
 import com.example.ui.PersistentTabHost
 import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
+import com.example.ui.components.SCRUBBER_THUMB_CORE_DP
+import com.example.ui.components.SCRUBBER_THUMB_HALO_DRAG_DP
+import com.example.ui.components.SCRUBBER_THUMB_HALO_IDLE_DP
+import com.example.ui.components.SCRUBBER_UNPLAYED_TRACK_DP
+import com.example.ui.components.SmartPlaylistSheetContent
 import com.example.ui.components.buildArtworkImageRequest
+import com.example.ui.components.formatSmartMixSubtitle
 import com.example.ui.player.DiscoverUiState
 import com.example.ui.player.HomeUiState
 import com.example.ui.player.LibraryUiState
@@ -98,6 +111,7 @@ import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -566,15 +580,15 @@ class MusicIntelligenceAndPerfTest {
             composeRule.onNodeWithTag("discover_section_${category.id}").assertIsDisplayed()
         }
 
-        // Open Smart Mix tuner sheet, inspect JSON, and save playlist
+        // Open Tune Mix sheet, verify clean header (no JSON debug UI), and save playlist
         composeRule.onNodeWithTag("discover_list")
             .performScrollToNode(hasTestTag("discover_tune_smart_mix_button"))
         composeRule.onNodeWithTag("discover_tune_smart_mix_button").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("smart_mix_result_title").assertIsDisplayed()
-        composeRule.onNodeWithTag("smart_toggle_json_button").performClick()
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag("smart_mix_raw_json").assertIsDisplayed()
+        composeRule.onNodeWithTag("smart_mix_result_subtitle").assertIsDisplayed()
+        composeRule.onNodeWithTag("smart_toggle_json_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("smart_mix_raw_json").assertDoesNotExist()
         composeRule.onNodeWithTag("smart_mix_save_button").performClick()
         composeRule.waitForIdle()
 
@@ -948,6 +962,7 @@ class MusicIntelligenceAndPerfTest {
         var lyricsClicked = false
         var moodClicked = false
         var collapsed = false
+        var lastSeekFraction: Float? = null
 
         composeRule.setContent {
             CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
@@ -972,7 +987,7 @@ class MusicIntelligenceAndPerfTest {
                         onTogglePlayPause = {},
                         onNext = {},
                         onPrevious = {},
-                        onSeek = {},
+                        onSeek = { lastSeekFraction = it },
                         onToggleShuffle = {},
                         onCycleRepeat = {},
                         onToggleFavorite = {},
@@ -989,17 +1004,21 @@ class MusicIntelligenceAndPerfTest {
         // Standard portrait layout must NOT require scrolling
         composeRule.onNodeWithTag("now_playing_portrait_container").assert(!hasScrollAction())
 
-        // Every major control from drag handle + 2-group top bar down to 3-pill utility row must be simultaneously visible
+        // Every major control from drag handle + 4-element top bar down to 3-pill utility row must be simultaneously visible
         val expectedVisibleTags = listOf(
             "now_playing_drag_handle",
+            "now_playing_drag_handle_pill",
             "now_playing_top_header",
             "collapse_now_playing_button",
+            "now_playing_status_pill",
             "audio_output_button",
             "queue_button",
             "hero_album_artwork",
             "now_playing_title",
             "now_playing_hifi_badge",
             "playback_scrubber",
+            "scrubber_elapsed_time",
+            "scrubber_duration_time",
             "shuffle_button",
             "previous_button",
             "play_pause_button",
@@ -1013,27 +1032,58 @@ class MusicIntelligenceAndPerfTest {
             composeRule.onNodeWithTag(tag).assertIsDisplayed()
         }
 
-        // Verify unified left pill contains status text and matches equal 42dp height with both right 42dp circles
-        composeRule.onNodeWithTag("now_playing_status_pill", useUnmergedTree = true).assertIsDisplayed()
-        composeRule.onNodeWithText("PAUSED", useUnmergedTree = true).assertIsDisplayed()
-
+        // Verify centered 36dp x 4dp drag handle pill above 4-element header
+        val containerBounds = composeRule.onNodeWithTag("now_playing_portrait_container").getUnclippedBoundsInRoot()
         val dragHandleBounds = composeRule.onNodeWithTag("now_playing_drag_handle").getUnclippedBoundsInRoot()
-        val unifiedPillBounds = composeRule.onNodeWithTag("collapse_now_playing_button").getUnclippedBoundsInRoot()
+        val dragPillBounds = composeRule.onNodeWithTag("now_playing_drag_handle_pill").getUnclippedBoundsInRoot()
+        assertEquals(36f, (dragPillBounds.right - dragPillBounds.left).value, 1f)
+        assertEquals(4f, (dragPillBounds.bottom - dragPillBounds.top).value, 1f)
+        val dragCenterX = (dragPillBounds.left.value + dragPillBounds.right.value) / 2f
+        val containerCenterX = (containerBounds.left.value + containerBounds.right.value) / 2f
+        assertEquals("Drag handle pill must be horizontally centered", containerCenterX, dragCenterX, 1.5f)
+
+        // Verify all 4 separate 42dp header elements with 8dp gaps on left and right
+        composeRule.onNodeWithText("PAUSED", useUnmergedTree = true).assertIsDisplayed()
+        val minimizeBounds = composeRule.onNodeWithTag("collapse_now_playing_button").getUnclippedBoundsInRoot()
+        val statusPillBounds = composeRule.onNodeWithTag("now_playing_status_pill").getUnclippedBoundsInRoot()
         val outputBounds = composeRule.onNodeWithTag("audio_output_button").getUnclippedBoundsInRoot()
         val queueBounds = composeRule.onNodeWithTag("queue_button").getUnclippedBoundsInRoot()
 
-        assertTrue("Drag handle must sit above 2-group header", dragHandleBounds.bottom <= unifiedPillBounds.top + 1.dp)
-        val pillH = unifiedPillBounds.bottom - unifiedPillBounds.top
-        val outputH = outputBounds.bottom - outputBounds.top
-        val outputW = outputBounds.right - outputBounds.left
-        val queueH = queueBounds.bottom - queueBounds.top
-        val queueW = queueBounds.right - queueBounds.left
+        assertTrue("Drag handle must sit above 4-element header", dragHandleBounds.bottom <= minimizeBounds.top + 1.dp)
+        assertEquals("Minimize circle must be 42dp wide", 42f, (minimizeBounds.right - minimizeBounds.left).value, 1f)
+        assertEquals("Minimize circle must be 42dp tall", 42f, (minimizeBounds.bottom - minimizeBounds.top).value, 1f)
+        assertEquals("Status pill must be 42dp tall", 42f, (statusPillBounds.bottom - statusPillBounds.top).value, 1f)
+        assertEquals("Left Minimize -> Status pill gap must be 8dp", 8f, (statusPillBounds.left - minimizeBounds.right).value, 1f)
+        assertEquals("Audio output circle must be 42dp wide", 42f, (outputBounds.right - outputBounds.left).value, 1f)
+        assertEquals("Audio output circle must be 42dp tall", 42f, (outputBounds.bottom - outputBounds.top).value, 1f)
+        assertEquals("Queue circle must be 42dp wide", 42f, (queueBounds.right - queueBounds.left).value, 1f)
+        assertEquals("Queue circle must be 42dp tall", 42f, (queueBounds.bottom - queueBounds.top).value, 1f)
+        assertEquals("Right Output -> Queue gap must be 8dp", 8f, (queueBounds.left - outputBounds.right).value, 1f)
+        assertTrue("Status pill must not overlap Audio output circle", statusPillBounds.right < outputBounds.left)
 
-        assertTrue("Unified left pill height must be 42dp, was $pillH", kotlin.math.abs((pillH - 42.dp).value) <= 1f)
-        assertTrue("Audio output circle must be 42dp x 42dp, was $outputW x $outputH", kotlin.math.abs((outputH - 42.dp).value) <= 1f && kotlin.math.abs((outputW - 42.dp).value) <= 1f)
-        assertTrue("Queue circle must be 42dp x 42dp, was $queueW x $queueH", kotlin.math.abs((queueH - 42.dp).value) <= 1f && kotlin.math.abs((queueW - 42.dp).value) <= 1f)
-        assertTrue("Right action circles must be separated by 10dp", kotlin.math.abs(((queueBounds.left - outputBounds.right) - 10.dp).value) <= 1f)
-        assertTrue("Left unified pill must not overlap Audio output circle", unifiedPillBounds.right < outputBounds.left)
+        // Verify 32dp Audio Quality Pill with 14dp 3-bar waveform icon and 14dp trailing chevron
+        val badgeBounds = composeRule.onNodeWithTag("now_playing_hifi_badge").getUnclippedBoundsInRoot()
+        assertEquals("Audio quality pill height must be 32dp", 32f, (badgeBounds.bottom - badgeBounds.top).value, 1f)
+        val waveIconBounds = composeRule.onNodeWithTag("audio_badge_waveform_icon", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        assertEquals(14f, (waveIconBounds.right - waveIconBounds.left).value, 1f)
+        assertEquals(14f, (waveIconBounds.bottom - waveIconBounds.top).value, 1f)
+        val chevronBounds = composeRule.onNodeWithTag("audio_badge_chevron", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        assertEquals(14f, (chevronBounds.right - chevronBounds.left).value, 1f)
+        assertEquals(14f, (chevronBounds.bottom - chevronBounds.top).value, 1f)
+
+        // Verify circular seek handle specs + timestamps positioned 8dp below scrubber + drag seek works
+        assertEquals(3f, SCRUBBER_UNPLAYED_TRACK_DP, 0.01f)
+        assertEquals(14f, SCRUBBER_THUMB_CORE_DP, 0.01f)
+        assertEquals(24f, SCRUBBER_THUMB_HALO_IDLE_DP, 0.01f)
+        assertEquals(30f, SCRUBBER_THUMB_HALO_DRAG_DP, 0.01f)
+        val scrubberBounds = composeRule.onNodeWithTag("playback_scrubber").getUnclippedBoundsInRoot()
+        val elapsedBounds = composeRule.onNodeWithTag("scrubber_elapsed_time").getUnclippedBoundsInRoot()
+        composeRule.onNodeWithTag("scrubber_elapsed_time").assertTextContains("1:04")
+        composeRule.onNodeWithTag("scrubber_duration_time").assertTextContains("4:08")
+        assertTrue("Timestamps must sit ~8dp below scrubber", elapsedBounds.top - scrubberBounds.bottom >= 7.dp)
+        composeRule.onNodeWithTag("playback_scrubber").performTouchInput { swipeRight() }
+        composeRule.waitForIdle()
+        assertNotNull("Dragging circular seek handle must emit seek fraction", lastSeekFraction)
 
         // Artwork must adapt cleanly and stay within 260dp cap
         val artBounds = composeRule.onNodeWithTag("hero_album_artwork").getUnclippedBoundsInRoot()
@@ -1055,7 +1105,21 @@ class MusicIntelligenceAndPerfTest {
         assertTrue("Play->Next gap must be >= 9dp", nextBounds.left - playBounds.right >= 9.dp)
         assertTrue("Next->Repeat gap must be >= 9dp", repeatBounds.left - nextBounds.right >= 9.dp)
 
-        // Verify utility pills & unified collapse pill respond directly without scrolling
+        // Verify 40dp bottom shortcut pills with 10dp spacing and generous 24dp bottom clearance
+        val lyricsBounds = composeRule.onNodeWithTag("lyrics_pill").getUnclippedBoundsInRoot()
+        val timerBounds = composeRule.onNodeWithTag("timer_pill").getUnclippedBoundsInRoot()
+        val moodBounds = composeRule.onNodeWithTag("match_mood_pill").getUnclippedBoundsInRoot()
+        assertEquals("Lyrics pill height must be 40dp", 40f, (lyricsBounds.bottom - lyricsBounds.top).value, 1f)
+        assertEquals("Timer pill height must be 40dp", 40f, (timerBounds.bottom - timerBounds.top).value, 1f)
+        assertEquals("Match Mood pill height must be 40dp", 40f, (moodBounds.bottom - moodBounds.top).value, 1f)
+        assertEquals("Lyrics -> Timer gap must be 10dp", 10f, (timerBounds.left - lyricsBounds.right).value, 1f)
+        assertEquals("Timer -> Match Mood gap must be 10dp", 10f, (moodBounds.left - timerBounds.right).value, 1f)
+        assertTrue(
+            "Bottom shortcut pills must have >= 24dp open clearance above bottom edge, was ${containerBounds.bottom - lyricsBounds.bottom}",
+            containerBounds.bottom - lyricsBounds.bottom >= 23.dp
+        )
+
+        // Verify utility pills & standalone minimize circle respond directly without scrolling
         composeRule.onNodeWithTag("collapse_now_playing_button").performClick()
         composeRule.onNodeWithTag("match_mood_pill").performClick()
         composeRule.onNodeWithTag("lyrics_pill").performClick()
@@ -1429,11 +1493,13 @@ class MusicIntelligenceAndPerfTest {
     @Test
     fun `HomeScreen renders personalized greeting Continue Listening progress and 2x2 shortcut grid`() {
         // Verify deterministic time-of-day greeting formatter
-        assertEquals("Good morning, Alex", formatHomeGreeting("Alex", hourOfDay = 8))
-        assertEquals("Good afternoon, Alex", formatHomeGreeting("  Alex  ", hourOfDay = 14))
-        assertEquals("Good evening, Alex", formatHomeGreeting("Alex", hourOfDay = 19))
-        assertEquals("Late night, Alex", formatHomeGreeting("Alex", hourOfDay = 23))
-        assertEquals("Good morning", formatHomeGreeting("   ", hourOfDay = 9))
+        assertEquals("Good morning, Alex!", formatHomeGreeting("Alex", hourOfDay = 8))
+        assertEquals("Good afternoon, Alex!", formatHomeGreeting("  Alex  ", hourOfDay = 14))
+        assertEquals("Good evening, Alex!", formatHomeGreeting("Alex", hourOfDay = 19))
+        assertEquals("Good evening, Alex!", formatHomeGreeting("Alex", hourOfDay = 23))
+        assertEquals("Good morning!", formatHomeGreeting("   ", hourOfDay = 9))
+        assertEquals("Good afternoon!", formatHomeGreeting("", hourOfDay = 13))
+        assertEquals("Good evening!", formatHomeGreeting("", hourOfDay = 21))
 
         val currentTrack = sampleLibraryTracks.first()
         val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 60_000L, durationMs = 212_000L))
@@ -1478,16 +1544,20 @@ class MusicIntelligenceAndPerfTest {
 
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("home_header_title").assertIsDisplayed().assertTextContains("Alex", substring = true)
+        composeRule.onNodeWithTag("home_header_subtitle").assertIsDisplayed()
         composeRule.onNodeWithTag("home_search_button").performClick()
         assertTrue(searchOpened)
 
-        // Continue Listening card shows remaining time and one-tap Resume pill
+        // Now Playing Hero card shows elapsed & total timestamps and single Play/Pause button
         composeRule.onNodeWithTag("home_continue_card").assertIsDisplayed()
-        composeRule.onNodeWithTag("home_continue_remaining", useUnmergedTree = true).assertTextContains("2:32 left")
+        composeRule.onNodeWithTag("home_continue_elapsed", useUnmergedTree = true).assertTextContains("1:00")
+        composeRule.onNodeWithTag("home_continue_duration", useUnmergedTree = true).assertTextContains("3:32")
         composeRule.onNodeWithTag("home_continue_play_button").performClick()
         assertTrue(resumeClicked)
 
-        // 2x2 Quick-Shortcut Grid cards all display and invoke immediate playback
+        // 2x2 Your Library Grid cards all display and invoke immediate playback
+        composeRule.onNodeWithTag("home_list").performScrollToNode(hasTestTag("home_shortcuts_grid"))
+        composeRule.waitForIdle()
         composeRule.onNodeWithTag("home_shortcuts_grid").assertIsDisplayed()
         composeRule.onNodeWithTag("home_shortcut_liked").assertIsDisplayed().performClick()
         assertEquals(1, playedBatchCount)
@@ -1653,7 +1723,7 @@ class MusicIntelligenceAndPerfTest {
         }
         val feed = engine.generateDiscoverFeed(libraryTracks = hiFiLibrary)
         val smartFlow = MutableStateFlow(SmartPlaylistUiState())
-        var selectedEnergyInSheet: String? = null
+        var selectedMoodInSheet: String? = null
 
         composeRule.setContent {
             CadenceTheme(palette = ExpressivePalette.COBALT, appearanceMode = AppearanceMode.DARK) {
@@ -1678,7 +1748,7 @@ class MusicIntelligenceAndPerfTest {
                     onSaveMixAsPlaylist = { _, _ -> },
                     smartPlaylistFlow = smartFlow,
                     onGenerateTunedSmartPlaylist = { mood, seed, energy, balance ->
-                        selectedEnergyInSheet = energy
+                        selectedMoodInSheet = mood
                         smartFlow.value = SmartPlaylistUiState(
                             selectedMood = mood,
                             energyFilter = energy,
@@ -1704,9 +1774,11 @@ class MusicIntelligenceAndPerfTest {
         // Daily Mix exposes Tune Mix control directly
         composeRule.onNodeWithTag("discover_tune_daily_mix_button").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("smart_energy_high").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("smart_energy_high").assertDoesNotExist()
+        composeRule.onNodeWithTag("smart_mood_row").performScrollToNode(hasTestTag("smart_mood_upbeat"))
+        composeRule.onNodeWithTag("smart_mood_upbeat").assertIsDisplayed().performClick()
         composeRule.waitForIdle()
-        assertEquals("high", selectedEnergyInSheet)
+        assertEquals("upbeat", selectedMoodInSheet)
         composeRule.onNodeWithTag("smart_balance_slider").assertIsDisplayed()
 
         // Dismiss sheet by pressing save & verify Listening Insights card scrolls into view cleanly
@@ -1840,10 +1912,10 @@ class MusicIntelligenceAndPerfTest {
             }
         }
 
-        // Scroll Home down to item 12 before switching tabs
+        // Scroll Home down past header & hero card before switching tabs
         composeRule.onNodeWithTag("home_header_title").assertIsDisplayed()
         composeRule.onNodeWithTag("home_list")
-            .performScrollToNode(hasTestTag("home_track_row_warm_track_12"))
+            .performScrollToIndex(2)
         composeRule.waitForIdle()
         val scrolledIndexBeforeSwitch = homeListState.firstVisibleItemIndex
         assertTrue("Expected Home to scroll before switching tabs", scrolledIndexBeforeSwitch > 0)
@@ -2013,5 +2085,172 @@ class MusicIntelligenceAndPerfTest {
             Transition.Factory.NONE,
             request.transitionFactory
         )
+    }
+
+    @Test
+    fun `Tune Mix sheet removes debug clutter renders Mood-only pills clean header preview rows and 52dp single-line bottom bar`() {
+        val engine = MusicIntelligenceEngine()
+        val output = engine.analyzeAndRecommend(
+            request = MusicIntelligenceRequest(
+                seedTrackId = sampleLibraryTracks.first().id,
+                maxTracks = sampleLibraryTracks.size
+            ),
+            history = engine.deriveListeningHistory(sampleLibraryTracks),
+            libraryTracks = sampleLibraryTracks
+        )
+        val lookup = sampleLibraryTracks.associateBy { it.id }.toStableMap()
+        val expectedSubtitle = formatSmartMixSubtitle(output, output.recommendedTracks.size)
+        assertTrue(
+            "Subtitle '$expectedSubtitle' must contain BPM, vibe descriptor, and track count",
+            expectedSubtitle.contains("BPM") && expectedSubtitle.contains("•") && expectedSubtitle.endsWith("tracks")
+        )
+
+        var activeMood by mutableStateOf<String?>(null)
+        var seedEnabled by mutableStateOf(true)
+        var balance by mutableStateOf(0.5f)
+        var playClickedCount = 0
+        var saveClickedTitle: String? = null
+        var refreshClicks = 0
+        var resetClicks = 0
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+                Box(modifier = Modifier.width(360.dp).height(760.dp)) {
+                    SmartPlaylistSheetContent(
+                        output = output,
+                        isGenerating = false,
+                        selectedMood = activeMood,
+                        seedFromCurrent = seedEnabled,
+                        currentTrackTitle = sampleLibraryTracks.first().title,
+                        currentTrackArtist = sampleLibraryTracks.first().artist,
+                        trackLookup = lookup,
+                        artworkShape = ExpressiveArtworkShape.SCALLOP,
+                        onSelectMood = { activeMood = it },
+                        onToggleSeedFromCurrent = { seedEnabled = it },
+                        onRegenerate = { refreshClicks++ },
+                        onPlaySmartPlaylist = { playClickedCount = it.size },
+                        onSaveSmartPlaylist = { title, _ -> saveClickedTitle = title },
+                        discoveryBalance = balance,
+                        onChangeDiscoveryBalance = { balance = it },
+                        onResetTune = {
+                            resetClicks++
+                            activeMood = null
+                            balance = 0.5f
+                            seedEnabled = true
+                        }
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. v1 Debug Clutter completely absent: no JSON button/preview, no Energy row, no #1 ranks, no cohesion/score badges
+        composeRule.onNodeWithTag("smart_toggle_json_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("smart_mix_raw_json").assertDoesNotExist()
+        composeRule.onNodeWithText("JSON", substring = true).assertDoesNotExist()
+        composeRule.onNodeWithTag("smart_energy_any").assertDoesNotExist()
+        composeRule.onNodeWithTag("smart_energy_high").assertDoesNotExist()
+        composeRule.onNodeWithText("Energy").assertDoesNotExist()
+        composeRule.onNodeWithText("#1").assertDoesNotExist()
+        composeRule.onNodeWithText("#2").assertDoesNotExist()
+        composeRule.onNodeWithText("cohesion", substring = true, ignoreCase = true).assertDoesNotExist()
+        val firstScoreText = ((output.recommendedTracks.first().score.coerceIn(0.0, 1.0)) * 100.0).toInt().toString()
+        composeRule.onNodeWithText(firstScoreText).assertDoesNotExist()
+
+        // 2. Top Sheet Header: "Tune Mix", "Reset", "Refresh" with >= 48.dp touch target height
+        composeRule.onNodeWithTag("smart_mix_sheet_title").assertIsDisplayed().assertTextContains("Tune Mix")
+        val resetBounds = composeRule.onNodeWithTag("smart_reset_tune_button").getUnclippedBoundsInRoot()
+        val refreshBounds = composeRule.onNodeWithTag("smart_mix_regenerate_button").getUnclippedBoundsInRoot()
+        assertTrue("Reset target height must be >= 48.dp", resetBounds.height.value >= 47.5f)
+        assertTrue("Refresh target height must be >= 48.dp", refreshBounds.height.value >= 47.5f)
+        composeRule.onNodeWithTag("smart_mix_regenerate_button").performClick()
+        assertEquals(1, refreshClicks)
+
+        // 3. Mood Filter Row Only: Auto, Calm, Focus, Warm, Upbeat
+        listOf(
+            "smart_mood_auto" to "Auto",
+            "smart_mood_calm" to "Calm",
+            "smart_mood_focused" to "Focus",
+            "smart_mood_warm" to "Warm",
+            "smart_mood_upbeat" to "Upbeat"
+        ).forEach { (tag, label) ->
+            composeRule.onNodeWithTag("smart_mood_row").performScrollToNode(hasTestTag(tag))
+            composeRule.onNodeWithTag(tag).assertIsDisplayed().assertTextContains(label)
+        }
+        composeRule.onNodeWithTag("smart_mood_upbeat").performClick()
+        composeRule.waitForIdle()
+        assertEquals("upbeat", activeMood)
+
+        // Reset restores defaults
+        composeRule.onNodeWithTag("smart_reset_tune_button").performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, resetClicks)
+        assertEquals(null, activeMood)
+
+        // 4. Mix Balance slider & labels
+        composeRule.onNodeWithTag("smart_balance_slider").assertIsDisplayed()
+        composeRule.onNodeWithText("Familiar Favorites").assertIsDisplayed()
+        composeRule.onNodeWithText("Fresh Rediscovery").assertIsDisplayed()
+
+        // 5. Seed Track Pill with trailing × button clears seed smoothly
+        composeRule.onNodeWithTag("smart_seed_toggle").assertIsDisplayed()
+        composeRule.onNodeWithTag("smart_seed_clear_button").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        assertFalse("Tapping trailing × must clear active seed", seedEnabled)
+        composeRule.onNodeWithTag("smart_seed_clear_button").assertDoesNotExist()
+        // Tapping pill again restores seed
+        composeRule.onNodeWithTag("smart_seed_toggle").performClick()
+        composeRule.waitForIdle()
+        assertTrue("Tapping cleared seed pill should restore seed", seedEnabled)
+
+        // 6. Unified Mix Header Card + Clean Preview Track Row with 44.dp art
+        composeRule.onNodeWithTag("smart_mix_list").performScrollToNode(hasTestTag("smart_mix_header_card"))
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("smart_mix_result_title")
+            .assertIsDisplayed()
+            .assertTextContains(output.playlistProfile.suggestedTitle)
+        composeRule.onNodeWithTag("smart_mix_result_subtitle")
+            .assertIsDisplayed()
+            .assertTextContains(expectedSubtitle)
+
+        val firstTrackId = output.recommendedTracks.first().trackId
+        composeRule.onNodeWithTag("smart_mix_list").performScrollToNode(hasTestTag("smart_track_$firstTrackId"))
+        composeRule.waitForIdle()
+        val artBounds = composeRule.onNodeWithTag("smart_track_art_$firstTrackId", useUnmergedTree = true)
+            .getUnclippedBoundsInRoot()
+        assertEquals("Preview track art must be 44.dp wide", 44f, artBounds.width.value, 1.5f)
+        assertEquals("Preview track art must be 44.dp tall", 44f, artBounds.height.value, 1.5f)
+
+        // 7. Sticky Bottom Action Bar: Save Playlist & Play Mix side-by-side at 52.dp height on 1 line without clipping
+        val saveNode = composeRule.onNodeWithTag("smart_mix_save_button").assertIsDisplayed()
+        val playNode = composeRule.onNodeWithTag("smart_mix_play_button").assertIsDisplayed()
+        val saveBounds = saveNode.getUnclippedBoundsInRoot()
+        val playBounds = playNode.getUnclippedBoundsInRoot()
+
+        assertEquals("Save Playlist button must be 52.dp tall", 52f, saveBounds.height.value, 1.5f)
+        assertEquals("Play Mix button must be 52.dp tall", 52f, playBounds.height.value, 1.5f)
+        assertTrue("Save Playlist must sit to the left of Play Mix", saveBounds.right.value < playBounds.left.value)
+        assertTrue("Bottom action buttons must fit inside 360.dp width", playBounds.right.value <= 360f)
+        assertTrue("Bottom action bar must not clip past bottom of viewport", playBounds.bottom.value <= 760f)
+
+        // Verify Save Playlist and Play Mix labels fit on a single line (no 2-line wrapping)
+        val saveTextLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        composeRule.onNodeWithText("Save Playlist", useUnmergedTree = true)
+            .fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult]
+            .action?.invoke(saveTextLayouts)
+        assertTrue("Save Playlist label must resolve text layout", saveTextLayouts.isNotEmpty())
+        assertEquals("Save Playlist label must stay on 1 line", 1, saveTextLayouts.first().lineCount)
+
+        val playTextLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        composeRule.onNodeWithText("Play Mix", useUnmergedTree = true)
+            .fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult]
+            .action?.invoke(playTextLayouts)
+        assertTrue("Play Mix label must resolve text layout", playTextLayouts.isNotEmpty())
+        assertEquals("Play Mix label must stay on 1 line", 1, playTextLayouts.first().lineCount)
+
+        saveNode.performClick()
+        playNode.performClick()
+        assertEquals(output.playlistProfile.suggestedTitle, saveClickedTitle)
+        assertEquals(output.recommendedTracks.size, playClickedCount)
     }
 }

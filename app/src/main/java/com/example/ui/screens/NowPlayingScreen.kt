@@ -34,23 +34,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.outlined.FavoriteBorder
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.LibraryMusic
-import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.Repeat
-import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Shuffle
-import androidx.compose.material.icons.rounded.SkipNext
-import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -108,6 +97,7 @@ import com.example.ui.components.QueueSheetContent
 import com.example.ui.components.TrackActionsSheetContent
 import com.example.ui.components.TrackDetailsDialog
 import com.example.ui.components.WavyExpressiveSlider
+import com.example.ui.icons.CadenceIcons
 import com.example.ui.player.NowPlayingUiState
 import com.example.ui.player.SleepTimerState
 import com.example.ui.theme.LocalPerformanceMode
@@ -299,10 +289,10 @@ fun NowPlayingScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .testTag("now_playing_portrait_container")
                     .verticalScroll(rememberScrollState())
                     .navigationBarsPadding()
-                    .padding(start = 20.dp, end = 20.dp, bottom = 20.dp)
-                    .testTag("now_playing_portrait_container"),
+                    .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -374,9 +364,9 @@ fun NowPlayingScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .testTag("now_playing_portrait_container")
                     .navigationBarsPadding()
-                    .padding(start = 20.dp, end = 20.dp, bottom = 20.dp)
-                    .testTag("now_playing_portrait_container"),
+                    .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Swipe-down gesture attached strictly to Drag Handle, Top Header & Artwork Area (never the seek bar)
@@ -637,7 +627,7 @@ private fun EmptyNowPlayingContent(
                 .fillMaxSize()
                 .then(if (isUltraShort) Modifier.verticalScroll(rememberScrollState()) else Modifier)
                 .navigationBarsPadding()
-                .padding(start = 20.dp, end = 20.dp, bottom = 20.dp),
+                .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = if (isUltraShort) Arrangement.spacedBy(16.dp) else Arrangement.SpaceBetween
         ) {
@@ -713,7 +703,7 @@ private fun EmptyNowPlayingContent(
                         .height(52.dp)
                         .testTag("empty_scan_folder_button")
                 ) {
-                    Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Icon(CadenceIcons.CreateNewFolder, contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(
                         text = stringResource(R.string.action_scan_local_folders),
@@ -728,7 +718,7 @@ private fun EmptyNowPlayingContent(
                         .height(48.dp)
                         .testTag("empty_scan_device_button")
                 ) {
-                    Icon(Icons.Rounded.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(CadenceIcons.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(
                         text = stringResource(R.string.action_scan_device),
@@ -760,15 +750,19 @@ private fun NowPlayingDragHandle(
                 .size(width = 36.dp, height = 4.dp)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.32f))
+                .testTag("now_playing_drag_handle_pill")
         )
     }
 }
 
 /**
- * Theme-aware 2-group glassmorphic Now Playing top header (all items equal 42dp height, zero blur):
- * - Left: Unified clickable CircleShape pill combining minimize chevron (⌄) + hairline divider +
- *   3-bar draw-phase equalizer + "NOW PLAYING" / "PAUSED" label.
- * - Right: Two matching 42dp circular buttons separated by 10dp (Audio Output Switcher + Queue).
+ * Theme-aware 4-element glassmorphic Now Playing top header (all 4 items equal 42dp height, zero blur):
+ * - Left group (8dp gap):
+ *   1. Standalone 42dp circular minimize chevron (⌄) button
+ *   2. Separate 42dp CircleShape status pill (3-bar draw-phase equalizer + "NOW PLAYING" / "PAUSED")
+ * - Right group (8dp gap):
+ *   3. 42dp circular Audio Output / Bluetooth switcher
+ *   4. 42dp circular Queue button
  */
 @Composable
 private fun NowPlayingTopBar(
@@ -788,9 +782,8 @@ private fun NowPlayingTopBar(
         else -> stringResource(R.string.status_paused)
     }
     val glassSurfaceColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f)
-    val glassBorder = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+    val glassBorder = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
     val headerContentTint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
-    val dividerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
 
     Row(
         modifier = modifier
@@ -799,75 +792,54 @@ private fun NowPlayingTopBar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Left Group: Unified 42dp clickable glassmorphic pill (minimize chevron + divider + status)
-        Box(
+        // Left Group: 42dp Minimize Circle + 8dp gap + separate 42dp Status Pill
+        Row(
             modifier = Modifier
                 .weight(1f, fill = false)
-                .padding(end = 10.dp)
+                .padding(end = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            GlassHeaderCircleButton(
+                icon = Icons.Rounded.KeyboardArrowDown,
+                contentDescription = stringResource(R.string.action_collapse_player),
+                onClick = onCollapse,
+                testTag = "collapse_now_playing_button"
+            )
+
             Row(
                 modifier = Modifier
+                    .testTag("now_playing_status_pill")
                     .height(42.dp)
                     .clip(CircleShape)
                     .background(glassSurfaceColor, CircleShape)
                     .border(glassBorder, CircleShape)
-                    .clickable(
-                        role = Role.Button,
-                        onClickLabel = stringResource(R.string.action_collapse_player),
-                        onClick = onCollapse
-                    )
-                    .testTag("collapse_now_playing_button"),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Box(
-                    modifier = Modifier.padding(start = 12.dp, end = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.KeyboardArrowDown,
-                        contentDescription = stringResource(R.string.action_collapse_player),
-                        tint = headerContentTint,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .height(18.dp)
-                        .background(dividerColor)
+                AudioPulseBars(
+                    isPlaying = isPlaying,
+                    tint = MaterialTheme.colorScheme.primary,
+                    barHeight = 14.dp,
+                    barCount = 3
                 )
-
-                Row(
-                    modifier = Modifier
-                        .padding(start = 12.dp, end = 16.dp)
-                        .testTag("now_playing_status_pill"),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(9.dp)
-                ) {
-                    AudioPulseBars(
-                        isPlaying = isPlaying,
-                        tint = MaterialTheme.colorScheme.primary,
-                        barHeight = 14.dp,
-                        barCount = 3
-                    )
-                    Text(
-                        text = statusText,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 1.4.sp,
-                        color = headerContentTint,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                Text(
+                    text = statusText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.4.sp,
+                    color = headerContentTint,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
 
-        // Right Group: Two matching 42dp glassmorphic circular buttons separated by 10dp
+        // Right Group: 42dp Audio Output Circle + 8dp gap + 42dp Queue Circle
         Row(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             GlassHeaderCircleButton(
@@ -879,7 +851,7 @@ private fun NowPlayingTopBar(
 
             if (hasTrack) {
                 GlassHeaderCircleButton(
-                    icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                    icon = CadenceIcons.QueueMusic,
                     contentDescription = stringResource(R.string.action_queue),
                     onClick = onOpenQueue,
                     testTag = "queue_button"
@@ -903,7 +875,7 @@ private fun GlassHeaderCircleButton(
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f), CircleShape)
             .border(
-                BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
+                BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
                 CircleShape
             )
             .clickable(
@@ -981,7 +953,10 @@ private fun TrackIdentityBlock(
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 IconButton(
                     onClick = onToggleFavorite,
                     modifier = Modifier
@@ -1079,10 +1054,11 @@ private fun ScrubberSection(
             wavyEnabled = wavyEnabled,
             onSeek = onSeek
         )
+        Spacer(Modifier.height(8.dp))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp),
+                .padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             ElapsedTimeText(
@@ -1137,8 +1113,12 @@ private fun ElapsedTimeText(
     val elapsedSec by elapsedSecondFlow.collectAsStateWithLifecycle(initialValue = 0L)
     Text(
         text = formatDuration(elapsedSec * 1000L),
-        style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
-        color = MaterialTheme.colorScheme.onSurfaceVariant
+        style = MaterialTheme.typography.labelSmall.copy(
+            fontFamily = MonoFontFamily,
+            fontFeatureSettings = "tnum"
+        ),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.testTag("scrubber_elapsed_time")
     )
 }
 
@@ -1155,8 +1135,12 @@ private fun DurationTimeText(
     val durationMs by durationFlow.collectAsStateWithLifecycle(initialValue = fallbackDurationMs.coerceAtLeast(1L))
     Text(
         text = formatDuration(durationMs),
-        style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
-        color = MaterialTheme.colorScheme.onSurfaceVariant
+        style = MaterialTheme.typography.labelSmall.copy(
+            fontFamily = MonoFontFamily,
+            fontFeatureSettings = "tnum"
+        ),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.testTag("scrubber_duration_time")
     )
 }
 
@@ -1209,7 +1193,7 @@ private fun ExpressiveTransportCluster(
             )
         ) {
             Icon(
-                imageVector = Icons.Rounded.Shuffle,
+                imageVector = CadenceIcons.Shuffle,
                 contentDescription = stringResource(R.string.action_shuffle),
                 modifier = Modifier.size(20.dp)
             )
@@ -1233,7 +1217,7 @@ private fun ExpressiveTransportCluster(
             )
         ) {
             Icon(
-                imageVector = Icons.Rounded.SkipPrevious,
+                imageVector = CadenceIcons.SkipPrevious,
                 contentDescription = stringResource(R.string.action_previous),
                 modifier = Modifier.size(28.dp)
             )
@@ -1263,7 +1247,7 @@ private fun ExpressiveTransportCluster(
             )
         ) {
             Icon(
-                imageVector = Icons.Rounded.SkipNext,
+                imageVector = CadenceIcons.SkipNext,
                 contentDescription = stringResource(R.string.action_next),
                 modifier = Modifier.size(28.dp)
             )
@@ -1291,9 +1275,9 @@ private fun ExpressiveTransportCluster(
         ) {
             Icon(
                 imageVector = if (uiState.repeatMode == RepeatMode.ONE) {
-                    Icons.Rounded.RepeatOne
+                    CadenceIcons.RepeatOne
                 } else {
-                    Icons.Rounded.Repeat
+                    CadenceIcons.Repeat
                 },
                 contentDescription = stringResource(R.string.action_repeat),
                 modifier = Modifier.size(20.dp)
@@ -1332,7 +1316,7 @@ private fun UtilityPillStrip(
         verticalAlignment = Alignment.CenterVertically
     ) {
         ExpressiveMiniActionPill(
-            icon = Icons.Rounded.Lyrics,
+            icon = CadenceIcons.Lyrics,
             label = stringResource(R.string.action_lyrics),
             active = false,
             onClick = onOpenLyrics,
@@ -1340,7 +1324,7 @@ private fun UtilityPillStrip(
         )
 
         ExpressiveMiniActionPill(
-            icon = Icons.Rounded.Bedtime,
+            icon = CadenceIcons.Bedtime,
             label = timerLabel,
             active = sleepTimer.option != SleepTimerOption.OFF,
             onClick = onOpenTimer,
@@ -1348,7 +1332,7 @@ private fun UtilityPillStrip(
         )
 
         ExpressiveMiniActionPill(
-            icon = Icons.Rounded.AutoAwesome,
+            icon = CadenceIcons.AutoAwesome,
             label = if (moodMatches) "Synced" else "Match Mood",
             active = moodMatches,
             onClick = onMatchMood,
@@ -1388,7 +1372,7 @@ private fun ExpressiveMiniActionPill(
             .testTag(testTag)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp),
+            modifier = Modifier.padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -1400,7 +1384,9 @@ private fun ExpressiveMiniActionPill(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelMedium,
-                maxLines = 1
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

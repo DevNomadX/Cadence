@@ -12,6 +12,8 @@ import com.example.data.TrackGroup
 import com.example.data.db.CadenceDatabase
 import com.example.data.db.PlaylistEntity
 import com.example.data.db.PlaylistTrackEntity
+import com.example.data.intelligence.LocalMoodAndAffinityEngine
+import com.example.data.intelligence.SmartMoodTag
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -101,6 +103,53 @@ class LibraryRepository(
                 .forEach { favId -> trackDao.setFavorite(favId, true) }
             preferencesRepository.markLegacyMigrationDone()
         }
+
+        // Non-blocking background backfill for migrated v3 -> v4 tracks lacking persisted mood tags
+        backfillMissingTrackIntelligence()
+    }
+
+    private suspend fun backfillMissingTrackIntelligence() = withContext(Dispatchers.IO) {
+        val allEntities = trackDao.getAllTracksOnce()
+        val pending = allEntities.filter { it.moodTags.isBlank() }
+        if (pending.isEmpty()) return@withContext
+        val nowMs = System.currentTimeMillis()
+        val localHour = LocalMoodAndAffinityEngine.currentLocalHour(nowMs)
+        val maxPlays = allEntities.maxOfOrNull { it.playCount.coerceAtLeast(0) }?.coerceAtLeast(1) ?: 1
+
+        for (entity in pending) {
+            val colorArgb = if (entity.artworkColorArgb != 0) {
+                entity.artworkColorArgb
+            } else {
+                artworkCache.extractDominantColorFromPath(entity.artworkPath)
+            }
+            val (encodedTags, score) = withContext(Dispatchers.Default) {
+                val baseTrack = entity.toDomain().copy(artworkColorArgb = colorArgb)
+                val tags = LocalMoodAndAffinityEngine.classifyTrackMoods(baseTrack)
+                val encoded = SmartMoodTag.encode(tags)
+                val enriched = baseTrack.copy(moodTags = SmartMoodTag.decode(encoded))
+                val affinity = LocalMoodAndAffinityEngine.computeLocalAffinity(
+                    track = enriched,
+                    nowMs = nowMs,
+                    localHourOfDay = localHour,
+                    maxLibraryPlays = maxPlays
+                ).score
+                encoded to affinity
+            }
+            trackDao.updateTrackIntelligence(
+                trackId = entity.id,
+                affinityScore = score,
+                moodTags = encodedTags,
+                artworkColorArgb = colorArgb
+            )
+        }
+    }
+
+    private suspend fun recalculateAndCacheAffinity(trackId: String) {
+        val updated = trackDao.getTrackById(trackId) ?: return
+        val score = withContext(Dispatchers.Default) {
+            LocalMoodAndAffinityEngine.computeLocalAffinity(updated.toDomain()).score
+        }
+        trackDao.updateAffinityScore(trackId, score)
     }
 
     suspend fun removeSavedFolder(treeUri: String) = withContext(Dispatchers.IO) {
@@ -121,19 +170,23 @@ class LibraryRepository(
         val current = trackDao.getTrackById(trackId) ?: return@withContext false
         val newValue = !current.isFavorite
         trackDao.setFavorite(trackId, newValue)
+        recalculateAndCacheAffinity(trackId)
         newValue
     }
 
     suspend fun recordTrackPlay(trackId: String) = withContext(Dispatchers.IO) {
         trackDao.recordPlay(trackId, System.currentTimeMillis())
+        recalculateAndCacheAffinity(trackId)
     }
 
     suspend fun recordTrackCompletion(trackId: String) = withContext(Dispatchers.IO) {
         trackDao.recordCompletedPlay(trackId, System.currentTimeMillis())
+        recalculateAndCacheAffinity(trackId)
     }
 
     suspend fun recordTrackSkip(trackId: String) = withContext(Dispatchers.IO) {
         trackDao.recordSkip(trackId)
+        recalculateAndCacheAffinity(trackId)
     }
 
     suspend fun removeTrack(trackId: String) = withContext(Dispatchers.IO) {

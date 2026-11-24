@@ -47,12 +47,14 @@ data class ThemePreferences(
     val effectiveAmbientAura: Boolean get() = ambientAuraEnabled && !performanceModeEnabled
 }
 
+@Keep
 @Immutable
 data class AudioSettings(
     val gaplessPlaybackEnabled: Boolean = true,
     val crossfadeDurationSec: Int = 0,
     val pauseOnHeadphoneDisconnect: Boolean = true,
-    val audioFocusBehavior: AudioFocusBehavior = AudioFocusBehavior.DUCK
+    val audioFocusBehavior: AudioFocusBehavior = AudioFocusBehavior.DUCK,
+    val acousticEnhanceEnabled: Boolean = false
 )
 
 @Immutable
@@ -85,6 +87,7 @@ data class UserPreferences(
     val crossfadeDurationSec: Int = 0,
     val pauseOnHeadphoneDisconnect: Boolean = true,
     val audioFocusBehavior: AudioFocusBehavior = AudioFocusBehavior.DUCK,
+    val acousticEnhanceEnabled: Boolean = false,
     val legacyFavoriteTrackIds: Set<String> = emptySet(),
     val legacyImportedTrackUris: Set<String> = emptySet()
 )
@@ -117,6 +120,7 @@ class PreferencesRepository(private val context: Context) {
         val CROSSFADE_SEC = intPreferencesKey("crossfade_duration_sec")
         val PAUSE_ON_HEADPHONE_DISCONNECT = booleanPreferencesKey("pause_on_headphone_disconnect")
         val AUDIO_FOCUS_BEHAVIOR = stringPreferencesKey("audio_focus_behavior")
+        val ACOUSTIC_ENHANCE = booleanPreferencesKey("acoustic_enhance_enabled")
         val LEGACY_FAVORITES = stringSetPreferencesKey("favorite_track_ids")
         val LEGACY_IMPORTED_URIS = stringSetPreferencesKey("imported_track_uris")
         val LEGACY_MIGRATED = booleanPreferencesKey("room_migration_v1_done")
@@ -181,7 +185,8 @@ class PreferencesRepository(private val context: Context) {
             gaplessPlaybackEnabled = prefs[Keys.GAPLESS_PLAYBACK] ?: true,
             crossfadeDurationSec = (prefs[Keys.CROSSFADE_SEC] ?: 0).coerceIn(0, 10),
             pauseOnHeadphoneDisconnect = prefs[Keys.PAUSE_ON_HEADPHONE_DISCONNECT] ?: true,
-            audioFocusBehavior = AudioFocusBehavior.fromId(prefs[Keys.AUDIO_FOCUS_BEHAVIOR])
+            audioFocusBehavior = AudioFocusBehavior.fromId(prefs[Keys.AUDIO_FOCUS_BEHAVIOR]),
+            acousticEnhanceEnabled = prefs[Keys.ACOUSTIC_ENHANCE] ?: false
         )
     }.distinctUntilChanged()
 
@@ -216,6 +221,7 @@ class PreferencesRepository(private val context: Context) {
             crossfadeDurationSec = (prefs[Keys.CROSSFADE_SEC] ?: 0).coerceIn(0, 10),
             pauseOnHeadphoneDisconnect = prefs[Keys.PAUSE_ON_HEADPHONE_DISCONNECT] ?: true,
             audioFocusBehavior = AudioFocusBehavior.fromId(prefs[Keys.AUDIO_FOCUS_BEHAVIOR]),
+            acousticEnhanceEnabled = prefs[Keys.ACOUSTIC_ENHANCE] ?: false,
             legacyFavoriteTrackIds = prefs[Keys.LEGACY_FAVORITES] ?: emptySet(),
             legacyImportedTrackUris = prefs[Keys.LEGACY_IMPORTED_URIS] ?: emptySet()
         )
@@ -304,6 +310,10 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setAudioFocusBehavior(behavior: AudioFocusBehavior) {
         context.cadenceDataStore.edit { it[Keys.AUDIO_FOCUS_BEHAVIOR] = behavior.id }
+    }
+
+    suspend fun setAcousticEnhanceEnabled(enabled: Boolean) {
+        context.cadenceDataStore.edit { it[Keys.ACOUSTIC_ENHANCE] = enabled }
     }
 
     suspend fun setShuffleEnabled(enabled: Boolean) {

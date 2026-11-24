@@ -22,7 +22,7 @@
 }
 -dontwarn kotlinx.coroutines.**
 
-# Local Music Intelligence Engine, Discover, Home, DSP, Lyrics & Track data models
+# Local Music Intelligence Engine, Lyrics, Audio Output & Acoustic Enhance components
 -keep class com.example.data.intelligence.** { *; }
 -keep class com.example.data.lyrics.** { *; }
 -keep class com.example.data.Track { *; }
@@ -32,9 +32,14 @@
 -keep class com.example.data.UserProfile { *; }
 -keep class com.example.data.StableList { *; }
 -keep class com.example.data.StableMap { *; }
+-keep class com.example.data.AudioSettings { *; }
 -keep class com.example.playback.AudioOutputRouteType { *; }
 -keep class com.example.playback.AudioOutputDevice { *; }
 -keep class com.example.playback.AudioOutputState { *; }
+-keep class com.example.playback.FloatOutputRenderersFactory { *; }
+-keep class com.example.playback.AudioEffectSessionBroadcaster { *; }
+-keep class com.example.playback.AcousticEnhanceEngine { *; }
+-keep class com.example.playback.AcousticEnhanceEngine$** { *; }
 -keep class com.example.ui.CadenceTab { *; }
 -keep class com.example.ui.FloatingNavBarState { *; }
 -keep class com.example.ui.player.HomeUiState { *; }
@@ -54,4 +59,3 @@
 -keep class androidx.compose.runtime.Composer { *; }
 -keep class androidx.compose.runtime.ComposerImpl { *; }
 -dontwarn androidx.compose.runtime.tooling.**
--dontwarn androidx.compose.ui.tooling.**

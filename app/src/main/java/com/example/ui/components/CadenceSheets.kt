@@ -21,23 +21,12 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
-import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
-import androidx.compose.material.icons.automirrored.rounded.QueueMusic
-import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.CreateNewFolder
-import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
-import androidx.compose.material.icons.rounded.LibraryMusic
-import androidx.compose.material.icons.rounded.QueuePlayNext
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Save
-import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
@@ -68,6 +57,7 @@ import com.example.data.StableList
 import com.example.data.Track
 import com.example.data.formatDuration
 import com.example.data.formatFileSize
+import com.example.ui.icons.CadenceIcons
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
@@ -123,7 +113,7 @@ fun QueueSheetContent(
                     modifier = Modifier.testTag("save_queue_playlist_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Save,
+                        imageVector = CadenceIcons.Save,
                         contentDescription = stringResource(R.string.action_save_queue_playlist),
                         tint = MaterialTheme.colorScheme.primary
                     )
@@ -134,7 +124,7 @@ fun QueueSheetContent(
                     modifier = Modifier.testTag("clear_queue_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.DeleteSweep,
+                        imageVector = CadenceIcons.DeleteSweep,
                         contentDescription = stringResource(R.string.action_clear_queue),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -315,17 +305,17 @@ fun TrackActionsSheetContent(
         }
 
         SheetActionItem(
-            icon = Icons.Rounded.QueuePlayNext,
+            icon = CadenceIcons.QueuePlayNext,
             label = stringResource(R.string.action_play_next),
             onClick = onPlayNext
         )
         SheetActionItem(
-            icon = Icons.AutoMirrored.Rounded.QueueMusic,
+            icon = CadenceIcons.QueueMusic,
             label = stringResource(R.string.action_add_to_queue),
             onClick = onAddToQueue
         )
         SheetActionItem(
-            icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
+            icon = CadenceIcons.PlaylistAdd,
             label = stringResource(R.string.action_add_to_playlist),
             onClick = onAddToPlaylist
         )
@@ -342,14 +332,14 @@ fun TrackActionsSheetContent(
         )
         if (onRemoveFromPlaylist != null) {
             SheetActionItem(
-                icon = Icons.Outlined.DeleteOutline,
+                icon = CadenceIcons.DeleteOutline,
                 label = "Remove from playlist",
                 onClick = onRemoveFromPlaylist
             )
         }
         if (onRemoveFromLibrary != null) {
             SheetActionItem(
-                icon = Icons.Outlined.DeleteOutline,
+                icon = CadenceIcons.DeleteOutline,
                 label = stringResource(R.string.action_remove_track),
                 onClick = onRemoveFromLibrary
             )
@@ -422,7 +412,7 @@ fun AddToPlaylistSheetContent(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                                imageVector = CadenceIcons.PlaylistPlay,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary
                             )
@@ -468,19 +458,19 @@ fun ImportSourcesSheetContent(
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
         )
         SheetActionItem(
-            icon = Icons.Rounded.CreateNewFolder,
+            icon = CadenceIcons.CreateNewFolder,
             label = stringResource(R.string.action_add_folder),
             subtitle = "Zero-permission folder scan (FLAC, MP3, WAV, M4A, Opus, OGG)",
             onClick = onAddFolder
         )
         SheetActionItem(
-            icon = Icons.Rounded.AudioFile,
+            icon = CadenceIcons.AudioFile,
             label = stringResource(R.string.action_import_files),
             subtitle = "Pick individual audio tracks from storage",
             onClick = onImportFiles
         )
         SheetActionItem(
-            icon = Icons.Rounded.LibraryMusic,
+            icon = CadenceIcons.LibraryMusic,
             label = stringResource(R.string.action_scan_device),
             subtitle = "Index all music in Android MediaStore",
             onClick = onScanDevice
@@ -589,7 +579,7 @@ private fun PlaybackSpeedSelectorCard(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.Rounded.Speed,
+                            imageVector = CadenceIcons.Speed,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(20.dp)

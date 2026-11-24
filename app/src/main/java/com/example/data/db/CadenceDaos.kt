@@ -51,6 +51,17 @@ interface TrackDao {
     @Query("UPDATE tracks SET skipCount = skipCount + 1 WHERE id = :trackId")
     suspend fun recordSkip(trackId: String)
 
+    @Query("UPDATE tracks SET affinityScore = :affinityScore WHERE id = :trackId")
+    suspend fun updateAffinityScore(trackId: String, affinityScore: Float)
+
+    @Query("UPDATE tracks SET affinityScore = :affinityScore, moodTags = :moodTags, artworkColorArgb = :artworkColorArgb WHERE id = :trackId")
+    suspend fun updateTrackIntelligence(
+        trackId: String,
+        affinityScore: Float,
+        moodTags: String,
+        artworkColorArgb: Int
+    )
+
     @Query("DELETE FROM tracks WHERE id = :trackId")
     suspend fun deleteTrackById(trackId: String)
 
@@ -162,9 +173,6 @@ interface PlaylistDao {
 
 @Dao
 interface QueueDao {
-
-    @Query("SELECT trackId FROM queue_items ORDER BY position ASC")
-    fun observeQueueTrackIds(): Flow<List<String>>
 
     @Query("SELECT trackId FROM queue_items ORDER BY position ASC")
     suspend fun getQueueTrackIdsOnce(): List<String>

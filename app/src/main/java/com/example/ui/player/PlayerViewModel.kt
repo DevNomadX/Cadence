@@ -25,6 +25,8 @@ import com.example.data.UserProfile
 import com.example.data.intelligence.DiscoverSection
 import com.example.data.intelligence.DiscoverTuneConfig
 import com.example.data.intelligence.ListeningInsights
+import com.example.data.intelligence.LocalMoodAndAffinityEngine
+import com.example.data.intelligence.MoodSmartPlaylist
 import com.example.data.intelligence.MusicIntelligenceEngine
 import com.example.data.intelligence.MusicIntelligenceOutput
 import com.example.data.intelligence.MusicIntelligenceRequest
@@ -115,6 +117,7 @@ data class HomeUiState(
     val recentlyAdded: StableList<Track> = StableList(),
     val likedTracks: StableList<Track> = StableList(),
     val mostPlayedTracks: StableList<Track> = StableList(),
+    val moodCollections: StableList<MoodSmartPlaylist> = StableList(),
     val isInitialLibraryLoaded: Boolean = true
 )
 
@@ -123,6 +126,7 @@ data class HomeUiState(
 data class DiscoverUiState(
     val allTracks: StableList<Track> = StableList(),
     val sections: StableList<DiscoverSection> = StableList(),
+    val moodPlaylists: StableList<MoodSmartPlaylist> = StableList(),
     val anchorTrackTitle: String? = null,
     val insights: ListeningInsights = ListeningInsights(),
     val tuneConfig: DiscoverTuneConfig = DiscoverTuneConfig(),
@@ -489,12 +493,17 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                     .thenByDescending { it.lastPlayedAt }
             )
 
+        val moodCollections = LocalMoodAndAffinityEngine
+            .buildMoodSmartPlaylists(tracks = eligible)
+            .toStableList()
+
         HomeUiState(
             allTracks = eligible.toStableList(),
             recentlyPlayed = recentlyPlayed.toStableList(),
             recentlyAdded = recentlyAdded.toStableList(),
             likedTracks = likedTracks.toStableList(),
             mostPlayedTracks = mostPlayedTracks.toStableList(),
+            moodCollections = moodCollections,
             isInitialLibraryLoaded = true
         )
     }
@@ -533,6 +542,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             DiscoverUiState(
                 allTracks = eligibleTracks.toStableList(),
                 sections = feed.sections,
+                moodPlaylists = feed.moodPlaylists,
                 anchorTrackTitle = feed.anchorTrackTitle,
                 insights = feed.insights,
                 tuneConfig = tuneConfig,
@@ -547,6 +557,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             DiscoverUiState(
                 allTracks = eligibleTracks.toStableList(),
                 sections = StableList(),
+                moodPlaylists = StableList(),
                 anchorTrackTitle = null,
                 insights = ListeningInsights(),
                 tuneConfig = tuneConfig,
@@ -1117,6 +1128,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setAudioFocusBehavior(behavior: AudioFocusBehavior) {
         viewModelScope.launch { preferencesRepo.setAudioFocusBehavior(behavior) }
+    }
+
+    fun setAcousticEnhanceEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferencesRepo.setAcousticEnhanceEnabled(enabled) }
     }
 
     // --- Sleep Timer ---

@@ -28,22 +28,15 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
-import androidx.compose.material.icons.automirrored.rounded.Sort
-import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -96,7 +89,11 @@ import com.example.data.StableList
 import com.example.data.Track
 import com.example.data.TrackGroup
 import com.example.data.formatDuration
+import com.example.data.intelligence.LibraryMoodFilter
+import com.example.data.library.LibrarySearchEngine
 import com.example.data.library.ScanState
+import com.example.ui.icons.CadenceIcons
+import com.example.data.toStableList
 import com.example.ui.components.AddToPlaylistSheetContent
 import com.example.ui.components.AudioPulseBars
 import com.example.ui.components.ExpressiveArtworkFrame
@@ -167,6 +164,11 @@ fun LibraryScreen(
 
     // Immediate local text state so typing renders at 60 FPS with zero ViewModel round-trip lag
     var rawSearchQuery by rememberSaveable { mutableStateOf(uiState.searchQuery) }
+    // String-route saved mood filter ID so R8 minification never breaks state restoration
+    var selectedMoodFilterId by rememberSaveable { mutableStateOf(LibraryMoodFilter.ALL.id) }
+    val selectedMoodFilter = remember(selectedMoodFilterId) {
+        LibraryMoodFilter.fromId(selectedMoodFilterId)
+    }
     val latestOnSearchChange by rememberUpdatedState(onSearchChange)
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -236,8 +238,43 @@ fun LibraryScreen(
             Unit
         }
     }
-    val onSelectDisplayedTrack = remember(uiState.displayedTracks, onSelectTrack) {
-        { track: Track -> onSelectTrack(track, uiState.displayedTracks) }
+    // Instant in-memory filtering combining active search query + selected mood pill (zero UI-thread I/O)
+    val filteredDisplayedTracks by remember(uiState.displayedTracks, uiState.searchQuery, rawSearchQuery, selectedMoodFilter) {
+        derivedStateOf {
+            val base = uiState.displayedTracks
+            val moodTag = selectedMoodFilter.tag
+            val moodFiltered = if (moodTag == null) {
+                base
+            } else {
+                base.filter { track -> moodTag in track.resolvedMoodTags() }
+            }
+            val q = rawSearchQuery.trim()
+            if (q.isEmpty() || q.equals(uiState.searchQuery.trim(), ignoreCase = true)) {
+                moodFiltered.toStableList()
+            } else {
+                LibrarySearchEngine.searchTracks(moodFiltered, q).toStableList()
+            }
+        }
+    }
+
+    val onClearMoodFilter = remember { { selectedMoodFilterId = LibraryMoodFilter.ALL.id } }
+    val onSelectMoodFilter = remember(uiState.category, onCategoryChange) {
+        { filter: LibraryMoodFilter ->
+            selectedMoodFilterId = filter.id
+            if (filter != LibraryMoodFilter.ALL &&
+                uiState.category !in setOf(
+                    LibraryCategory.SONGS,
+                    LibraryCategory.FAVORITES,
+                    LibraryCategory.RECENT,
+                    LibraryCategory.MOST_PLAYED
+                )
+            ) {
+                onCategoryChange(LibraryCategory.SONGS)
+            }
+        }
+    }
+    val onSelectDisplayedTrack = remember(filteredDisplayedTracks, onSelectTrack) {
+        { track: Track -> onSelectTrack(track, filteredDisplayedTracks) }
     }
     val onSelectDrillTrack = remember(uiState.drillDownTracks, onSelectTrack) {
         { track: Track -> onSelectTrack(track, uiState.drillDownTracks) }
@@ -377,6 +414,13 @@ fun LibraryScreen(
                             .testTag("library_search_input")
                     )
                 }
+
+                LibraryMoodFilterRow(
+                    selectedFilter = selectedMoodFilter,
+                    onSelectFilter = onSelectMoodFilter,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
                 LibraryScrolledHeaderDivider(listState = listState)
             }
 
@@ -449,7 +493,7 @@ fun LibraryScreen(
                                 }
                                 IconButton(onClick = { onDeletePlaylist(drill.playlistId) }) {
                                     Icon(
-                                        imageVector = Icons.Outlined.DeleteOutline,
+                                        imageVector = CadenceIcons.DeleteOutline,
                                         contentDescription = stringResource(R.string.action_delete_playlist),
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -480,7 +524,7 @@ fun LibraryScreen(
                                         .weight(1f)
                                         .height(48.dp)
                                 ) {
-                                    Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(CadenceIcons.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(6.dp))
                                     Text(stringResource(R.string.action_shuffle_all))
                                 }
@@ -579,7 +623,7 @@ fun LibraryScreen(
                     LibraryCategory.FAVORITES,
                     LibraryCategory.RECENT,
                     LibraryCategory.MOST_PLAYED -> {
-                        val tracks = uiState.displayedTracks
+                        val tracks = filteredDisplayedTracks
                         if (tracks.isNotEmpty()) {
                             item(key = "controls_strip", contentType = "controls_strip") {
                                 Row(
@@ -602,7 +646,7 @@ fun LibraryScreen(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Icon(CadenceIcons.Shuffle, contentDescription = null, modifier = Modifier.size(16.dp))
                                                 Text(
                                                     text = "Shuffle (${tracks.size})",
                                                     style = MaterialTheme.typography.labelMedium
@@ -628,7 +672,7 @@ fun LibraryScreen(
                                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                                 ) {
                                                     Icon(
-                                                        imageVector = Icons.AutoMirrored.Rounded.Sort,
+                                                        imageVector = CadenceIcons.Sort,
                                                         contentDescription = null,
                                                         modifier = Modifier.size(16.dp),
                                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -661,7 +705,7 @@ fun LibraryScreen(
 
                             items(
                                 items = tracks,
-                                key = { "track_${it.id}" },
+                                key = { "lib_${it.id}" },
                                 contentType = { "track_row" }
                             ) { track ->
                                 val isCurrentTrack = track.id == currentTrackId
@@ -682,11 +726,14 @@ fun LibraryScreen(
                             }
                         } else if (uiState.isInitialLibraryLoaded) {
                             item(key = "empty_tracks", contentType = "empty_card") {
-                                val trimmedQuery = uiState.searchQuery.trim()
+                                val trimmedQuery = rawSearchQuery.trim()
                                 val isSearchActive = trimmedQuery.isNotEmpty()
-                                val isEmptyFreshSongs = uiState.category == LibraryCategory.SONGS && !isSearchActive
+                                val isMoodFilterActive = selectedMoodFilter != LibraryMoodFilter.ALL
+                                val isEmptyFreshSongs = uiState.category == LibraryCategory.SONGS &&
+                                    !isSearchActive && !isMoodFilterActive
                                 val msg = when {
                                     isSearchActive -> stringResource(R.string.library_empty_search_query, trimmedQuery)
+                                    isMoodFilterActive -> stringResource(R.string.library_empty_mood_filter, selectedMoodFilter.label)
                                     uiState.category == LibraryCategory.FAVORITES -> stringResource(R.string.library_empty_favorites)
                                     uiState.category == LibraryCategory.RECENT -> stringResource(R.string.library_empty_recent)
                                     uiState.category == LibraryCategory.MOST_PLAYED -> stringResource(R.string.library_empty_most_played)
@@ -699,7 +746,16 @@ fun LibraryScreen(
                                     isSearchEmpty = isSearchActive,
                                     onScanFolderClick = onAddFolder,
                                     onImportClick = onOpenImportSheet,
-                                    onClearSearchClick = if (isSearchActive) onClearSearchImmediate else null
+                                    onClearSearchClick = when {
+                                        isSearchActive -> onClearSearchImmediate
+                                        isMoodFilterActive -> onClearMoodFilter
+                                        else -> null
+                                    },
+                                    clearActionLabel = if (!isSearchActive && isMoodFilterActive) {
+                                        stringResource(R.string.action_show_all_moods)
+                                    } else {
+                                        stringResource(R.string.action_clear_search_label)
+                                    }
                                 )
                             }
                         }
@@ -1282,7 +1338,7 @@ private fun GroupCollectionRow(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.Rounded.FolderOpen,
+                            imageVector = CadenceIcons.FolderOpen,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onPrimaryContainer
                         )
@@ -1374,7 +1430,7 @@ private fun PlaylistRowCard(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                            imageVector = CadenceIcons.PlaylistPlay,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(26.dp)
@@ -1422,12 +1478,89 @@ private fun PlaylistRowCard(
             }
             IconButton(onClick = deleteClick, modifier = Modifier.size(38.dp)) {
                 Icon(
-                    imageVector = Icons.Outlined.DeleteOutline,
+                    imageVector = CadenceIcons.DeleteOutline,
                     contentDescription = stringResource(R.string.action_delete_playlist),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(19.dp)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun LibraryMoodFilterRow(
+    selectedFilter: LibraryMoodFilter,
+    onSelectFilter: (LibraryMoodFilter) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val filters = remember { LibraryMoodFilter.entries }
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("library_mood_filter_row")
+    ) {
+        items(
+            items = filters,
+            key = { "mood_pill_${it.id}" },
+            contentType = { "mood_pill" }
+        ) { filter ->
+            val selected = selectedFilter == filter
+            val onClick = remember(filter, onSelectFilter) { { onSelectFilter(filter) } }
+            val labelRes = when (filter) {
+                LibraryMoodFilter.ALL -> R.string.library_mood_all
+                LibraryMoodFilter.LATE_NIGHT -> R.string.library_mood_late_night
+                LibraryMoodFilter.ACOUSTIC -> R.string.library_mood_acoustic
+                LibraryMoodFilter.SOULFUL -> R.string.library_mood_soulful
+                LibraryMoodFilter.UPBEAT -> R.string.library_mood_upbeat
+                LibraryMoodFilter.LOSSLESS -> R.string.library_mood_lossless
+            }
+            val leadingIcon = when (filter) {
+                LibraryMoodFilter.ALL -> null
+                LibraryMoodFilter.LATE_NIGHT -> CadenceIcons.NightsStay
+                LibraryMoodFilter.ACOUSTIC -> CadenceIcons.Spa
+                LibraryMoodFilter.SOULFUL -> Icons.Rounded.Favorite
+                LibraryMoodFilter.UPBEAT -> CadenceIcons.Bolt
+                LibraryMoodFilter.LOSSLESS -> CadenceIcons.HighQuality
+            }
+            FilterChip(
+                selected = selected,
+                onClick = onClick,
+                leadingIcon = if (leadingIcon != null) {
+                    {
+                        Icon(
+                            imageVector = leadingIcon,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                } else {
+                    null
+                },
+                label = {
+                    Text(
+                        text = stringResource(labelRes),
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                },
+                shape = CircleShape,
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    selectedLeadingIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    iconColor = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                border = null,
+                modifier = Modifier
+                    .height(38.dp)
+                    .testTag("library_mood_pill_${filter.id}")
+            )
         }
     }
 }
@@ -1440,7 +1573,8 @@ private fun LibraryEmptyCard(
     isSearchEmpty: Boolean = false,
     onScanFolderClick: () -> Unit,
     onImportClick: () -> Unit,
-    onClearSearchClick: (() -> Unit)? = null
+    onClearSearchClick: (() -> Unit)? = null,
+    clearActionLabel: String = stringResource(R.string.action_clear_search_label)
 ) {
     Surface(
         shape = RoundedCornerShape(28.dp),
@@ -1466,8 +1600,8 @@ private fun LibraryEmptyCard(
                     Icon(
                         imageVector = when {
                             isSearchEmpty -> Icons.Rounded.Search
-                            showScanCta -> Icons.Rounded.FolderOpen
-                            else -> Icons.Rounded.MusicNote
+                            showScanCta -> CadenceIcons.FolderOpen
+                            else -> CadenceIcons.MusicNote
                         },
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -1500,7 +1634,7 @@ private fun LibraryEmptyCard(
                 ) {
                     Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.size(6.dp))
-                    Text(text = stringResource(R.string.action_clear_search_label))
+                    Text(text = clearActionLabel)
                 }
             } else if (showScanCta) {
                 Spacer(Modifier.height(4.dp))
@@ -1512,7 +1646,7 @@ private fun LibraryEmptyCard(
                         .height(48.dp)
                         .testTag("empty_library_scan_folder_button")
                 ) {
-                    Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(CadenceIcons.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.size(8.dp))
                     Text(text = stringResource(R.string.action_scan_local_folders))
                 }

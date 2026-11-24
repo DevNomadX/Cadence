@@ -29,6 +29,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,20 +53,12 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.LibraryMusic
-import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -90,6 +83,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -104,12 +98,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import kotlin.math.abs
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -131,6 +128,7 @@ import com.example.ui.components.ExpressiveArtworkFrame
 import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
 import com.example.ui.components.FastListThumbnailShape
 import com.example.ui.components.ambientAuraBackdrop
+import com.example.ui.icons.CadenceIcons
 import com.example.ui.player.PlayerViewModel
 import com.example.ui.screens.DiscoverScreen
 import com.example.ui.screens.HomeScreen
@@ -157,8 +155,8 @@ enum class CadenceTab(
     val unselectedIcon: ImageVector
 ) {
     HOME("home", R.string.nav_home, Icons.Rounded.Home, Icons.Outlined.Home),
-    LIBRARY("library", R.string.nav_library, Icons.Rounded.LibraryMusic, Icons.Outlined.LibraryMusic),
-    DISCOVER("discover", R.string.nav_discover, Icons.Rounded.AutoAwesome, Icons.Outlined.AutoAwesome);
+    LIBRARY("library", R.string.nav_library, CadenceIcons.LibraryMusic, CadenceIcons.LibraryMusicOutlined),
+    DISCOVER("discover", R.string.nav_discover, CadenceIcons.AutoAwesome, CadenceIcons.AutoAwesomeOutlined);
 
     companion object {
         fun fromRoute(route: String?): CadenceTab =
@@ -294,6 +292,7 @@ fun CadenceApp(
         }
     }
     val onNextTrack = remember(viewModel) { { viewModel.nextTrack() } }
+    val onPreviousTrack = remember(viewModel) { { viewModel.previousTrack() } }
     val onToggleFavoriteCurrent = remember(viewModel) { { viewModel.toggleFavorite() } }
     val onAddCurrentToPlaylist = remember(viewModel) {
         { plId: Long ->
@@ -583,6 +582,7 @@ fun CadenceApp(
                             onExpandMiniPlayer = onExpandMiniPlayer,
                             onTogglePlayPause = onTogglePlayPause,
                             onNext = onNextTrack,
+                            onPrevious = onPreviousTrack,
                             progressFlow = viewModel.progressState,
                             modifier = Modifier.align(Alignment.BottomCenter)
                         )
@@ -600,6 +600,7 @@ fun CadenceApp(
                                 onExpand = onExpandMiniPlayer,
                                 onTogglePlayPause = onTogglePlayPause,
                                 onNext = onNextTrack,
+                                onPrevious = onPreviousTrack,
                                 progressFlow = viewModel.progressState
                             )
                         }
@@ -895,6 +896,7 @@ private fun HomeTabHost(
 ) {
     val homeState by viewModel.homeState.collectAsStateWithLifecycle()
     val onToggleFavorite = remember(viewModel) { viewModel::toggleFavorite }
+    val onSeek = remember(viewModel) { viewModel::seekToFraction }
     HomeScreen(
         uiState = homeState,
         currentTrack = currentTrack,
@@ -910,6 +912,7 @@ private fun HomeTabHost(
         onScanDevice = onScanDevice,
         userDisplayName = userDisplayName,
         progressFlow = viewModel.progressState,
+        onSeek = onSeek,
         onOpenSearch = onOpenLibrarySearch,
         onOpenLibraryShortcut = onOpenLibraryShortcut,
         isActiveTab = isActiveTab
@@ -1062,6 +1065,7 @@ private fun SettingsTabHost(
         onChangeCrossfadeSec = viewModel::setCrossfadeDurationSec,
         onTogglePauseOnHeadphoneDisconnect = viewModel::setPauseOnHeadphoneDisconnect,
         onSelectAudioFocusBehavior = viewModel::setAudioFocusBehavior,
+        onToggleAcousticEnhance = viewModel::setAcousticEnhanceEnabled,
         userDisplayName = userDisplayName,
         onUpdateDisplayName = viewModel::setUserDisplayName
     )
@@ -1082,6 +1086,7 @@ internal fun FloatingBottomDockOverlay(
     onExpandMiniPlayer: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onNext: () -> Unit,
+    onPrevious: () -> Unit = {},
     progressFlow: StateFlow<PlaybackProgress>? = null,
     modifier: Modifier = Modifier
 ) {
@@ -1123,6 +1128,7 @@ internal fun FloatingBottomDockOverlay(
                         onExpand = onExpandMiniPlayer,
                         onTogglePlayPause = onTogglePlayPause,
                         onNext = onNext,
+                        onPrevious = onPrevious,
                         progressFlow = progressFlow
                     )
                 }
@@ -1140,6 +1146,7 @@ internal fun FloatingBottomDockOverlay(
                             onExpand = onExpandMiniPlayer,
                             onTogglePlayPause = onTogglePlayPause,
                             onNext = onNext,
+                            onPrevious = onPrevious,
                             progressFlow = progressFlow
                         )
                     }
@@ -1154,6 +1161,12 @@ internal fun FloatingBottomDockOverlay(
     }
 }
 
+private enum class MiniPlayerDragAxis {
+    NONE,
+    HORIZONTAL,
+    VERTICAL
+}
+
 @Composable
 internal fun FloatingMiniPlayerPill(
     track: Track,
@@ -1162,11 +1175,28 @@ internal fun FloatingMiniPlayerPill(
     onExpand: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onNext: () -> Unit,
+    onPrevious: () -> Unit = {},
     progressFlow: StateFlow<PlaybackProgress>? = null
 ) {
+    val performanceMode = LocalPerformanceMode.current
+    val haptic = LocalHapticFeedback.current
+    val coroutineScope = rememberCoroutineScope()
+    val horizontalDragOffset = remember { Animatable(0f) }
+
+    val density = LocalDensity.current
+    val horizontalSkipThresholdPx = with(density) { 52.dp.toPx() }
+    val maxDragFeedbackPx = with(density) { 64.dp.toPx() }
+    val verticalExpandThresholdPx = with(density) { 36.dp.toPx() }
+
+    val latestOnExpand by rememberUpdatedState(onExpand)
+    val latestOnNext by rememberUpdatedState(onNext)
+    val latestOnPrevious by rememberUpdatedState(onPrevious)
+    val latestPerfMode by rememberUpdatedState(performanceMode)
+
     val bg = MaterialTheme.colorScheme.background
     val pillBg = MaterialTheme.colorScheme.surfaceContainerHigh.opaqueOver(bg, 0.96f)
     val pillBorder = MaterialTheme.colorScheme.outlineVariant.opaqueOver(bg, 0.85f)
+
     Surface(
         onClick = onExpand,
         shape = CircleShape,
@@ -1187,30 +1217,147 @@ internal fun FloatingMiniPlayerPill(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                ExpressiveArtworkFrame(
-                    track = track,
-                    artworkShape = artworkShape,
-                    isPlaying = isPlaying,
-                    animateScale = false,
-                    decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
-                    shapeOverride = FastListThumbnailShape,
-                    modifier = Modifier.size(44.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = track.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                // Dedicated gesture target covering artwork & track metadata so 48dp buttons remain unobstructed
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .graphicsLayer {
+                            translationX = horizontalDragOffset.value
+                        }
+                        .pointerInput(
+                            horizontalSkipThresholdPx,
+                            maxDragFeedbackPx,
+                            verticalExpandThresholdPx
+                        ) {
+                            var axis = MiniPlayerDragAxis.NONE
+                            var totalX = 0f
+                            var totalY = 0f
+                            var hapticFired = false
+
+                            detectDragGestures(
+                                onDragStart = {
+                                    axis = MiniPlayerDragAxis.NONE
+                                    totalX = 0f
+                                    totalY = 0f
+                                    hapticFired = false
+                                },
+                                onDrag = { change, dragAmount ->
+                                    totalX += dragAmount.x
+                                    totalY += dragAmount.y
+                                    if (axis == MiniPlayerDragAxis.NONE && (abs(totalX) > 6f || abs(totalY) > 6f)) {
+                                        axis = if (abs(totalX) >= abs(totalY)) {
+                                            MiniPlayerDragAxis.HORIZONTAL
+                                        } else {
+                                            MiniPlayerDragAxis.VERTICAL
+                                        }
+                                    }
+
+                                    when (axis) {
+                                        MiniPlayerDragAxis.HORIZONTAL -> {
+                                            change.consume()
+                                            val visualOffset = (totalX * 0.65f)
+                                                .coerceIn(-maxDragFeedbackPx, maxDragFeedbackPx)
+                                            coroutineScope.launch {
+                                                horizontalDragOffset.snapTo(visualOffset)
+                                            }
+                                            if (!hapticFired && abs(totalX) >= horizontalSkipThresholdPx) {
+                                                hapticFired = true
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            }
+                                        }
+
+                                        MiniPlayerDragAxis.VERTICAL -> {
+                                            if (totalY < 0f) {
+                                                change.consume()
+                                                if (!hapticFired && -totalY >= verticalExpandThresholdPx) {
+                                                    hapticFired = true
+                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                }
+                                            }
+                                        }
+
+                                        MiniPlayerDragAxis.NONE -> Unit
+                                    }
+                                },
+                                onDragEnd = {
+                                    when (axis) {
+                                        MiniPlayerDragAxis.HORIZONTAL -> {
+                                            if (totalX <= -horizontalSkipThresholdPx) {
+                                                latestOnNext()
+                                            } else if (totalX >= horizontalSkipThresholdPx) {
+                                                latestOnPrevious()
+                                            }
+                                            coroutineScope.launch {
+                                                if (latestPerfMode) {
+                                                    horizontalDragOffset.snapTo(0f)
+                                                } else {
+                                                    horizontalDragOffset.animateTo(
+                                                        targetValue = 0f,
+                                                        animationSpec = spring(
+                                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                            stiffness = Spring.StiffnessMedium
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        MiniPlayerDragAxis.VERTICAL -> {
+                                            if (-totalY >= verticalExpandThresholdPx) {
+                                                latestOnExpand()
+                                            }
+                                        }
+
+                                        MiniPlayerDragAxis.NONE -> Unit
+                                    }
+                                },
+                                onDragCancel = {
+                                    coroutineScope.launch {
+                                        if (latestPerfMode) {
+                                            horizontalDragOffset.snapTo(0f)
+                                        } else {
+                                            horizontalDragOffset.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                                    stiffness = Spring.StiffnessMedium
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                        .testTag("mini_player_gesture_body"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    ExpressiveArtworkFrame(
+                        track = track,
+                        artworkShape = artworkShape,
+                        isPlaying = isPlaying,
+                        animateScale = false,
+                        decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
+                        shapeOverride = FastListThumbnailShape,
+                        showHairlineBorder = true,
+                        modifier = Modifier.size(44.dp)
                     )
-                    Text(
-                        text = track.artist,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = track.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = track.artist,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
                 FilledIconButton(
                     onClick = onTogglePlayPause,
@@ -1223,7 +1370,7 @@ internal fun FloatingMiniPlayerPill(
                     )
                 ) {
                     Icon(
-                        imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        imageVector = if (isPlaying) CadenceIcons.Pause else Icons.Rounded.PlayArrow,
                         contentDescription = stringResource(
                             if (isPlaying) R.string.action_pause else R.string.action_play
                         ),
@@ -1237,7 +1384,7 @@ internal fun FloatingMiniPlayerPill(
                         .testTag("mini_next_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.SkipNext,
+                        imageVector = CadenceIcons.SkipNext,
                         contentDescription = stringResource(R.string.action_next),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1251,7 +1398,6 @@ internal fun FloatingMiniPlayerPill(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp)
                         .height(2.dp)
                 )
             }
@@ -1260,7 +1406,7 @@ internal fun FloatingMiniPlayerPill(
 }
 
 /**
- * Isolated draw-phase progress bar for [FloatingMiniPlayerPill].
+ * Isolated draw-phase 2.dp hairline progress bar flush along the bottom edge of [FloatingMiniPlayerPill].
  * Collects [progressFlow] strictly inside this tiny leaf and reads state inside Canvas draw phase,
  * guaranteeing 0 recompositions of [FloatingMiniPlayerPill], [FloatingBottomDockOverlay], or [FloatingExpressiveNavDock].
  */
@@ -1272,7 +1418,7 @@ private fun MiniPlayerProgressIndicator(
 ) {
     val progressState = progressFlow.collectAsStateWithLifecycle()
     val activeColor = MaterialTheme.colorScheme.primary
-    val trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.24f)
+    val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
 
     Canvas(modifier = modifier.testTag("mini_player_progress_bar")) {
         val progress = progressState.value
@@ -1284,7 +1430,7 @@ private fun MiniPlayerProgressIndicator(
             start = Offset(0f, y),
             end = Offset(size.width, y),
             strokeWidth = size.height,
-            cap = StrokeCap.Round
+            cap = StrokeCap.Butt
         )
         val fillEnd = size.width * fraction
         if (fillEnd > 0f) {
@@ -1615,9 +1761,9 @@ internal fun FullScreenScanningView(
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = if (scanState.currentFolderName.isNotBlank()) {
-                            Icons.Rounded.FolderOpen
+                            CadenceIcons.FolderOpen
                         } else {
-                            Icons.Rounded.LibraryMusic
+                            CadenceIcons.LibraryMusic
                         },
                         contentDescription = null,
                         modifier = Modifier.size(48.dp)
@@ -1647,7 +1793,7 @@ internal fun FullScreenScanningView(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.FolderOpen,
+                            imageVector = CadenceIcons.FolderOpen,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp)
                         )
