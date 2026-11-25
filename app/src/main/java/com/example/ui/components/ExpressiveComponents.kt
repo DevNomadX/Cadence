@@ -73,6 +73,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
@@ -109,6 +110,7 @@ import com.example.ui.theme.opaqueOver
 import java.io.File
 import java.util.Locale
 import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.sin
 
 @Composable
@@ -131,13 +133,47 @@ internal const val SCRUBBER_UNPLAYED_TRACK_DP = 3f
 internal const val SCRUBBER_THUMB_CORE_DP = 14f
 internal const val SCRUBBER_THUMB_HALO_IDLE_DP = 24f
 internal const val SCRUBBER_THUMB_HALO_DRAG_DP = 30f
+internal const val SCRUBBER_THUMB_LOBE_COUNT = 8
+internal const val SCRUBBER_THUMB_ROTATION_DURATION_MS = 6000
+internal const val SCRUBBER_TOUCH_HEIGHT_DP = 48f
 
 /**
- * Material 3 Expressive organic wavy progress scrubber with circular seek handle.
+ * Builds an expressive multi-lobe scalloped/notched badge path centered at `(0f, 0f)` whose outer lobe
+ * peaks fit cleanly inside [outerRadiusPx]. Pre-computed per radius so the Canvas draw loop performs
+ * zero per-frame trigonometric allocations.
+ */
+internal fun buildScallopedThumbPath(
+    outerRadiusPx: Float,
+    lobes: Int = SCRUBBER_THUMB_LOBE_COUNT,
+    amplitudeFraction: Float = 0.14f,
+    samples: Int = 72
+): Path {
+    val path = Path()
+    val safeRadius = outerRadiusPx.coerceAtLeast(1f)
+    val safeLobes = lobes.coerceAtLeast(3)
+    val clampedAmp = amplitudeFraction.coerceIn(0.04f, 0.25f)
+    val baseRadius = safeRadius / (1f + clampedAmp)
+    val stepRad = (2.0 * PI) / samples
+    for (i in 0..samples) {
+        val theta = i * stepRad
+        val r = baseRadius * (1f + clampedAmp * cos(safeLobes * theta).toFloat())
+        val x = r * cos(theta).toFloat()
+        val y = r * sin(theta).toFloat()
+        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    }
+    path.close()
+    return path
+}
+
+/**
+ * Material 3 Expressive organic wavy progress scrubber with an 8-lobe rotating scalloped seek badge
+ * and a luminous breathing radial glow aura layered behind the translucent halo during playback.
  * Low-end optimized:
- * - Reads [progressProvider] strictly inside Canvas Draw phase (0 recompositions during playback!)
- * - Defers infinite phase, amplitude, and halo-size reads to Draw phase
- * - Respects [LocalPerformanceMode] to eliminate wave/spring work on low-RAM hardware
+ * - Reads [progressProvider] and animation states strictly inside Canvas Draw phase (0 recompositions)
+ * - Runs infinite rotation & glow breathing animations strictly when `isPlaying && isResumed && !performanceMode`,
+ *   freezing the thumb's exact rotation angle with zero idle frames when paused
+ * - Pre-builds the 8-lobe scalloped Path once per radius (0 per-frame Path allocations)
+ * - Preserves 48.dp touch hit-slop and crisp tap/drag-to-seek precision
  */
 @Composable
 fun WavyExpressiveSlider(
@@ -160,6 +196,8 @@ fun WavyExpressiveSlider(
 
     val effectiveWavy = wavyEnabled && !performanceMode
     val shouldAnimateWave = isPlaying && effectiveWavy && isResumed
+    val shouldAnimateThumb = isPlaying && isResumed && !performanceMode
+
     val waveAmplitudeState: State<Float> = if (performanceMode) {
         remember { mutableFloatStateOf(0f) }
     } else {
@@ -188,6 +226,17 @@ fun WavyExpressiveSlider(
         )
     }
 
+    // Smoothly fades the luminous glow aura in when playing and settles cleanly back to static halo when paused
+    val glowVisibilityState: State<Float> = if (performanceMode) {
+        remember { mutableFloatStateOf(0f) }
+    } else {
+        animateFloatAsState(
+            targetValue = if (isPlaying) 1f else 0f,
+            animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
+            label = "scrubber_glow_visibility"
+        )
+    }
+
     val phaseState: State<Float> = if (shouldAnimateWave) {
         val infiniteTransition = rememberInfiniteTransition(label = "wavy_scrubber_phase")
         infiniteTransition.animateFloat(
@@ -203,9 +252,54 @@ fun WavyExpressiveSlider(
         remember { mutableFloatStateOf(0f) }
     }
 
+    // Smooth 6s/rev thumb rotation + breathing glow aura — active ONLY while playing, freezing angle when paused
+    val frozenThumbAngleDeg = remember { mutableFloatStateOf(0f) }
+    val rotationBaseAngleDeg = remember(shouldAnimateThumb) { frozenThumbAngleDeg.floatValue }
+    val thumbRotationDeltaState: State<Float>
+    val glowPulseScaleState: State<Float>
+    val glowPulseAlphaState: State<Float>
+    if (shouldAnimateThumb) {
+        val thumbTransition = rememberInfiniteTransition(label = "scrubber_thumb_motion")
+        thumbRotationDeltaState = thumbTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = SCRUBBER_THUMB_ROTATION_DURATION_MS, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "thumb_rotation_deg"
+        )
+        glowPulseScaleState = thumbTransition.animateFloat(
+            initialValue = 1.0f,
+            targetValue = 1.28f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1800, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "thumb_glow_scale"
+        )
+        glowPulseAlphaState = thumbTransition.animateFloat(
+            initialValue = 0.84f,
+            targetValue = 1.0f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1800, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "thumb_glow_alpha"
+        )
+    } else {
+        thumbRotationDeltaState = remember { mutableFloatStateOf(0f) }
+        glowPulseScaleState = remember { mutableFloatStateOf(1.0f) }
+        glowPulseAlphaState = remember { mutableFloatStateOf(1.0f) }
+    }
+
     val wavePath = remember { Path() }
     val activeStrokePx = with(density) { 3.8.dp.toPx() }
     val unplayedStrokePx = with(density) { SCRUBBER_UNPLAYED_TRACK_DP.dp.toPx() }
+    val coreRadiusPx = with(density) { (SCRUBBER_THUMB_CORE_DP / 2f).dp.toPx() }
+    val scallopedThumbPath = remember(coreRadiusPx) {
+        buildScallopedThumbPath(outerRadiusPx = coreRadiusPx, lobes = SCRUBBER_THUMB_LOBE_COUNT)
+    }
     val waveStroke = remember(activeStrokePx) {
         Stroke(
             width = activeStrokePx,
@@ -217,11 +311,11 @@ fun WavyExpressiveSlider(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(36.dp)
+            .height(SCRUBBER_TOUCH_HEIGHT_DP.dp)
             .testTag("playback_scrubber")
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
-                    val horizontalPad = 15.dp.toPx()
+                    val horizontalPad = 18.dp.toPx()
                     val usable = (size.width - horizontalPad * 2f).coerceAtLeast(1f)
                     val fraction = ((offset.x - horizontalPad) / usable).coerceIn(0f, 1f)
                     latestOnSeek(fraction)
@@ -231,13 +325,13 @@ fun WavyExpressiveSlider(
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
                         isDragging = true
-                        val horizontalPad = 15.dp.toPx()
+                        val horizontalPad = 18.dp.toPx()
                         val usable = (size.width - horizontalPad * 2f).coerceAtLeast(1f)
                         dragFraction = ((offset.x - horizontalPad) / usable).coerceIn(0f, 1f)
                     },
                     onHorizontalDrag = { change, _ ->
                         change.consume()
-                        val horizontalPad = 15.dp.toPx()
+                        val horizontalPad = 18.dp.toPx()
                         val usable = (size.width - horizontalPad * 2f).coerceAtLeast(1f)
                         dragFraction = ((change.position.x - horizontalPad) / usable).coerceIn(0f, 1f)
                     },
@@ -255,11 +349,11 @@ fun WavyExpressiveSlider(
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(32.dp)
+                .height(SCRUBBER_TOUCH_HEIGHT_DP.dp)
                 .testTag("playback_scrubber_canvas")
         ) {
             val displayFraction = if (isDragging) dragFraction else progressProvider().coerceIn(0f, 1f)
-            val horizontalPad = 15.dp.toPx()
+            val horizontalPad = 18.dp.toPx()
             val startX = horizontalPad
             val endX = size.width - horizontalPad
             val trackWidth = (endX - startX).coerceAtLeast(1f)
@@ -268,7 +362,7 @@ fun WavyExpressiveSlider(
             val waveAmplitudeFactor = waveAmplitudeState.value
             val phase = phaseState.value
             val haloRadiusPx = (haloDiameterDpState.value / 2f).dp.toPx()
-            val coreRadiusPx = (SCRUBBER_THUMB_CORE_DP / 2f).dp.toPx()
+            val glowVisibility = glowVisibilityState.value
 
             // Unplayed straight 3dp track rail (right side of seek handle)
             if (activeEndX < endX) {
@@ -281,7 +375,7 @@ fun WavyExpressiveSlider(
                 )
             }
 
-            // Played smooth sinusoidal wavy track (left side up to circular handle center)
+            // Played smooth sinusoidal wavy track (left side up to scalloped badge center)
             if (activeEndX > startX) {
                 if (waveAmplitudeFactor <= 0.01f) {
                     drawLine(
@@ -325,18 +419,50 @@ fun WavyExpressiveSlider(
                 }
             }
 
-            // Circular seek handle: 24dp translucent halo (expands to 30dp on drag) + 14dp solid primary core
             val thumbCenter = Offset(activeEndX, centerY)
+
+            // 1. Soft breathing radial glow aura layered around the translucent halo when playing
+            if (glowVisibility > 0.01f) {
+                val glowScale = glowPulseScaleState.value
+                val glowAlpha = glowVisibility * glowPulseAlphaState.value
+                val glowRadiusPx = (haloRadiusPx * 1.45f * glowScale).coerceAtLeast(haloRadiusPx + 1f)
+                val glowBrush = Brush.radialGradient(
+                    0.0f to primaryColor.copy(alpha = 0.42f * glowAlpha),
+                    0.52f to primaryColor.copy(alpha = 0.16f * glowAlpha),
+                    1.0f to Color.Transparent,
+                    center = thumbCenter,
+                    radius = glowRadiusPx
+                )
+                drawCircle(
+                    brush = glowBrush,
+                    radius = glowRadiusPx,
+                    center = thumbCenter
+                )
+            }
+
+            // 2. Preserved translucent circular halo ring (24dp idle, expands to 30dp on drag)
             drawCircle(
                 color = thumbHaloColor,
                 radius = haloRadiusPx,
                 center = thumbCenter
             )
-            drawCircle(
-                color = primaryColor,
-                radius = coreRadiusPx,
-                center = thumbCenter
-            )
+
+            // 3. Rotating 8-lobe scalloped badge (6s/rev while playing, frozen angle when paused)
+            val currentAngleDeg = if (shouldAnimateThumb) {
+                val nextAngle = (rotationBaseAngleDeg + thumbRotationDeltaState.value) % 360f
+                frozenThumbAngleDeg.floatValue = nextAngle
+                nextAngle
+            } else {
+                frozenThumbAngleDeg.floatValue
+            }
+            translate(left = thumbCenter.x, top = thumbCenter.y) {
+                rotate(degrees = currentAngleDeg, pivot = Offset.Zero) {
+                    drawPath(
+                        path = scallopedThumbPath,
+                        color = primaryColor
+                    )
+                }
+            }
         }
     }
 }

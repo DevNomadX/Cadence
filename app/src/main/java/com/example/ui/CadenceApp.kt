@@ -11,9 +11,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode as AnimRepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
@@ -63,7 +65,6 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
@@ -73,6 +74,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.annotation.Keep
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -95,7 +97,9 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -106,16 +110,25 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlin.math.sin
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.R
@@ -180,10 +193,26 @@ fun CadenceApp(
     viewModel: PlayerViewModel = viewModel()
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val themePrefs by viewModel.themeState.collectAsStateWithLifecycle()
     val userProfile by viewModel.userProfileState.collectAsStateWithLifecycle()
     val nowPlaying by viewModel.nowPlayingState.collectAsStateWithLifecycle()
     val hasDrillDown by viewModel.hasLibraryDrillDown.collectAsStateWithLifecycle()
+
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.onAppResumed()
+                Lifecycle.Event.ON_PAUSE -> viewModel.onAppPaused()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.onAppPaused()
+        }
+    }
 
     var activeTab by rememberSaveable(stateSaver = CadenceTabSaver) { mutableStateOf(CadenceTab.HOME) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -1043,6 +1072,7 @@ private fun SettingsTabHost(
     val audioSettings by viewModel.audioSettingsState.collectAsStateWithLifecycle()
     val savedFolders by viewModel.savedFoldersState.collectAsStateWithLifecycle()
     val minDurationSec by viewModel.minTrackDurationSecState.collectAsStateWithLifecycle()
+    val scanAllFolders by viewModel.scanAllFoldersState.collectAsStateWithLifecycle()
     SettingsScreen(
         themePrefs = themePrefs,
         audioSettings = audioSettings,
@@ -1067,7 +1097,9 @@ private fun SettingsTabHost(
         onSelectAudioFocusBehavior = viewModel::setAudioFocusBehavior,
         onToggleAcousticEnhance = viewModel::setAcousticEnhanceEnabled,
         userDisplayName = userDisplayName,
-        onUpdateDisplayName = viewModel::setUserDisplayName
+        onUpdateDisplayName = viewModel::setUserDisplayName,
+        scanAllFolders = scanAllFolders,
+        onToggleScanAllFolders = viewModel::setScanAllFoldersEnabled
     )
 }
 
@@ -1810,36 +1842,43 @@ internal fun FullScreenScanningView(
             Spacer(Modifier.height(4.dp))
 
             val progress = scanState.progressFraction
-            if (progress != null) {
-                LinearProgressIndicator(
-                    progress = { progress },
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    strokeCap = StrokeCap.Round,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(8.dp)
-                        .testTag("scanning_progress_bar")
-                )
-            } else {
-                LinearProgressIndicator(
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    strokeCap = StrokeCap.Round,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(8.dp)
-                        .testTag("scanning_progress_bar")
-                )
-            }
-
-            Text(
-                text = counterText,
-                style = MaterialTheme.typography.labelLarge.copy(fontFamily = MonoFontFamily),
-                color = MaterialTheme.colorScheme.primary,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.testTag("scanning_counter_text")
+            ExpressiveWavyScanProgressIndicator(
+                progress = progress,
+                performanceMode = performanceMode,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(20.dp)
+                    .testTag("scanning_progress_bar")
             )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = counterText,
+                    style = MaterialTheme.typography.labelLarge.copy(fontFamily = MonoFontFamily),
+                    color = MaterialTheme.colorScheme.primary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.testTag("scanning_counter_text")
+                )
+                if (progress != null) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier
+                            .semantics(mergeDescendants = true) {}
+                            .testTag("scanning_percent_badge")
+                    ) {
+                        Text(
+                            text = "${(progress.coerceIn(0f, 1f) * 100f).roundToInt()}%",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
 
             Text(
                 text = detailText,
@@ -1851,6 +1890,154 @@ internal fun FullScreenScanningView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("scanning_detail_text")
+            )
+        }
+    }
+}
+
+/**
+ * Material 3 Expressive animated sinusoidal wavy progress indicator for startup & folder scans.
+ * Draws the `primary` travelling sine wave over the `surfaceContainerHighest` track directly in
+ * the Canvas draw phase so frame ticks never trigger Compose relayout or recomposition.
+ */
+@Composable
+internal fun ExpressiveWavyScanProgressIndicator(
+    progress: Float?,
+    performanceMode: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val waveColor = MaterialTheme.colorScheme.primary
+    val waveHaloColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+    val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+
+    val animatedProgress by animateFloatAsState(
+        targetValue = (progress ?: 0f).coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing),
+        label = "scan_wavy_progress"
+    )
+
+    val phaseState = if (performanceMode) {
+        remember { mutableFloatStateOf(0f) }
+    } else {
+        val transition = rememberInfiniteTransition(label = "scan_wavy_phase")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2.0 * PI).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1_150, easing = LinearEasing),
+                repeatMode = AnimRepeatMode.Restart
+            ),
+            label = "scan_wave_phase_rad"
+        )
+    }
+
+    val indeterminateSweepState = if (progress == null) {
+        val transition = rememberInfiniteTransition(label = "scan_wavy_indeterminate")
+        transition.animateFloat(
+            initialValue = -0.35f,
+            targetValue = 1.05f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1_450, easing = FastOutSlowInEasing),
+                repeatMode = AnimRepeatMode.Restart
+            ),
+            label = "scan_wave_indeterminate_head"
+        )
+    } else {
+        null
+    }
+
+    val wavePath = remember { Path() }
+
+    Canvas(
+        modifier = modifier.semantics {
+            progressBarRangeInfo = if (progress != null) {
+                ProgressBarRangeInfo(progress.coerceIn(0f, 1f), 0f..1f)
+            } else {
+                ProgressBarRangeInfo.Indeterminate
+            }
+        }
+    ) {
+        val w = size.width
+        val h = size.height
+        if (w <= 0f || h <= 0f) return@Canvas
+
+        val strokePx = 4.dp.toPx()
+        val padX = strokePx * 0.6f
+        val usableW = (w - padX * 2f).coerceAtLeast(1f)
+        val centerY = h * 0.5f
+        val amplitude = ((h - strokePx * 2f) * 0.36f).coerceIn(2.dp.toPx(), 4.5.dp.toPx())
+        val wavelength = 24.dp.toPx().coerceAtLeast(12f)
+        val gapPx = 5.dp.toPx()
+        val phase = phaseState.value
+
+        val segStart: Float
+        val segEnd: Float
+        if (progress != null) {
+            segStart = padX
+            segEnd = padX + (usableW * animatedProgress)
+        } else {
+            val headFrac = indeterminateSweepState?.value ?: 0.3f
+            val tailFrac = (headFrac + 0.38f).coerceAtMost(1f)
+            segStart = padX + (usableW * headFrac.coerceAtLeast(0f))
+            segEnd = padX + (usableW * tailFrac.coerceAtLeast(0f))
+        }
+
+        // Draw unplayed flat track segments cleanly around the active wave segment
+        if (progress != null) {
+            val trackStart = (segEnd + gapPx).coerceAtLeast(padX)
+            if (trackStart < w - padX) {
+                drawLine(
+                    color = trackColor,
+                    start = Offset(trackStart, centerY),
+                    end = Offset(w - padX, centerY),
+                    strokeWidth = strokePx,
+                    cap = StrokeCap.Round
+                )
+            }
+        } else {
+            drawLine(
+                color = trackColor,
+                start = Offset(padX, centerY),
+                end = Offset(w - padX, centerY),
+                strokeWidth = strokePx,
+                cap = StrokeCap.Round
+            )
+        }
+
+        // Draw active animated sinusoidal wave segment
+        val activeSpan = segEnd - segStart
+        if (activeSpan > 2f) {
+            wavePath.reset()
+            val stepPx = 2.dp.toPx().coerceAtLeast(2f)
+            var x = segStart
+            var first = true
+            while (x <= segEnd) {
+                // Smooth edge taper so wave endpoints join cleanly without harsh vertical jumps
+                val distFromEdge = minOf(x - segStart, segEnd - x)
+                val taper = (distFromEdge / (6.dp.toPx())).coerceIn(0f, 1f)
+                val angle = ((x - padX) / wavelength) * (2.0 * PI).toFloat() - phase
+                val y = centerY + (sin(angle.toDouble()).toFloat() * amplitude * taper)
+                if (first) {
+                    wavePath.moveTo(x, y)
+                    first = false
+                } else {
+                    wavePath.lineTo(x, y)
+                }
+                if (x == segEnd) break
+                x = (x + stepPx).coerceAtMost(segEnd)
+            }
+
+            if (!performanceMode) {
+                drawPath(
+                    path = wavePath,
+                    color = waveHaloColor,
+                    style = Stroke(width = strokePx * 1.9f, cap = StrokeCap.Round)
+                )
+            }
+            drawPath(
+                path = wavePath,
+                color = waveColor,
+                style = Stroke(width = strokePx, cap = StrokeCap.Round)
             )
         }
     }

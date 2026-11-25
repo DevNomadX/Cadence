@@ -103,9 +103,22 @@ class LibraryRepository(
                 .forEach { favId -> trackDao.setFavorite(favId, true) }
             preferencesRepository.markLegacyMigrationDone()
         }
+    }
 
-        // Non-blocking background backfill for migrated v3 -> v4 tracks lacking persisted mood tags
-        backfillMissingTrackIntelligence()
+    suspend fun getSavedFoldersOnce() = withContext(Dispatchers.IO) {
+        folderDao.getSavedFoldersOnce()
+    }
+
+    suspend fun runBackgroundEnrichment(): Int = scanner.runStage2BackgroundEnrichment()
+
+    suspend fun pruneAllFolderTracksIfNoScope(): Int = withContext(Dispatchers.IO) {
+        val toRemove = trackDao.getAllTracksOnce()
+            .filter { it.isUserImported && it.folderPath != "imported" }
+            .map { it.id }
+        if (toRemove.isNotEmpty()) {
+            trackDao.syncFolderTracks(upserts = emptyList(), deleteIds = toRemove)
+        }
+        toRemove.size
     }
 
     private suspend fun backfillMissingTrackIntelligence() = withContext(Dispatchers.IO) {

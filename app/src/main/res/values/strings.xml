@@ -109,7 +109,6 @@
     <string name="scanning_library_subtitle">Indexing metadata &amp; artwork locally</string>
     <string name="scanning_discovering">Discovering audio files…</string>
     <string name="discover_title">Discover</string>
-    <string name="discover_subtitle">Personalized mixes &amp; hidden gems from your local library</string>
     <string name="discover_refresh">Refresh suggestions</string>
     <string name="discover_tune_mix">Tune Mix</string>
     <string name="discover_save_mix">Save Mix</string>
@@ -119,6 +118,7 @@
     <string name="discover_error_fallback">We hit a snag building your local mixes. Tap retry to generate fresh recommendations.</string>
     <string name="action_retry">Retry</string>
     <string name="badge_hifi_short">HI-FI</string>
+    <string name="badge_hifi_audio">HI-FI AUDIO</string>
     <string name="badge_hifi_cd">High-fidelity audio quality: %1$s</string>
     <string name="nav_home">Home</string>
     <string name="home_recently_played">Recently Played</string>
@@ -174,4 +174,14 @@
     <string name="discover_mood_track_count_singular">%1$d track</string>
     <string name="discover_mood_track_count_plural">%1$d tracks</string>
     <string name="discover_mood_play_cd">Play %1$s smart playlist</string>
+    <string name="settings_all_folders_title">All Folders</string>
+    <string name="settings_all_folders_desc">Scan every music folder on this device instead of only your selected folders</string>
+    <string name="home_daily_picks_title">Daily Picks</string>
+    <string name="home_daily_picks_subtitle">Updated daily for your taste</string>
+    <string name="badge_lossless_short">LOSSLESS</string>
+    <string name="discover_routine_title">For This Moment</string>
+    <string name="discover_routine_subtitle">Context-aware routine mixes tuned to your local time &amp; taste</string>
+    <string name="discover_routine_active_now">ACTIVE NOW</string>
+    <string name="discover_routine_play_mix">Play Mix</string>
+    <string name="discover_routine_inspect_tune">Tune Mix</string>
 </resources>

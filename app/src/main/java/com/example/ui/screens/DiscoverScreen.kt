@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -67,6 +68,8 @@ import com.example.data.intelligence.DiscoverSection
 import com.example.data.intelligence.DiscoverTuneConfig
 import com.example.data.intelligence.ListeningInsights
 import com.example.data.intelligence.MoodSmartPlaylist
+import com.example.data.intelligence.RoutineMix
+import com.example.data.intelligence.RoutineMixType
 import com.example.data.intelligence.SmartMoodTag
 import com.example.data.toStableMap
 import com.example.ui.components.AudioPulseBars
@@ -77,6 +80,7 @@ import com.example.ui.components.SmartPlaylistSheetContent
 import com.example.ui.icons.CadenceIcons
 import com.example.ui.player.DiscoverUiState
 import com.example.ui.player.SmartPlaylistUiState
+import com.example.ui.theme.DisplayFontFamily
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.opaqueOver
@@ -156,85 +160,71 @@ fun DiscoverScreen(
                 .widthIn(max = 720.dp)
                 .testTag("discover_list"),
             contentPadding = PaddingValues(
-                top = 12.dp,
+                top = 8.dp,
                 bottom = 180.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(22.dp)
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
             item(key = "discover_header", contentType = "discover_header") {
-                Column(
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Text(
+                        text = stringResource(R.string.discover_title),
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp)
+                            .testTag("discover_header_title")
+                    )
+
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = stringResource(R.string.discover_title),
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.onBackground,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
+                        FilledTonalIconButton(
+                            onClick = onRefreshDiscover,
+                            enabled = uiState.sections.isNotEmpty(),
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
                             modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 8.dp)
-                                .testTag("discover_header_title")
-                        )
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .size(48.dp)
+                                .testTag("discover_refresh_button")
                         ) {
-                            FilledTonalIconButton(
-                                onClick = onRefreshDiscover,
-                                enabled = uiState.sections.isNotEmpty(),
-                                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                ),
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .testTag("discover_refresh_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Refresh,
-                                    contentDescription = stringResource(R.string.discover_refresh),
-                                    modifier = Modifier.size(21.dp)
-                                )
-                            }
+                            Icon(
+                                imageVector = Icons.Rounded.Refresh,
+                                contentDescription = stringResource(R.string.discover_refresh),
+                                modifier = Modifier.size(21.dp)
+                            )
+                        }
 
-                            FilledTonalIconButton(
-                                onClick = onOpenSettings,
-                                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                    contentColor = MaterialTheme.colorScheme.onSurface
-                                ),
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .testTag("discover_settings_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Settings,
-                                    contentDescription = stringResource(R.string.action_settings),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
+                        FilledTonalIconButton(
+                            onClick = onOpenSettings,
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("discover_settings_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Settings,
+                                contentDescription = stringResource(R.string.action_settings),
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
-
-                    Text(
-                        text = stringResource(R.string.discover_subtitle),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth()
-                    )
                 }
             }
 
@@ -255,6 +245,27 @@ fun DiscoverScreen(
                     )
                 }
             } else {
+                val activeRoutineMixes = uiState.routineMixes.filter { it.tracks.isNotEmpty() }
+                if (activeRoutineMixes.isNotEmpty()) {
+                    item(key = "discover_routine_mixes", contentType = "discover_routine_mixes") {
+                        DiscoverRoutineMixesShelf(
+                            routineMixes = activeRoutineMixes,
+                            artworkShape = artworkShape,
+                            onPlayRoutineMix = { mix -> onPlaySection(mix.tracks) },
+                            onInspectInTuneMix = { mix ->
+                                val cfg = mix.tuneConfig
+                                triggerTunedGeneration(
+                                    cfg.selectedMood,
+                                    false,
+                                    cfg.energyFilter,
+                                    cfg.discoveryBalance
+                                )
+                                showSmartMixSheet = true
+                            }
+                        )
+                    }
+                }
+
                 val activeMoodPlaylists = uiState.moodPlaylists.filter { it.tracks.isNotEmpty() }
                 if (activeMoodPlaylists.isNotEmpty()) {
                     item(key = "discover_mood_playlists", contentType = "discover_mood_playlists") {
@@ -482,6 +493,306 @@ fun DiscoverScreen(
                     onSaveMixAsPlaylist(name, ids)
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun DiscoverRoutineMixesShelf(
+    routineMixes: List<RoutineMix>,
+    artworkShape: ExpressiveArtworkShape,
+    onPlayRoutineMix: (RoutineMix) -> Unit,
+    onInspectInTuneMix: (RoutineMix) -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("discover_routine_mixes_section"),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.discover_routine_title),
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontFamily = DisplayFontFamily,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("discover_routine_mixes_header")
+            )
+            Text(
+                text = stringResource(R.string.discover_routine_subtitle),
+                style = MaterialTheme.typography.bodySmall,
+                color = colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("discover_routine_mixes_row")
+        ) {
+            items(
+                items = routineMixes,
+                key = { mix -> "routine_${mix.type.id}" },
+                contentType = { "discover_routine_card" }
+            ) { mix ->
+                DiscoverRoutineMixCard(
+                    mix = mix,
+                    artworkShape = artworkShape,
+                    onPlayMix = { onPlayRoutineMix(mix) },
+                    onInspectTuneMix = { onInspectInTuneMix(mix) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoverRoutineMixCard(
+    mix: RoutineMix,
+    artworkShape: ExpressiveArtworkShape,
+    onPlayMix: () -> Unit,
+    onInspectTuneMix: () -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val high = colorScheme.surfaceContainerHigh
+    val cardColor = remember(mix.type, mix.isActiveNow, colorScheme) {
+        if (mix.isActiveNow) {
+            colorScheme.primaryContainer.opaqueOver(high, 0.28f)
+        } else {
+            when (mix.type) {
+                RoutineMixType.LATE_NIGHT_WIND_DOWN -> colorScheme.secondary.opaqueOver(high, 0.12f)
+                RoutineMixType.MORNING_FOCUS -> colorScheme.tertiary.opaqueOver(high, 0.12f)
+                RoutineMixType.AFTERNOON_MOMENTUM -> colorScheme.primary.opaqueOver(high, 0.10f)
+                RoutineMixType.EVENING_UNWIND -> colorScheme.secondary.opaqueOver(high, 0.11f)
+                RoutineMixType.WEEKEND_ENERGY -> colorScheme.tertiary.opaqueOver(high, 0.14f)
+            }
+        }
+    }
+    val borderColor = if (mix.isActiveNow) {
+        colorScheme.primary.copy(alpha = 0.28f)
+    } else {
+        colorScheme.outlineVariant.copy(alpha = 0.28f)
+    }
+    val badgeBg = remember(mix.isActiveNow, cardColor, colorScheme) {
+        if (mix.isActiveNow) {
+            colorScheme.primary.opaqueOver(cardColor, 0.16f)
+        } else {
+            colorScheme.surfaceContainerHighest.opaqueOver(cardColor, 0.92f)
+        }
+    }
+    val routineIcon = when (mix.type) {
+        RoutineMixType.LATE_NIGHT_WIND_DOWN -> CadenceIcons.NightsStay
+        RoutineMixType.MORNING_FOCUS -> CadenceIcons.LightMode
+        RoutineMixType.AFTERNOON_MOMENTUM -> CadenceIcons.Waves
+        RoutineMixType.EVENING_UNWIND -> CadenceIcons.Spa
+        RoutineMixType.WEEKEND_ENERGY -> CadenceIcons.Bolt
+    }
+    val leadTrack = mix.tracks.firstOrNull()
+    val trackCountText = if (mix.tracks.size == 1) {
+        stringResource(R.string.discover_mood_track_count_singular, mix.tracks.size)
+    } else {
+        stringResource(R.string.discover_mood_track_count_plural, mix.tracks.size)
+    }
+
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = cardColor,
+        border = BorderStroke(1.dp, borderColor),
+        modifier = Modifier
+            .width(278.dp)
+            .testTag("discover_routine_card_${mix.type.id}")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Top context strip: Routine icon + Active Now / Time Window pill + Track count
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (mix.isActiveNow) colorScheme.primary else colorScheme.secondaryContainer,
+                    contentColor = if (mix.isActiveNow) colorScheme.onPrimary else colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = routineIcon,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = CircleShape,
+                    color = badgeBg,
+                    border = BorderStroke(
+                        1.dp,
+                        if (mix.isActiveNow) colorScheme.primary.copy(alpha = 0.28f) else colorScheme.outlineVariant.copy(alpha = 0.30f)
+                    ),
+                    modifier = Modifier.testTag("discover_routine_badge_${mix.type.id}")
+                ) {
+                    Text(
+                        text = if (mix.isActiveNow) {
+                            stringResource(R.string.discover_routine_active_now)
+                        } else {
+                            mix.timeWindowLabel
+                        },
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = MonoFontFamily,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        color = if (mix.isActiveNow) colorScheme.primary else colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                Text(
+                    text = trackCountText,
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+
+            // Middle content: Lead track artwork + Title & Routine description
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (leadTrack != null) {
+                    ExpressiveArtworkFrame(
+                        track = leadTrack,
+                        artworkShape = artworkShape,
+                        isPlaying = false,
+                        animateScale = false,
+                        decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
+                        shapeOverride = RoundedCornerShape(14.dp),
+                        showHairlineBorder = true,
+                        modifier = Modifier.size(54.dp)
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        text = mix.title,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontFamily = DisplayFontFamily,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        color = colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("discover_routine_title_${mix.type.id}")
+                    )
+                    Text(
+                        text = mix.subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Bottom one-tap actions: Play Mix + Inspect in Tune Mix
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = colorScheme.primary,
+                    contentColor = colorScheme.onPrimary,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onPlayMix)
+                        .testTag("discover_routine_play_${mix.type.id}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = stringResource(R.string.discover_routine_play_mix),
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = CircleShape,
+                    color = colorScheme.surfaceContainerHighest.opaqueOver(cardColor, 0.94f),
+                    contentColor = colorScheme.onSurface,
+                    border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onInspectTuneMix)
+                        .testTag("discover_routine_tune_${mix.type.id}")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = CadenceIcons.Tune,
+                            contentDescription = null,
+                            tint = colorScheme.primary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = stringResource(R.string.discover_routine_inspect_tune),
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+            }
         }
     }
 }

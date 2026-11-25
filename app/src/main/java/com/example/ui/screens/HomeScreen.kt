@@ -1,19 +1,10 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -22,9 +13,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,7 +32,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
@@ -51,38 +44,32 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
-import com.example.data.AudioQualityTier
 import com.example.data.LibraryCategory
 import com.example.data.StableList
 import com.example.data.Track
-import com.example.data.formatDuration
 import com.example.data.intelligence.MoodSmartPlaylist
 import com.example.data.intelligence.SmartMoodTag
 import com.example.playback.PlaybackProgress
@@ -93,44 +80,39 @@ import com.example.ui.icons.CadenceIcons
 import com.example.ui.player.HomeUiState
 import com.example.ui.theme.DisplayFontFamily
 import com.example.ui.theme.ExpressiveArtworkShape
+import com.example.ui.theme.LocalPerformanceMode
 import com.example.ui.theme.MonoFontFamily
+import com.example.ui.theme.ScallopedCircleShape
+import com.example.ui.theme.SoftCloverShape
+import com.example.ui.theme.SuperellipseSquircleShape
 import com.example.ui.theme.opaqueOver
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
+import android.os.Build
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import java.time.LocalTime
 import java.util.Calendar
-import kotlin.math.PI
-import kotlin.math.sin
+import kotlin.math.abs
 import kotlin.random.Random
 
 private val IdleHomeProgressFlow: StateFlow<PlaybackProgress> = MutableStateFlow(PlaybackProgress())
 
-private val HeroArtworkShape = RoundedCornerShape(20.dp)
-private val RecentArtworkShape = RoundedCornerShape(20.dp)
+private val BentoTileShape = RoundedCornerShape(22.dp)
+private val DailyPickCoverShape = RoundedCornerShape(20.dp)
+private val GalleryCoverShape = RoundedCornerShape(24.dp)
+private val MoodCardShape = RoundedCornerShape(24.dp)
 private val MoodArtworkShape = RoundedCornerShape(16.dp)
-private val LibraryCardShape = RoundedCornerShape(24.dp)
-private val LibraryIconContainerShape = RoundedCornerShape(16.dp)
 
-@Immutable
-internal data class HomeHeroColors(
-    val topColor: Color,
-    val bottomColor: Color,
-    val cardBorder: Color,
-    val pillContainer: Color,
-    val pillBorder: Color,
-    val pulseTint: Color,
-    val titleColor: Color,
-    val artistColor: Color,
-    val badgeTextColor: Color,
-    val timestampColor: Color,
-    val playButtonContainer: Color,
-    val playButtonContent: Color,
-    val wavePlayedColor: Color,
-    val waveHaloColor: Color,
-    val waveUnplayedColor: Color,
-    val artworkBorderColor: Color
-)
+// Expressive geometric icon badge shapes for the 2x2 Bento Library Grid
+private val FavoritesBadgeShape = ScallopedCircleShape(lobes = 10, amplitudeFraction = 0.06f)
+private val TopRotationBadgeShape = SoftCloverShape(amplitudeFraction = 0.115f)
+private val NewAddsBadgeShape = SuperellipseSquircleShape(exponent = 3.2f)
+private val ShuffleBadgeShape = CircleShape
 
 @Immutable
 internal data class HomeLibraryCardPalette(
@@ -151,66 +133,45 @@ internal data class HomeLibraryGridColors(
     val shuffleAll: HomeLibraryCardPalette
 )
 
-internal fun resolveHomeHeroColors(colorScheme: ColorScheme): HomeHeroColors {
-    val topColor = colorScheme.primaryContainer.opaqueOver(colorScheme.surfaceContainerHigh, 0.94f)
-    val bottomColor = colorScheme.primaryContainer.opaqueOver(colorScheme.surfaceContainer, 0.82f)
-    return HomeHeroColors(
-        topColor = topColor,
-        bottomColor = bottomColor,
-        cardBorder = colorScheme.primary.copy(alpha = 0.22f),
-        pillContainer = colorScheme.surface.opaqueOver(topColor, 0.28f),
-        pillBorder = colorScheme.primary.copy(alpha = 0.22f),
-        pulseTint = colorScheme.primary,
-        titleColor = colorScheme.onPrimaryContainer,
-        artistColor = colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
-        badgeTextColor = colorScheme.onPrimaryContainer,
-        timestampColor = colorScheme.onPrimaryContainer,
-        playButtonContainer = colorScheme.primary,
-        playButtonContent = colorScheme.onPrimary,
-        wavePlayedColor = colorScheme.primary,
-        waveHaloColor = colorScheme.primary.copy(alpha = 0.22f),
-        waveUnplayedColor = colorScheme.onPrimaryContainer.opaqueOver(bottomColor, 0.24f),
-        artworkBorderColor = colorScheme.onPrimaryContainer.copy(alpha = 0.14f)
-    )
-}
-
 internal fun resolveHomeLibraryGridColors(colorScheme: ColorScheme): HomeLibraryGridColors {
+    val high = colorScheme.surfaceContainerHigh
+    val mid = colorScheme.surfaceContainer
     val bg = colorScheme.background
-    val low = colorScheme.surfaceContainerLow
-    val shuffleTop = colorScheme.surfaceContainerHighest.opaqueOver(bg, 0.98f)
+    val calmBorder = colorScheme.outlineVariant.copy(alpha = 0.25f)
+    val shuffleTop = colorScheme.surfaceContainerHighest.opaqueOver(high, 0.72f)
     val shuffleBottom = colorScheme.surfaceContainerHigh.opaqueOver(bg, 0.98f)
     return HomeLibraryGridColors(
         favorites = HomeLibraryCardPalette(
-            topColor = colorScheme.primaryContainer.opaqueOver(bg, 0.96f),
-            bottomColor = colorScheme.primaryContainer.opaqueOver(low, 0.86f),
-            borderColor = colorScheme.primary.copy(alpha = 0.18f),
+            topColor = colorScheme.primary.opaqueOver(high, 0.12f),
+            bottomColor = colorScheme.primary.opaqueOver(mid, 0.10f),
+            borderColor = calmBorder,
             iconContainerColor = colorScheme.primary,
             iconTint = colorScheme.onPrimary,
-            titleColor = colorScheme.onPrimaryContainer,
-            subtitleColor = colorScheme.onPrimaryContainer.copy(alpha = 0.76f)
+            titleColor = colorScheme.onSurface,
+            subtitleColor = colorScheme.onSurfaceVariant
         ),
         topRotation = HomeLibraryCardPalette(
-            topColor = colorScheme.tertiaryContainer.opaqueOver(bg, 0.96f),
-            bottomColor = colorScheme.tertiaryContainer.opaqueOver(low, 0.86f),
-            borderColor = colorScheme.tertiary.copy(alpha = 0.18f),
+            topColor = colorScheme.tertiary.opaqueOver(high, 0.12f),
+            bottomColor = colorScheme.tertiary.opaqueOver(mid, 0.10f),
+            borderColor = calmBorder,
             iconContainerColor = colorScheme.tertiary,
             iconTint = colorScheme.onTertiary,
-            titleColor = colorScheme.onTertiaryContainer,
-            subtitleColor = colorScheme.onTertiaryContainer.copy(alpha = 0.76f)
+            titleColor = colorScheme.onSurface,
+            subtitleColor = colorScheme.onSurfaceVariant
         ),
         newAdds = HomeLibraryCardPalette(
-            topColor = colorScheme.secondaryContainer.opaqueOver(bg, 0.96f),
-            bottomColor = colorScheme.secondaryContainer.opaqueOver(low, 0.86f),
-            borderColor = colorScheme.secondary.copy(alpha = 0.18f),
+            topColor = colorScheme.secondary.opaqueOver(high, 0.12f),
+            bottomColor = colorScheme.secondary.opaqueOver(mid, 0.10f),
+            borderColor = calmBorder,
             iconContainerColor = colorScheme.secondary,
             iconTint = colorScheme.onSecondary,
-            titleColor = colorScheme.onSecondaryContainer,
-            subtitleColor = colorScheme.onSecondaryContainer.copy(alpha = 0.76f)
+            titleColor = colorScheme.onSurface,
+            subtitleColor = colorScheme.onSurfaceVariant
         ),
         shuffleAll = HomeLibraryCardPalette(
             topColor = shuffleTop,
             bottomColor = shuffleBottom,
-            borderColor = colorScheme.outlineVariant.copy(alpha = 0.38f),
+            borderColor = calmBorder,
             iconContainerColor = colorScheme.primary.opaqueOver(shuffleTop, 0.16f),
             iconTint = colorScheme.primary,
             titleColor = colorScheme.onSurface,
@@ -219,40 +180,104 @@ internal fun resolveHomeLibraryGridColors(colorScheme: ColorScheme): HomeLibrary
     )
 }
 
-internal val HomeSessionPrompts = listOf(
-    "Ready for some music?",
-    "What's the vibe today?",
-    "Press play and unwind.",
-    "Your offline soundstage awaits.",
-    "Pick up where you left off."
-)
+/**
+ * Returns the device's current local hour of day in `0..23`, using `LocalTime.now().hour` on API 26+
+ * with a `Calendar` fallback for API 24–25.
+ */
+internal fun currentLocalHourOfDay(): Int {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        LocalTime.now().hour
+    } else {
+        Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+    }
+}
 
 /**
- * Formats the time-of-day Home greeting with optional user display name.
- * Examples: "Good morning!", "Good afternoon!", "Good evening!", "Good morning, Alex!".
+ * Formats the time-of-day Home greeting across all 24 hours with optional user display name:
+ * - `00:00 – 04:59`: "Late night vibes" / "Late night vibes, Alex"
+ * - `05:00 – 11:59`: "Good morning!" / "Good morning, Alex!"
+ * - `12:00 – 16:59`: "Good afternoon!" / "Good afternoon, Alex!"
+ * - `17:00 – 20:59`: "Good evening!" / "Good evening, Alex!"
+ * - `21:00 – 23:59`: "Good night!" / "Good night, Alex!"
  */
 fun formatHomeGreeting(
     displayName: String,
-    hourOfDay: Int = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+    hourOfDay: Int = currentLocalHourOfDay()
 ): String {
-    val greeting = when (hourOfDay) {
+    val normalizedHour = ((hourOfDay % 24) + 24) % 24
+    val cleanName = displayName.trim()
+    if (normalizedHour in 0..4) {
+        return if (cleanName.isEmpty()) "Late night vibes" else "Late night vibes, $cleanName"
+    }
+    val greeting = when (normalizedHour) {
         in 5..11 -> "Good morning"
         in 12..16 -> "Good afternoon"
-        else -> "Good evening"
+        in 17..20 -> "Good evening"
+        else -> "Good night"
     }
-    val cleanName = displayName.trim()
     return if (cleanName.isEmpty()) "$greeting!" else "$greeting, $cleanName!"
 }
 
-internal fun resolveHomeHeroQualityLabel(track: Track, fallbackHq: String): String {
-    val spec = track.resolveAudioQualitySpec()
-    return when {
-        spec?.tier == AudioQualityTier.HI_RES -> "HI-RES"
-        spec?.tier == AudioQualityTier.LOSSLESS -> "LOSSLESS"
-        track.isHiFi -> "HI-FI"
-        spec?.tier == AudioQualityTier.HIGH_QUALITY -> fallbackHq
-        else -> fallbackHq
+/**
+ * Returns the time- and context-aware pool of Home screen 1-line subheadings.
+ */
+internal fun homeSubtitleCandidates(
+    hourOfDay: Int = currentLocalHourOfDay(),
+    trackCount: Int = 0,
+    hasLosslessTracks: Boolean = false
+): List<String> {
+    val normalizedHour = ((hourOfDay % 24) + 24) % 24
+    return when (normalizedHour) {
+        in 0..4 -> buildList {
+            add("Quiet tracks for after midnight")
+            add("Low-light listening, ready when you are")
+            add("Unwind with your late-night rotation")
+            if (hasLosslessTracks) add("Soft after-hours sound in lossless clarity")
+        }
+        in 5..11 -> buildList {
+            add("Set the tempo for your morning")
+            add("Fresh tracks to start the day")
+            add("Your morning soundcheck is ready")
+            if (trackCount > 0) add("$trackCount offline tracks ready for the day")
+        }
+        in 12..16 -> buildList {
+            if (trackCount > 0) add("$trackCount offline tracks ready to spin")
+            if (hasLosslessTracks) add("Dive back into your lossless library")
+            add("Curated from your local collection")
+            add("Keep your afternoon in steady rhythm")
+        }
+        in 17..20 -> buildList {
+            if (hasLosslessTracks) add("Dive back into your lossless library")
+            if (trackCount > 0) add("$trackCount offline tracks ready to spin")
+            add("Curated from your local collection")
+            add("Ease into the evening with your favorites")
+        }
+        else -> buildList {
+            add("Low-light listening, ready when you are")
+            add("Unwind with your late-night rotation")
+            if (hasLosslessTracks) add("Warm night acoustics in lossless detail")
+            else add("Soft grooves to close out the night")
+        }
     }
+}
+
+/**
+ * Picks a deterministic, flicker-free 1-line Home subtitle for the current session, hour, and library state.
+ */
+fun formatHomeSubtitle(
+    hourOfDay: Int = currentLocalHourOfDay(),
+    trackCount: Int = 0,
+    hasLosslessTracks: Boolean = false,
+    sessionSeed: Int = 0
+): String {
+    val candidates = homeSubtitleCandidates(
+        hourOfDay = hourOfDay,
+        trackCount = trackCount,
+        hasLosslessTracks = hasLosslessTracks
+    )
+    val normalizedHour = ((hourOfDay % 24) + 24) % 24
+    val index = abs(sessionSeed + normalizedHour * 31) % candidates.size
+    return candidates[index]
 }
 
 @Immutable
@@ -264,6 +289,14 @@ internal data class HomeMoodDisplay(
     val accentColor: Color,
     val primaryText: Color,
     val secondaryText: Color
+)
+
+private data class MoodPalette(
+    val top: Color,
+    val bottom: Color,
+    val accent: Color,
+    val primary: Color,
+    val secondary: Color
 )
 
 internal fun resolveHomeMoodDisplay(
@@ -294,21 +327,21 @@ internal fun resolveHomeMoodDisplay(
             bottom = colorScheme.secondaryContainer.opaqueOver(low, 0.84f),
             accent = colorScheme.secondary,
             primary = colorScheme.onSecondaryContainer,
-            secondary = colorScheme.onSecondaryContainer.copy(alpha = 0.76f)
+            secondary = colorScheme.onSecondaryContainer.copy(alpha = 0.78f)
         )
         SmartMoodTag.ACOUSTIC -> MoodPalette(
             top = colorScheme.tertiaryContainer.opaqueOver(bg, 0.96f),
             bottom = colorScheme.tertiaryContainer.opaqueOver(low, 0.84f),
             accent = colorScheme.tertiary,
             primary = colorScheme.onTertiaryContainer,
-            secondary = colorScheme.onTertiaryContainer.copy(alpha = 0.76f)
+            secondary = colorScheme.onTertiaryContainer.copy(alpha = 0.78f)
         )
         SmartMoodTag.SOULFUL -> MoodPalette(
             top = colorScheme.primaryContainer.opaqueOver(bg, 0.96f),
             bottom = colorScheme.primaryContainer.opaqueOver(low, 0.84f),
             accent = colorScheme.primary,
             primary = colorScheme.onPrimaryContainer,
-            secondary = colorScheme.onPrimaryContainer.copy(alpha = 0.76f)
+            secondary = colorScheme.onPrimaryContainer.copy(alpha = 0.78f)
         )
         SmartMoodTag.UPBEAT -> MoodPalette(
             top = colorScheme.secondaryContainer.opaqueOver(highest, 0.56f),
@@ -336,14 +369,14 @@ internal fun resolveHomeMoodDisplay(
     )
 }
 
-private data class MoodPalette(
-    val top: Color,
-    val bottom: Color,
-    val accent: Color,
-    val primary: Color,
-    val secondary: Color
-)
-
+/**
+ * Flagship Material 3 Expressive Home screen:
+ * 1. Editorial Top Header (Bricolage Grotesque greeting + Plus Jakarta Sans subtitle + 42.dp Search/Settings circles)
+ * 2. Signature "Jump Back In" Hero Card (96.dp artwork split + format badge + Stadium Play/Pause Pill + wavy scrubber)
+ * 3. Compact 2x2 Bento Library Grid (88.dp tiles, 44.dp expressive icon badges, dynamic M3 tonal roles)
+ * 4. Gallery-Grade "Recently Played" Shelf (140.dp rounded-24dp borderless album covers)
+ * 5. Conditional "Made for Your Mood" Collections (omitted when empty)
+ */
 @Composable
 fun HomeScreen(
     uiState: HomeUiState,
@@ -369,21 +402,48 @@ fun HomeScreen(
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val bg = colorScheme.background
-    val cardSurface = colorScheme.surfaceContainerLow.opaqueOver(bg, 0.94f)
-    val headerButtonSurface = colorScheme.surfaceContainerHigh.opaqueOver(bg, 0.92f)
-    val headerButtonBorder = colorScheme.onSurface.copy(alpha = 0.08f)
-
-    // Pre-blended adaptive M3 surfaces for the Hero card & 2x2 Your Library grid
+    val emptyCardSurface = remember(colorScheme.surfaceContainerLow, bg) {
+        colorScheme.surfaceContainerLow.opaqueOver(bg, 0.96f)
+    }
+    val headerCircleSurface = remember(colorScheme.surfaceContainerHigh, bg) {
+        colorScheme.surfaceContainerHigh.opaqueOver(bg, 0.94f)
+    }
+    val headerCircleBorder = remember(colorScheme.outlineVariant) {
+        colorScheme.outlineVariant.copy(alpha = 0.40f)
+    }
     val heroColors = remember(colorScheme) { resolveHomeHeroColors(colorScheme) }
-    val libraryColors = remember(colorScheme) { resolveHomeLibraryGridColors(colorScheme) }
+    val bentoColors = remember(colorScheme) { resolveHomeLibraryGridColors(colorScheme) }
 
-    val greetingText = remember(userDisplayName) {
-        formatHomeGreeting(userDisplayName)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var currentHour by remember { mutableIntStateOf(currentLocalHourOfDay()) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                currentHour = currentLocalHourOfDay()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    val sessionPromptIndex = rememberSaveable {
-        Random.nextInt(HomeSessionPrompts.size)
+
+    val greetingText = remember(userDisplayName, currentHour) {
+        formatHomeGreeting(userDisplayName, hourOfDay = currentHour)
     }
-    val sessionSubtitle = HomeSessionPrompts[sessionPromptIndex.coerceIn(0, HomeSessionPrompts.lastIndex)]
+    val sessionSeed = rememberSaveable {
+        Random.nextInt(10_000)
+    }
+    val trackCount = uiState.allTracks.size
+    val hasLosslessTracks = remember(uiState.allTracks) {
+        uiState.allTracks.any { it.isLosslessFormat || it.isHiRes }
+    }
+    val sessionSubtitle = remember(currentHour, trackCount, hasLosslessTracks, sessionSeed) {
+        formatHomeSubtitle(
+            hourOfDay = currentHour,
+            trackCount = trackCount,
+            hasLosslessTracks = hasLosslessTracks,
+            sessionSeed = sessionSeed
+        )
+    }
 
     if (!uiState.isInitialLibraryLoaded) {
         Box(
@@ -393,6 +453,10 @@ fun HomeScreen(
         )
         return
     }
+
+    val hasActiveTrack = currentTrack != null
+    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val bottomClearance = (if (hasActiveTrack) 168.dp else 104.dp) + navBarBottom
 
     Box(
         modifier = modifier.fillMaxSize(),
@@ -405,12 +469,12 @@ fun HomeScreen(
                 .widthIn(max = 720.dp)
                 .testTag("home_list"),
             contentPadding = PaddingValues(
-                top = 12.dp,
-                bottom = 180.dp
+                top = 8.dp,
+                bottom = bottomClearance
             ),
             verticalArrangement = Arrangement.spacedBy(22.dp)
         ) {
-            // 1. Clean & Compact Greetings Header + Search & Settings Circle Buttons
+            // 1. Editorial Top Header
             item(key = "home_header", contentType = "home_header") {
                 Row(
                     modifier = Modifier
@@ -427,14 +491,11 @@ fun HomeScreen(
                     ) {
                         Text(
                             text = greetingText,
-                            style = MaterialTheme.typography.headlineSmall.copy(
+                            style = MaterialTheme.typography.headlineMedium.copy(
                                 fontFamily = DisplayFontFamily,
-                                fontSize = 24.sp,
-                                lineHeight = 30.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = (-0.3).sp
+                                fontWeight = FontWeight.Bold
                             ),
-                            color = MaterialTheme.colorScheme.onSurface,
+                            color = colorScheme.onSurface,
                             maxLines = 1,
                             softWrap = false,
                             overflow = TextOverflow.Ellipsis,
@@ -443,7 +504,7 @@ fun HomeScreen(
                         Text(
                             text = sessionSubtitle,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.testTag("home_header_subtitle")
@@ -457,16 +518,16 @@ fun HomeScreen(
                         HomeHeaderCircleButton(
                             icon = Icons.Rounded.Search,
                             contentDescription = stringResource(R.string.action_search),
-                            containerColor = headerButtonSurface,
-                            borderColor = headerButtonBorder,
+                            containerColor = headerCircleSurface,
+                            borderColor = headerCircleBorder,
                             onClick = onOpenSearch,
                             testTag = "home_search_button"
                         )
                         HomeHeaderCircleButton(
                             icon = Icons.Rounded.Settings,
                             contentDescription = stringResource(R.string.action_settings),
-                            containerColor = headerButtonSurface,
-                            borderColor = headerButtonBorder,
+                            containerColor = headerCircleSurface,
+                            borderColor = headerCircleBorder,
                             onClick = onOpenSettings,
                             testTag = "settings_button"
                         )
@@ -478,16 +539,16 @@ fun HomeScreen(
                 item(key = "home_empty", contentType = "home_empty") {
                     HomeEmptyCard(
                         artworkShape = artworkShape,
-                        cardSurface = cardSurface,
+                        cardSurface = emptyCardSurface,
                         onAddFolder = onAddFolder,
                         onScanDevice = onScanDevice
                     )
                 }
             } else {
-                // 2. Main Now Playing Hero Card (310.dp Height, Adaptive Theme Container Surface)
+                // 2. Signature "Jump Back In" Hero Card
                 if (currentTrack != null) {
                     item(key = "home_continue_${currentTrack.id}", contentType = "home_continue") {
-                        HomeNowPlayingHeroCard(
+                        HomeJumpBackInHeroCard(
                             track = currentTrack,
                             isPlaying = isPlaying,
                             artworkShape = artworkShape,
@@ -501,7 +562,74 @@ fun HomeScreen(
                     }
                 }
 
-                // 3. Your Library — 2x2 Expressive Grid (156.dp Height Cards)
+                // 2.5 Auto-Refreshing Daily Picks (5-6 songs, strictly automatic date rotation, no manual refresh button)
+                if (uiState.dailyPicks.isNotEmpty()) {
+                    item(key = "home_daily_picks_shelf", contentType = "home_daily_picks_shelf") {
+                        val distinctPicks = remember(uiState.dailyPicks) {
+                            uiState.dailyPicks.distinctBy { it.id }
+                        }
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.testTag("home_daily_picks_section")
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.home_daily_picks_title),
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontFamily = DisplayFontFamily,
+                                        fontSize = 19.sp,
+                                        lineHeight = 24.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = (-0.2).sp
+                                    ),
+                                    color = colorScheme.onBackground,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.testTag("home_daily_picks_header")
+                                )
+                                Text(
+                                    text = stringResource(R.string.home_daily_picks_subtitle),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.testTag("home_daily_picks_subtitle")
+                                )
+                            }
+
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.testTag("home_daily_picks_row")
+                            ) {
+                                items(
+                                    items = distinctPicks,
+                                    key = { track -> "home_daily_pick_${track.id}" },
+                                    contentType = { "home_daily_pick_tile" }
+                                ) { track ->
+                                    val isCurrent = track.id == currentTrack?.id
+                                    val clickHandler = remember(track.id, uiState.dailyPicks) {
+                                        { onSelectTrack(track, uiState.dailyPicks) }
+                                    }
+                                    HomeDailyPickTile(
+                                        track = track,
+                                        isCurrent = isCurrent,
+                                        isPlaying = isCurrent && isPlaying,
+                                        artworkShape = artworkShape,
+                                        onClick = clickHandler
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 3. Bento-Style Library Grid (2x2, 88.dp height, 10.dp gap, 44.dp expressive badges)
                 item(key = "home_shortcuts_grid", contentType = "home_shortcuts_grid") {
                     val onLikedClick = remember(uiState.likedTracks, onPlayTracks, onOpenLibraryShortcut) {
                         {
@@ -543,17 +671,18 @@ fun HomeScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
                             text = stringResource(R.string.home_your_library),
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontFamily = DisplayFontFamily,
-                                fontSize = 18.sp,
+                                fontSize = 19.sp,
                                 lineHeight = 24.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = (-0.2).sp
                             ),
-                            color = MaterialTheme.colorScheme.onBackground,
+                            color = colorScheme.onBackground,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.testTag("home_your_library_header")
@@ -563,30 +692,32 @@ fun HomeScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("home_shortcuts_grid"),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                HomeLibraryGridCard(
+                                HomeLibraryBentoTile(
                                     title = stringResource(R.string.home_shortcut_liked),
                                     subtitle = "$likedCount ${if (likedCount == 1) "song" else "songs"}",
                                     icon = Icons.Rounded.Favorite,
-                                    palette = libraryColors.favorites,
+                                    badgeShape = FavoritesBadgeShape,
+                                    palette = bentoColors.favorites,
                                     onClick = onLikedClick,
                                     testTag = "home_shortcut_liked",
                                     modifier = Modifier.weight(1f)
                                 )
-                                HomeLibraryGridCard(
+                                HomeLibraryBentoTile(
                                     title = stringResource(R.string.home_shortcut_most_played),
                                     subtitle = if (mostPlayedCount > 0) {
-                                        "$mostPlayedCount ${if (mostPlayedCount == 1) "listen" else "top listens"}"
+                                        "$mostPlayedCount ${if (mostPlayedCount == 1) "track" else "tracks"}"
                                     } else {
-                                        "Most played"
+                                        "Top picks"
                                     },
                                     icon = CadenceIcons.LocalFireDepartment,
-                                    palette = libraryColors.topRotation,
+                                    badgeShape = TopRotationBadgeShape,
+                                    palette = bentoColors.topRotation,
                                     onClick = onMostPlayedClick,
                                     testTag = "home_shortcut_most_played",
                                     modifier = Modifier.weight(1f)
@@ -595,26 +726,28 @@ fun HomeScreen(
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                HomeLibraryGridCard(
+                                HomeLibraryBentoTile(
                                     title = stringResource(R.string.home_shortcut_recent_added),
                                     subtitle = if (recentAddedCount > 0) {
-                                        "$recentAddedCount ${if (recentAddedCount == 1) "track" else "fresh tracks"}"
+                                        "$recentAddedCount ${if (recentAddedCount == 1) "new" else "fresh"}"
                                     } else {
-                                        "Fresh tracks"
+                                        "Fresh adds"
                                     },
                                     icon = CadenceIcons.LibraryAdd,
-                                    palette = libraryColors.newAdds,
+                                    badgeShape = NewAddsBadgeShape,
+                                    palette = bentoColors.newAdds,
                                     onClick = onRecentlyAddedClick,
                                     testTag = "home_shortcut_recent_added",
                                     modifier = Modifier.weight(1f)
                                 )
-                                HomeLibraryGridCard(
+                                HomeLibraryBentoTile(
                                     title = stringResource(R.string.home_shortcut_shuffle_all),
                                     subtitle = "$totalCount ${if (totalCount == 1) "song" else "songs"}",
                                     icon = CadenceIcons.Shuffle,
-                                    palette = libraryColors.shuffleAll,
+                                    badgeShape = ShuffleBadgeShape,
+                                    palette = bentoColors.shuffleAll,
                                     onClick = onShuffleAllClick,
                                     testTag = "home_shortcut_shuffle_all",
                                     modifier = Modifier.weight(1f)
@@ -624,7 +757,7 @@ fun HomeScreen(
                     }
                 }
 
-                // 4. Recently Played — Clean Borderless Horizontal Shelf
+                // 4. Gallery-Grade "Recently Played" Shelf (140.dp rounded-24dp borderless covers)
                 if (uiState.recentlyPlayed.isNotEmpty()) {
                     item(key = "home_recent_shelf", contentType = "home_recent_shelf") {
                         val distinctRecent = remember(uiState.recentlyPlayed) {
@@ -635,11 +768,12 @@ fun HomeScreen(
                                 text = stringResource(R.string.home_recently_played),
                                 style = MaterialTheme.typography.titleLarge.copy(
                                     fontFamily = DisplayFontFamily,
-                                    fontSize = 18.sp,
+                                    fontSize = 19.sp,
                                     lineHeight = 24.sp,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = (-0.2).sp
                                 ),
-                                color = MaterialTheme.colorScheme.onBackground,
+                                color = colorScheme.onBackground,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier
@@ -649,7 +783,7 @@ fun HomeScreen(
 
                             LazyRow(
                                 contentPadding = PaddingValues(horizontal = 20.dp),
-                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 modifier = Modifier.testTag("home_recent_row")
                             ) {
                                 items(
@@ -661,7 +795,7 @@ fun HomeScreen(
                                     val clickHandler = remember(track.id, uiState.recentlyPlayed) {
                                         { onSelectTrack(track, uiState.recentlyPlayed) }
                                     }
-                                    HomeRecentTile(
+                                    HomeGalleryRecentTile(
                                         track = track,
                                         isCurrent = isCurrent,
                                         isPlaying = isCurrent && isPlaying,
@@ -674,7 +808,7 @@ fun HomeScreen(
                     }
                 }
 
-                // 5. Made for Your Mood — Conditional Section (omitted completely when empty)
+                // 5. Conditional "Made for Your Mood" Collections (omitted when empty)
                 if (uiState.moodCollections.isNotEmpty()) {
                     item(key = "home_mood_section", contentType = "home_mood_section") {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -682,11 +816,12 @@ fun HomeScreen(
                                 text = stringResource(R.string.home_made_for_mood),
                                 style = MaterialTheme.typography.titleLarge.copy(
                                     fontFamily = DisplayFontFamily,
-                                    fontSize = 18.sp,
+                                    fontSize = 19.sp,
                                     lineHeight = 24.sp,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = (-0.2).sp
                                 ),
-                                color = MaterialTheme.colorScheme.onBackground,
+                                color = colorScheme.onBackground,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier
@@ -732,6 +867,15 @@ private fun HomeHeaderCircleButton(
     onClick: () -> Unit,
     testTag: String
 ) {
+    val isLowEndMode = LocalPerformanceMode.current
+    val interaction = remember { MutableInteractionSource() }
+    val isPressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (!isLowEndMode && isPressed) 0.92f else 1f,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 620f),
+        label = "home_header_circle_scale"
+    )
+
     Surface(
         shape = CircleShape,
         color = containerColor,
@@ -739,9 +883,18 @@ private fun HomeHeaderCircleButton(
         border = BorderStroke(1.dp, borderColor),
         modifier = Modifier
             .testTag(testTag)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .size(42.dp)
             .clip(CircleShape)
-            .clickable(role = Role.Button, onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = ripple(),
+                role = Role.Button,
+                onClick = onClick
+            )
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
@@ -753,563 +906,107 @@ private fun HomeHeaderCircleButton(
     }
 }
 
-@Composable
-private fun HomeNowPlayingHeroCard(
-    track: Track,
-    isPlaying: Boolean,
-    artworkShape: ExpressiveArtworkShape,
-    heroColors: HomeHeroColors,
-    progressFlow: StateFlow<PlaybackProgress>,
-    isActiveTab: Boolean,
-    onExpand: () -> Unit,
-    onTogglePlayPause: () -> Unit,
-    onSeek: (Float) -> Unit
-) {
-    val fallbackHq = stringResource(R.string.badge_hq_short)
-    val qualityLabel = remember(track.id, track.mimeType, track.bitrateKbps, track.sampleRateHz, track.bitDepth, fallbackHq) {
-        resolveHomeHeroQualityLabel(track, fallbackHq)
-    }
-    val heroBrush = remember(heroColors.topColor, heroColors.bottomColor) {
-        Brush.verticalGradient(listOf(heroColors.topColor, heroColors.bottomColor))
-    }
-    val playPillInteractionSource = remember { MutableInteractionSource() }
-    val isPlayPillPressed by playPillInteractionSource.collectIsPressedAsState()
-    val playPillScale by animateFloatAsState(
-        targetValue = if (isPlayPillPressed) 0.94f else 1f,
-        animationSpec = spring(dampingRatio = 0.72f, stiffness = 600f),
-        label = "home_hero_play_pill_scale"
-    )
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-    ) {
-        Surface(
-            shape = RoundedCornerShape(28.dp),
-            color = heroColors.topColor,
-            border = BorderStroke(1.dp, heroColors.cardBorder),
-            modifier = Modifier
-                .testTag("home_continue_card")
-                .fillMaxWidth()
-                .height(310.dp)
-                .clip(RoundedCornerShape(28.dp))
-                .clickable(role = Role.Button, onClick = onExpand)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(heroBrush)
-                    .padding(18.dp)
-            ) {
-                // Top Status Row: NOW PLAYING / PAUSED + Real-Metadata Audio Quality Pill
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = heroColors.pillContainer,
-                        border = BorderStroke(1.dp, heroColors.pillBorder),
-                        modifier = Modifier.testTag("home_hero_status_badge")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            AudioPulseBars(
-                                isPlaying = isPlaying,
-                                tint = heroColors.pulseTint,
-                                barHeight = 10.dp
-                            )
-                            Text(
-                                text = stringResource(if (isPlaying) R.string.now_playing_label else R.string.status_paused),
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = MonoFontFamily,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 0.7.sp
-                                ),
-                                color = heroColors.badgeTextColor,
-                                maxLines = 1
-                            )
-                        }
-                    }
-
-                    Surface(
-                        shape = CircleShape,
-                        color = heroColors.pillContainer,
-                        border = BorderStroke(1.dp, heroColors.pillBorder),
-                        modifier = Modifier.testTag("home_hero_hifi_badge")
-                    ) {
-                        Text(
-                            text = qualityLabel,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = MonoFontFamily,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.7.sp
-                            ),
-                            color = heroColors.badgeTextColor,
-                            maxLines = 1,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                // Middle Track Row: 108.dp Artwork + Full-Width Title & Artist (zero side-by-side button)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Surface(
-                        shape = HeroArtworkShape,
-                        color = Color.Transparent,
-                        border = BorderStroke(1.dp, heroColors.artworkBorderColor),
-                        modifier = Modifier
-                            .testTag("home_hero_artwork")
-                            .size(108.dp)
-                    ) {
-                        ExpressiveArtworkFrame(
-                            track = track,
-                            artworkShape = artworkShape,
-                            isPlaying = isPlaying,
-                            animateScale = false,
-                            decodeSizePx = 320,
-                            shapeOverride = HeroArtworkShape,
-                            showHairlineBorder = false,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = track.title,
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontFamily = DisplayFontFamily,
-                                fontSize = 20.sp,
-                                lineHeight = 25.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = (-0.2).sp
-                            ),
-                            color = heroColors.titleColor,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("home_hero_title")
-                        )
-                        Text(
-                            text = track.artist,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = heroColors.artistColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("home_hero_artist")
-                        )
-                    }
-                }
-
-                Spacer(Modifier.weight(1f))
-
-                // M3 Expressive Stadium Play/Pause Pill positioned bottom-right above wavy progress bar
-                Surface(
-                    shape = CircleShape,
-                    color = heroColors.playButtonContainer,
-                    contentColor = heroColors.playButtonContent,
-                    modifier = Modifier
-                        .align(Alignment.End)
-                        .testTag("home_continue_play_button")
-                        .graphicsLayer {
-                            scaleX = playPillScale
-                            scaleY = playPillScale
-                        }
-                        .height(42.dp)
-                        .clip(CircleShape)
-                        .clickable(
-                            interactionSource = playPillInteractionSource,
-                            indication = ripple(),
-                            role = Role.Button,
-                            onClick = onTogglePlayPause
-                        )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) CadenceIcons.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text(
-                            text = stringResource(if (isPlaying) R.string.action_pause else R.string.action_play),
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            maxLines = 1,
-                            softWrap = false,
-                            modifier = Modifier.testTag("home_continue_play_label")
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                // Bottom Exclusive Interactive Sinusoidal Wavy Progress Indicator + Mono Timestamps
-                HomeHeroWavyProgressSection(
-                    trackDurationMs = track.durationMs,
-                    isPlaying = isPlaying,
-                    heroColors = heroColors,
-                    progressFlow = progressFlow,
-                    isActiveTab = isActiveTab,
-                    onSeek = onSeek
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun HomeHeroWavyProgressSection(
-    trackDurationMs: Long,
-    isPlaying: Boolean,
-    heroColors: HomeHeroColors,
-    progressFlow: StateFlow<PlaybackProgress>,
-    isActiveTab: Boolean,
-    onSeek: (Float) -> Unit
-) {
-    val dragFractionState = remember { mutableStateOf<Float?>(null) }
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        HomeHeroWavyProgressBar(
-            progressFlow = progressFlow,
-            trackDurationMs = trackDurationMs,
-            isPlaying = isPlaying,
-            isActiveTab = isActiveTab,
-            playedColor = heroColors.wavePlayedColor,
-            haloColor = heroColors.waveHaloColor,
-            unplayedColor = heroColors.waveUnplayedColor,
-            dragFractionState = dragFractionState,
-            onSeek = onSeek
-        )
-        HomeHeroTimestampsRow(
-            progressFlow = progressFlow,
-            trackDurationMs = trackDurationMs,
-            isActiveTab = isActiveTab,
-            timestampColor = heroColors.timestampColor,
-            dragFractionState = dragFractionState
-        )
-    }
-}
-
 /**
- * Isolated draw-phase sinusoidal wavy progress bar exclusive to the Home Hero card.
- * Collects [progressFlow] only while Home is active and reads it inside Canvas draw phase
- * so playback ticks trigger zero parent recompositions.
- * Supports both tap-to-seek and horizontal drag-to-seek without triggering the parent card click.
+ * Compact, tactile 88.dp M3 Expressive Bento tile:
+ * 44.dp geometric icon badge on the left paired with stacked 1-line title + live count on the right.
  */
 @Composable
-private fun HomeHeroWavyProgressBar(
-    progressFlow: StateFlow<PlaybackProgress>,
-    trackDurationMs: Long,
-    isPlaying: Boolean,
-    isActiveTab: Boolean,
-    playedColor: Color,
-    haloColor: Color,
-    unplayedColor: Color,
-    dragFractionState: MutableState<Float?>,
-    onSeek: (Float) -> Unit
-) {
-    val progressState = if (isActiveTab) {
-        progressFlow.collectAsStateWithLifecycle()
-    } else {
-        null
-    }
-
-    val phaseState = if (isPlaying && isActiveTab) {
-        val transition = rememberInfiniteTransition(label = "home_hero_wave_phase")
-        transition.animateFloat(
-            initialValue = 0f,
-            targetValue = (2.0 * PI).toFloat(),
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 2200, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart
-            ),
-            label = "home_hero_wave_angle"
-        )
-    } else {
-        null
-    }
-
-    val wavePath = remember { Path() }
-
-    Canvas(
-        modifier = Modifier
-            .testTag("home_continue_progress")
-            .fillMaxWidth()
-            .height(34.dp)
-            .pointerInput(onSeek) {
-                detectTapGestures { offset ->
-                    val thumbPad = 8.dp.toPx()
-                    val usableWidth = (size.width - thumbPad * 2f).coerceAtLeast(1f)
-                    val fraction = ((offset.x - thumbPad) / usableWidth).coerceIn(0f, 1f)
-                    onSeek(fraction)
-                }
-            }
-            .pointerInput(onSeek) {
-                detectHorizontalDragGestures(
-                    onDragStart = { offset ->
-                        val thumbPad = 8.dp.toPx()
-                        val usableWidth = (size.width - thumbPad * 2f).coerceAtLeast(1f)
-                        dragFractionState.value = ((offset.x - thumbPad) / usableWidth).coerceIn(0f, 1f)
-                    },
-                    onHorizontalDrag = { change, _ ->
-                        change.consume()
-                        val thumbPad = 8.dp.toPx()
-                        val usableWidth = (size.width - thumbPad * 2f).coerceAtLeast(1f)
-                        dragFractionState.value = ((change.position.x - thumbPad) / usableWidth).coerceIn(0f, 1f)
-                    },
-                    onDragEnd = {
-                        val finalFraction = dragFractionState.value
-                        dragFractionState.value = null
-                        if (finalFraction != null) {
-                            onSeek(finalFraction)
-                        }
-                    },
-                    onDragCancel = {
-                        dragFractionState.value = null
-                    }
-                )
-            }
-    ) {
-        val snapshot = progressState?.value ?: progressFlow.value
-        val totalMs = snapshot.durationMs.takeIf { it > 0L } ?: trackDurationMs.coerceAtLeast(1L)
-        val liveFraction = (snapshot.positionMs.coerceIn(0L, totalMs).toFloat() / totalMs.toFloat())
-            .coerceIn(0f, 1f)
-        val dragFraction = dragFractionState.value
-        val fraction = (dragFraction ?: liveFraction).coerceIn(0f, 1f)
-
-        val thumbRadius = 6.dp.toPx() // 12.dp diameter playhead
-        val haloRadius = if (dragFraction != null) 13.dp.toPx() else 10.dp.toPx()
-        val strokeWidthPx = 3.5.dp.toPx()
-        val padX = thumbRadius + 2.dp.toPx()
-        val startX = padX
-        val endX = (size.width - padX).coerceAtLeast(startX + 1f)
-        val centerY = size.height / 2f
-        val playheadX = startX + (endX - startX) * fraction
-
-        // Unplayed segment (straight rounded line)
-        if (playheadX < endX) {
-            drawLine(
-                color = unplayedColor,
-                start = Offset(playheadX, centerY),
-                end = Offset(endX, centerY),
-                strokeWidth = strokeWidthPx,
-                cap = StrokeCap.Round
-            )
-        }
-
-        // Played segment (smooth single-line sinusoidal wave)
-        val playedLength = (playheadX - startX).coerceAtLeast(0f)
-        if (playedLength > 1f) {
-            val amplitude = if (isPlaying) 3.8.dp.toPx() else 2.2.dp.toPx()
-            val wavelength = 26.dp.toPx().coerceAtLeast(12f)
-            val phase = phaseState?.value ?: 0f
-            val stepPx = 3.dp.toPx().coerceAtLeast(2f)
-
-            wavePath.rewind()
-            var x = startX
-            var isFirst = true
-            while (x <= playheadX) {
-                val distFromStart = x - startX
-                val distFromEnd = (playheadX - x).coerceAtLeast(0f)
-                // Smoothly taper amplitude into endpoints & playhead so the wave joins cleanly
-                val startTaper = (distFromStart / (wavelength * 0.4f)).coerceIn(0f, 1f)
-                val endTaper = (distFromEnd / (wavelength * 0.4f)).coerceIn(0f, 1f)
-                val env = minOf(startTaper, endTaper)
-                val angle = (distFromStart / wavelength) * (2.0 * PI) - phase
-                val y = centerY + (sin(angle).toFloat() * amplitude * env)
-                if (isFirst) {
-                    wavePath.moveTo(x, y)
-                    isFirst = false
-                } else {
-                    wavePath.lineTo(x, y)
-                }
-                if (x == playheadX) break
-                x = (x + stepPx).coerceAtMost(playheadX)
-            }
-
-            drawPath(
-                path = wavePath,
-                color = playedColor,
-                style = Stroke(width = strokeWidthPx, cap = StrokeCap.Round)
-            )
-        }
-
-        // Playhead soft halo + 12.dp solid peach circle
-        drawCircle(
-            color = haloColor,
-            radius = haloRadius,
-            center = Offset(playheadX, centerY)
-        )
-        drawCircle(
-            color = playedColor,
-            radius = thumbRadius,
-            center = Offset(playheadX, centerY)
-        )
-    }
-}
-
-/**
- * 1-second distinct leaf composable for elapsed and total duration timestamps.
- * Never triggers recomposition on HomeScreen or the Hero card during playback ticks.
- */
-@Composable
-private fun HomeHeroTimestampsRow(
-    progressFlow: StateFlow<PlaybackProgress>,
-    trackDurationMs: Long,
-    isActiveTab: Boolean,
-    timestampColor: Color,
-    dragFractionState: MutableState<Float?>
-) {
-    val timePair = if (!isActiveTab) {
-        computeTimestampPair(progressFlow.value, trackDurationMs)
-    } else {
-        val pairFlow = remember(progressFlow, trackDurationMs) {
-            progressFlow
-                .map { p -> computeTimestampPair(p, trackDurationMs) }
-                .distinctUntilChanged()
-        }
-        pairFlow.collectAsStateWithLifecycle(
-            initialValue = computeTimestampPair(progressFlow.value, trackDurationMs)
-        ).value
-    }
-
-    val dragFraction = dragFractionState.value
-    val elapsedText = if (dragFraction != null) {
-        val totalMs = progressFlow.value.durationMs.takeIf { it > 0L } ?: trackDurationMs.coerceAtLeast(1L)
-        formatDuration((totalMs * dragFraction).toLong().coerceIn(0L, totalMs))
-    } else {
-        timePair.first
-    }
-
-    val monoStyle = MaterialTheme.typography.labelSmall.copy(
-        fontFamily = MonoFontFamily,
-        fontSize = 12.sp,
-        fontFeatureSettings = "tnum"
-    )
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = elapsedText,
-            style = monoStyle,
-            color = timestampColor,
-            maxLines = 1,
-            modifier = Modifier.testTag("home_continue_elapsed")
-        )
-        Text(
-            text = timePair.second,
-            style = monoStyle,
-            color = timestampColor,
-            maxLines = 1,
-            modifier = Modifier.testTag("home_continue_duration")
-        )
-    }
-}
-
-private fun computeTimestampPair(progress: PlaybackProgress, fallbackDurationMs: Long): Pair<String, String> {
-    val totalMs = progress.durationMs.takeIf { it > 0L } ?: fallbackDurationMs.coerceAtLeast(1L)
-    val posSecMs = (progress.positionMs.coerceIn(0L, totalMs) / 1000L) * 1000L
-    return formatDuration(posSecMs) to formatDuration(totalMs)
-}
-
-@Composable
-private fun HomeLibraryGridCard(
+private fun HomeLibraryBentoTile(
     title: String,
     subtitle: String,
     icon: ImageVector,
+    badgeShape: Shape,
     palette: HomeLibraryCardPalette,
     onClick: () -> Unit,
     testTag: String,
     modifier: Modifier = Modifier
 ) {
+    val isLowEndMode = LocalPerformanceMode.current
+    val interaction = remember { MutableInteractionSource() }
+    val isPressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (!isLowEndMode && isPressed) 0.96f else 1f,
+        animationSpec = spring(dampingRatio = 0.75f, stiffness = 580f),
+        label = "home_bento_tile_scale"
+    )
     val gradient = remember(palette.topColor, palette.bottomColor) {
         Brush.verticalGradient(listOf(palette.topColor, palette.bottomColor))
     }
 
     Surface(
-        shape = LibraryCardShape,
+        shape = BentoTileShape,
         color = palette.topColor,
         border = BorderStroke(1.dp, palette.borderColor),
         modifier = modifier
             .testTag(testTag)
-            .height(156.dp)
-            .clip(LibraryCardShape)
-            .clickable(role = Role.Button, onClick = onClick)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .height(88.dp)
+            .clip(BentoTileShape)
+            .clickable(
+                interactionSource = interaction,
+                indication = ripple(),
+                role = Role.Button,
+                onClick = onClick
+            )
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxSize()
                 .background(gradient)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 10.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Surface(
-                shape = LibraryIconContainerShape,
+                shape = badgeShape,
                 color = palette.iconContainerColor,
                 contentColor = palette.iconTint,
                 modifier = Modifier
                     .testTag("${testTag}_icon")
-                    .size(48.dp)
+                    .size(44.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(21.dp)
                     )
                 }
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleMedium.copy(
+                    style = MaterialTheme.typography.titleSmall.copy(
                         fontFamily = DisplayFontFamily,
-                        fontSize = 17.sp,
-                        lineHeight = 22.sp,
+                        fontSize = 13.5.sp,
+                        lineHeight = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        letterSpacing = (-0.2).sp
+                        letterSpacing = (-0.25).sp
                     ),
                     color = palette.titleColor,
                     maxLines = 1,
                     softWrap = false,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
                 )
                 Text(
                     text = subtitle,
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        lineHeight = 15.sp
+                    ),
                     color = palette.subtitleColor,
                     maxLines = 1,
                     softWrap = false,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
@@ -1317,58 +1014,250 @@ private fun HomeLibraryGridCard(
 }
 
 /**
- * Clean borderless Recently Played tile: 132.dp square rounded album artwork
- * followed directly beneath by 1-line title and 1-line artist with zero heavy card framing.
+ * Sleek 136.dp M3 Expressive Daily Pick card (rounded-20.dp artwork with 1.dp hairline rim,
+ * unclipped 1-line title, and unclipped 1-line artist subtitle).
  */
 @Composable
-private fun HomeRecentTile(
+private fun HomeDailyPickTile(
     track: Track,
     isCurrent: Boolean,
     isPlaying: Boolean,
     artworkShape: ExpressiveArtworkShape,
     onClick: () -> Unit
 ) {
+    val colorScheme = MaterialTheme.colorScheme
+    val isLowEndMode = LocalPerformanceMode.current
+    val interaction = remember { MutableInteractionSource() }
+    val isPressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (!isLowEndMode && isPressed) 0.96f else 1f,
+        animationSpec = spring(dampingRatio = 0.76f, stiffness = 580f),
+        label = "home_daily_pick_tile_scale"
+    )
+
+    Column(
+        modifier = Modifier
+            .testTag("home_daily_pick_tile_${track.id}")
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .width(136.dp)
+            .clickable(
+                interactionSource = interaction,
+                indication = ripple(),
+                role = Role.Button,
+                onClick = onClick
+            )
+    ) {
+        Box(modifier = Modifier.size(136.dp)) {
+            Surface(
+                shape = DailyPickCoverShape,
+                color = Color.Transparent,
+                border = if (isCurrent) {
+                    BorderStroke(2.dp, colorScheme.primary)
+                } else {
+                    BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.35f))
+                },
+                modifier = Modifier
+                    .testTag("home_daily_pick_art_${track.id}")
+                    .fillMaxSize()
+            ) {
+                ExpressiveArtworkFrame(
+                    track = track,
+                    artworkShape = artworkShape,
+                    isPlaying = isPlaying,
+                    animateScale = false,
+                    decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
+                    shapeOverride = DailyPickCoverShape,
+                    showHairlineBorder = false,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            if (isCurrent) {
+                Surface(
+                    shape = CircleShape,
+                    color = colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                ) {
+                    Box(modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp)) {
+                        AudioPulseBars(
+                            isPlaying = isPlaying,
+                            tint = colorScheme.onPrimary,
+                            barHeight = 10.dp
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = track.title,
+            style = MaterialTheme.typography.titleSmall.copy(
+                fontWeight = FontWeight.Bold,
+                lineHeight = 20.sp,
+                lineHeightStyle = LineHeightStyle(
+                    alignment = LineHeightStyle.Alignment.Center,
+                    trim = LineHeightStyle.Trim.None
+                )
+            ),
+            color = if (isCurrent) colorScheme.primary else colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("home_daily_pick_title_${track.id}")
+        )
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        Text(
+            text = track.artist,
+            style = MaterialTheme.typography.bodySmall.copy(
+                lineHeight = 18.sp,
+                lineHeightStyle = LineHeightStyle(
+                    alignment = LineHeightStyle.Alignment.Center,
+                    trim = LineHeightStyle.Trim.None
+                )
+            ),
+            color = colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("home_daily_pick_artist_${track.id}")
+        )
+    }
+}
+
+/**
+ * Gallery-grade borderless Recently Played tile:
+ * 140.dp rounded-24.dp album cover with 1.dp hairline rim, bold 1-line title, muted 1-line artist.
+ */
+@Composable
+private fun HomeGalleryRecentTile(
+    track: Track,
+    isCurrent: Boolean,
+    isPlaying: Boolean,
+    artworkShape: ExpressiveArtworkShape,
+    onClick: () -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val isLowEndMode = LocalPerformanceMode.current
+    val interaction = remember { MutableInteractionSource() }
+    val isPressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (!isLowEndMode && isPressed) 0.96f else 1f,
+        animationSpec = spring(dampingRatio = 0.76f, stiffness = 580f),
+        label = "home_gallery_tile_scale"
+    )
+
     Column(
         modifier = Modifier
             .testTag("home_recent_tile_${track.id}")
-            .width(132.dp)
-            .clip(RecentArtworkShape)
-            .clickable(role = Role.Button, onClick = onClick),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .width(140.dp)
+            .clickable(
+                interactionSource = interaction,
+                indication = ripple(),
+                role = Role.Button,
+                onClick = onClick
+            )
     ) {
-        ExpressiveArtworkFrame(
-            track = track,
-            artworkShape = artworkShape,
-            isPlaying = isPlaying,
-            animateScale = false,
-            decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
-            shapeOverride = RecentArtworkShape,
-            showHairlineBorder = true,
-            modifier = Modifier
-                .testTag("home_recent_art_${track.id}")
-                .size(132.dp)
-        )
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = track.title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold,
-                color = if (isCurrent) {
-                    MaterialTheme.colorScheme.primary
+        Box(modifier = Modifier.size(140.dp)) {
+            Surface(
+                shape = GalleryCoverShape,
+                color = Color.Transparent,
+                border = if (isCurrent) {
+                    BorderStroke(2.dp, colorScheme.primary)
                 } else {
-                    MaterialTheme.colorScheme.onSurface
+                    BorderStroke(1.dp, colorScheme.onSurface.copy(alpha = 0.10f))
                 },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = track.artist,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+                modifier = Modifier
+                    .testTag("home_recent_art_${track.id}")
+                    .fillMaxSize()
+            ) {
+                ExpressiveArtworkFrame(
+                    track = track,
+                    artworkShape = artworkShape,
+                    isPlaying = isPlaying,
+                    animateScale = false,
+                    decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
+                    shapeOverride = GalleryCoverShape,
+                    showHairlineBorder = false,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            if (isCurrent) {
+                Surface(
+                    shape = CircleShape,
+                    color = colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                ) {
+                    Box(modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp)) {
+                        AudioPulseBars(
+                            isPlaying = isPlaying,
+                            tint = colorScheme.onPrimary,
+                            barHeight = 10.dp
+                        )
+                    }
+                }
+            }
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = track.title,
+            style = MaterialTheme.typography.titleSmall.copy(
+                fontWeight = FontWeight.Bold,
+                lineHeight = 20.sp,
+                lineHeightStyle = LineHeightStyle(
+                    alignment = LineHeightStyle.Alignment.Center,
+                    trim = LineHeightStyle.Trim.None
+                )
+            ),
+            color = if (isCurrent) colorScheme.primary else colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("home_recent_title_${track.id}")
+        )
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        Text(
+            text = track.artist,
+            style = MaterialTheme.typography.bodySmall.copy(
+                lineHeight = 18.sp,
+                lineHeightStyle = LineHeightStyle(
+                    alignment = LineHeightStyle.Alignment.Center,
+                    trim = LineHeightStyle.Trim.None
+                )
+            ),
+            color = colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("home_recent_artist_${track.id}")
+        )
     }
 }
 
@@ -1379,6 +1268,14 @@ private fun HomeMoodCard(
     colorScheme: ColorScheme,
     onClick: () -> Unit
 ) {
+    val isLowEndMode = LocalPerformanceMode.current
+    val interaction = remember { MutableInteractionSource() }
+    val isPressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (!isLowEndMode && isPressed) 0.96f else 1f,
+        animationSpec = spring(dampingRatio = 0.76f, stiffness = 580f),
+        label = "home_mood_card_scale"
+    )
     val display = remember(playlist.mood, playlist.title, playlist.subtitle, colorScheme) {
         resolveHomeMoodDisplay(playlist, colorScheme)
     }
@@ -1392,20 +1289,36 @@ private fun HomeMoodCard(
     val countLabel = if (playlist.tracks.size == 1) "1 song" else "${playlist.tracks.size} songs"
 
     Surface(
-        shape = RoundedCornerShape(24.dp),
+        shape = MoodCardShape,
         color = display.topColor,
         border = BorderStroke(1.dp, display.accentColor.copy(alpha = 0.20f)),
         modifier = Modifier
             .testTag("home_mood_card_${playlist.mood.id}")
-            .width(228.dp)
-            .height(148.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .clickable(role = Role.Button, onClick = onClick)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .width(232.dp)
+            .height(144.dp)
+            .clip(MoodCardShape)
+            .clickable(
+                interactionSource = interaction,
+                indication = ripple(),
+                role = Role.Button,
+                onClick = onClick
+            )
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(gradient)
+                .drawBehind {
+                    drawCircle(
+                        color = display.accentColor.copy(alpha = 0.08f),
+                        radius = size.height * 0.65f,
+                        center = Offset(size.width * 0.94f, size.height * 0.96f)
+                    )
+                }
                 .padding(16.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
@@ -1441,11 +1354,13 @@ private fun HomeMoodCard(
                         text = countLabel,
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontFamily = MonoFontFamily,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            fontFeatureSettings = "tnum"
                         ),
                         color = display.primaryText,
                         maxLines = 1,
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        softWrap = false,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
             }
@@ -1462,14 +1377,16 @@ private fun HomeMoodCard(
                     ),
                     color = display.primaryText,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
                 )
                 Text(
                     text = display.subtitle,
                     style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
                     color = display.secondaryText,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
@@ -1483,9 +1400,11 @@ private fun HomeEmptyCard(
     onAddFolder: () -> Unit,
     onScanDevice: () -> Unit
 ) {
+    val colorScheme = MaterialTheme.colorScheme
     Surface(
         shape = RoundedCornerShape(28.dp),
         color = cardSurface,
+        border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.32f)),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
@@ -1507,14 +1426,17 @@ private fun HomeEmptyCard(
             )
             Text(
                 text = stringResource(R.string.home_empty_title),
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontFamily = DisplayFontFamily,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = colorScheme.onSurface,
                 textAlign = TextAlign.Center
             )
             Text(
                 text = stringResource(R.string.home_empty_subtitle),
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(4.dp))
@@ -1523,24 +1445,32 @@ private fun HomeEmptyCard(
                 shape = CircleShape,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp)
+                    .height(52.dp)
                     .testTag("empty_scan_folder_button")
             ) {
                 Icon(CadenceIcons.CreateNewFolder, contentDescription = null, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(stringResource(R.string.action_scan_local_folders))
+                Text(
+                    text = stringResource(R.string.action_scan_local_folders),
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
             FilledTonalButton(
                 onClick = onScanDevice,
                 shape = CircleShape,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .height(50.dp)
                     .testTag("empty_scan_device_button")
             ) {
                 Icon(CadenceIcons.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(stringResource(R.string.action_scan_device))
+                Text(
+                    text = stringResource(R.string.action_scan_device),
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
         }
     }

@@ -70,6 +70,7 @@ data class DiscoverSection(
 data class DiscoverFeed(
     val sections: StableList<DiscoverSection> = StableList(),
     val moodPlaylists: StableList<MoodSmartPlaylist> = StableList(),
+    val routineMixes: StableList<RoutineMix> = StableList(),
     val anchorTrackTitle: String? = null,
     val smartMixOutput: MusicIntelligenceOutput? = null,
     val insights: ListeningInsights = ListeningInsights()
@@ -110,18 +111,20 @@ internal class DiscoverFeedGenerator(
         val skippedSet = skippedTrackIds.toSet()
         val usedIds = HashSet<String>(cleanTracks.size)
 
-        // Pre-compute BPM, energy, and mood vectors once for O(N) efficiency across all sections & insights
+        // Reuse versioned TrackIntelligenceCache snapshot to avoid redundant O(N) recomputation
+        val snapshot = TrackIntelligenceCache.getOrBuildSnapshot(cleanTracks, engine)
         val bpmById = HashMap<String, Int>(cleanTracks.size)
         val energyById = HashMap<String, String>(cleanTracks.size)
         val moodVecById = HashMap<String, Map<String, Double>>(cleanTracks.size)
         val primaryMoodById = HashMap<String, String>(cleanTracks.size)
         for (t in cleanTracks) {
-            val bpm = engine.effectiveBpmFor(t)
-            val vec = engine.moodVectorFor(t)
+            val cached = snapshot.vectorsById[t.id]
+            val bpm = cached?.effectiveBpm ?: engine.effectiveBpmFor(t)
+            val vec = cached?.moodVector ?: engine.moodVectorFor(t)
             bpmById[t.id] = bpm
-            energyById[t.id] = engine.energyLevelFor(bpm)
+            energyById[t.id] = cached?.energyLevel ?: engine.energyLevelFor(bpm)
             moodVecById[t.id] = vec
-            primaryMoodById[t.id] = vec.maxByOrNull { it.value }?.key ?: "calm"
+            primaryMoodById[t.id] = cached?.primaryMood ?: vec.maxByOrNull { it.value }?.key ?: "calm"
         }
 
         val insights = computeListeningInsights(cleanTracks, primaryMoodById)
@@ -130,6 +133,14 @@ internal class DiscoverFeedGenerator(
             nowMs = nowMs,
             localHourOfDay = localHourOfDay
         ).toStableList()
+        val routineMixes = RoutineMixCurator.buildRoutineMixes(
+            libraryTracks = cleanTracks,
+            nowMs = nowMs,
+            localHourOfDay = localHourOfDay,
+            dayOfWeek = currentLocalDayOfWeek(nowMs),
+            maxTracksPerMix = cap,
+            engine = engine
+        )
 
         // Compute adaptive per-section target so small libraries still spread cleanly with minimal overlap
         val targetSize = when {
@@ -223,6 +234,7 @@ internal class DiscoverFeedGenerator(
         return DiscoverFeed(
             sections = sections.distinctBy { it.category }.toStableList(),
             moodPlaylists = moodPlaylists,
+            routineMixes = routineMixes,
             anchorTrackTitle = anchorTitle,
             smartMixOutput = smartMixOutput,
             insights = insights

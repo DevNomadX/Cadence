@@ -644,11 +644,17 @@ object LocalMoodAndAffinityEngine {
         }
 
         val rng = Random(seed)
-        val maxPlays = tracks.maxOfOrNull { it.playCount.coerceAtLeast(0) }?.coerceAtLeast(1) ?: 1
+        val snapshot = TrackIntelligenceCache.getOrBuildSnapshot(tracks)
+        val cachedAffinities = if (sessionSkippedIds.isEmpty()) {
+            snapshot.getOrComputeAffinities(tracks, nowMs, localHourOfDay)
+        } else {
+            null
+        }
+        val maxPlays = snapshot.maxLibraryPlays
 
         // Pre-compute all deterministic sort keys BEFORE sorting (TimSort transitivity guarantee)
         val candidates = tracks.map { track ->
-            val breakdown = computeLocalAffinity(
+            val breakdown = cachedAffinities?.get(track.id) ?: computeLocalAffinity(
                 track = track,
                 nowMs = nowMs,
                 localHourOfDay = localHourOfDay,
@@ -785,11 +791,13 @@ object LocalMoodAndAffinityEngine {
         maxTracksPerMood: Int = 16
     ): List<MoodSmartPlaylist> {
         if (tracks.isEmpty()) return emptyList()
-        val maxPlays = tracks.maxOfOrNull { it.playCount.coerceAtLeast(0) }?.coerceAtLeast(1) ?: 1
+        val snapshot = TrackIntelligenceCache.getOrBuildSnapshot(tracks)
+        val affinities = snapshot.getOrComputeAffinities(tracks, nowMs, localHourOfDay)
 
         val precomputed = tracks.map { track ->
-            val resolvedTags = track.resolvedMoodTags()
-            val moodScores = computeMoodAffinityScores(
+            val cached = snapshot.vectorsById[track.id]
+            val resolvedTags = cached?.smartMoodTags ?: track.resolvedMoodTags()
+            val moodScores = cached?.smartMoodScores ?: computeMoodAffinityScores(
                 title = track.title,
                 album = track.album,
                 artist = track.artist,
@@ -798,11 +806,11 @@ object LocalMoodAndAffinityEngine {
                 bpm = track.bpm,
                 artworkColorArgb = track.artworkColorArgb
             )
-            val affinity = computeLocalAffinity(
+            val affinity = affinities[track.id]?.score ?: computeLocalAffinity(
                 track = track,
                 nowMs = nowMs,
                 localHourOfDay = localHourOfDay,
-                maxLibraryPlays = maxPlays
+                maxLibraryPlays = snapshot.maxLibraryPlays
             ).score
             PrecomputedMoodTrack(
                 track = track,

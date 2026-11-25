@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 data class TrackDedupeTuple(
@@ -39,6 +40,21 @@ interface TrackDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTracks(tracks: List<TrackEntity>)
 
+    @Upsert
+    suspend fun upsertTracksAtomic(tracks: List<TrackEntity>)
+
+    @Transaction
+    suspend fun syncFolderTracks(upserts: List<TrackEntity>, deleteIds: List<String>) {
+        if (upserts.isNotEmpty()) {
+            upsertTracksAtomic(upserts)
+        }
+        if (deleteIds.isNotEmpty()) {
+            deleteIds.chunked(500).forEach { chunk ->
+                deleteTracksByIds(chunk)
+            }
+        }
+    }
+
     @Query("UPDATE tracks SET isFavorite = :isFavorite WHERE id = :trackId")
     suspend fun setFavorite(trackId: String, isFavorite: Boolean)
 
@@ -60,6 +76,32 @@ interface TrackDao {
         affinityScore: Float,
         moodTags: String,
         artworkColorArgb: Int
+    )
+
+    @Query(
+        """
+        UPDATE tracks
+        SET codec = :codec,
+            bitrateKbps = :bitrateKbps,
+            sampleRateHz = :sampleRateHz,
+            bitDepth = :bitDepth,
+            artworkPath = COALESCE(:artworkPath, artworkPath),
+            artworkColorArgb = :artworkColorArgb,
+            moodTags = :moodTags,
+            affinityScore = :affinityScore
+        WHERE id = :trackId
+        """
+    )
+    suspend fun updateEnrichedAudioMetadata(
+        trackId: String,
+        codec: String,
+        bitrateKbps: Int,
+        sampleRateHz: Int,
+        bitDepth: Int,
+        artworkPath: String?,
+        artworkColorArgb: Int,
+        moodTags: String,
+        affinityScore: Float
     )
 
     @Query("DELETE FROM tracks WHERE id = :trackId")

@@ -79,7 +79,11 @@ import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
 import com.example.ui.components.SCRUBBER_THUMB_CORE_DP
 import com.example.ui.components.SCRUBBER_THUMB_HALO_DRAG_DP
 import com.example.ui.components.SCRUBBER_THUMB_HALO_IDLE_DP
+import com.example.ui.components.SCRUBBER_THUMB_LOBE_COUNT
+import com.example.ui.components.SCRUBBER_THUMB_ROTATION_DURATION_MS
+import com.example.ui.components.SCRUBBER_TOUCH_HEIGHT_DP
 import com.example.ui.components.SCRUBBER_UNPLAYED_TRACK_DP
+import com.example.ui.components.buildScallopedThumbPath
 import com.example.ui.components.SmartPlaylistSheetContent
 import com.example.ui.components.buildArtworkImageRequest
 import com.example.ui.components.formatSmartMixSubtitle
@@ -1071,19 +1075,26 @@ class MusicIntelligenceAndPerfTest {
         assertEquals(14f, (chevronBounds.right - chevronBounds.left).value, 1f)
         assertEquals(14f, (chevronBounds.bottom - chevronBounds.top).value, 1f)
 
-        // Verify circular seek handle specs + timestamps positioned 8dp below scrubber + drag seek works
+        // Verify 8-lobe rotating thumb + glowing translucent halo scrubber specs, 48dp touch height, and drag seek
         assertEquals(3f, SCRUBBER_UNPLAYED_TRACK_DP, 0.01f)
         assertEquals(14f, SCRUBBER_THUMB_CORE_DP, 0.01f)
         assertEquals(24f, SCRUBBER_THUMB_HALO_IDLE_DP, 0.01f)
         assertEquals(30f, SCRUBBER_THUMB_HALO_DRAG_DP, 0.01f)
+        assertEquals(8, SCRUBBER_THUMB_LOBE_COUNT)
+        assertEquals(6000, SCRUBBER_THUMB_ROTATION_DURATION_MS)
+        assertEquals(48f, SCRUBBER_TOUCH_HEIGHT_DP, 0.01f)
+        val thumbBounds = buildScallopedThumbPath(outerRadiusPx = 20f).getBounds()
+        assertFalse("8-lobe scalloped thumb path must be non-empty", thumbBounds.isEmpty)
+        assertTrue("Scalloped thumb path must fit within outer radius", thumbBounds.width in 36f..40.5f && thumbBounds.height in 36f..40.5f)
         val scrubberBounds = composeRule.onNodeWithTag("playback_scrubber").getUnclippedBoundsInRoot()
+        assertEquals("Scrubber touch target must be 48dp tall", 48f, (scrubberBounds.bottom - scrubberBounds.top).value, 1.5f)
         val elapsedBounds = composeRule.onNodeWithTag("scrubber_elapsed_time").getUnclippedBoundsInRoot()
         composeRule.onNodeWithTag("scrubber_elapsed_time").assertTextContains("1:04")
         composeRule.onNodeWithTag("scrubber_duration_time").assertTextContains("4:08")
         assertTrue("Timestamps must sit ~8dp below scrubber", elapsedBounds.top - scrubberBounds.bottom >= 7.dp)
         composeRule.onNodeWithTag("playback_scrubber").performTouchInput { swipeRight() }
         composeRule.waitForIdle()
-        assertNotNull("Dragging circular seek handle must emit seek fraction", lastSeekFraction)
+        assertNotNull("Dragging scalloped seek handle must emit seek fraction", lastSeekFraction)
 
         // Artwork must adapt cleanly and stay within 260dp cap
         val artBounds = composeRule.onNodeWithTag("hero_album_artwork").getUnclippedBoundsInRoot()
@@ -1127,6 +1138,67 @@ class MusicIntelligenceAndPerfTest {
         assertTrue(collapsed)
         assertTrue(moodClicked)
         assertTrue(lyricsClicked)
+    }
+
+    @Test
+    fun `NowPlaying WavyExpressiveSlider renders rotating thumb and luminous halo cleanly in both playing and paused states`() {
+        var playing by mutableStateOf(true)
+        var soughtFraction: Float? = null
+        val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 90_000L, durationMs = 240_000L))
+        val track = sampleLibraryTracks.first()
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+                Box(modifier = Modifier.width(390.dp).height(844.dp)) {
+                    NowPlayingScreen(
+                        uiState = NowPlayingUiState(
+                            currentTrack = track,
+                            isPlaying = playing,
+                            isInitialLibraryLoaded = true,
+                            queueTracks = sampleLibraryTracks.toStableList(),
+                            currentQueueIndex = 0
+                        ),
+                        themePrefs = ThemePreferences(
+                            palette = ExpressivePalette.TERRACOTTA,
+                            wavyScrubberEnabled = true,
+                            performanceModeEnabled = false
+                        ),
+                        progressFlow = progressFlow,
+                        sleepTimerFlow = MutableStateFlow(SleepTimerState()),
+                        playlists = StableList(),
+                        onTogglePlayPause = { playing = !playing },
+                        onNext = {},
+                        onPrevious = {},
+                        onSeek = { soughtFraction = it },
+                        onToggleShuffle = {},
+                        onCycleRepeat = {},
+                        onToggleFavorite = {},
+                        onMatchMood = {},
+                        onCollapse = {}
+                    )
+                }
+            }
+        }
+
+        // Playing state: advance clock across rotation & glow pulse frames without crashing or clipping
+        composeRule.mainClock.advanceTimeBy(1200L)
+        composeRule.onNodeWithTag("playback_scrubber").assertIsDisplayed()
+        composeRule.onNodeWithTag("playback_scrubber_canvas").assertIsDisplayed()
+        val playingBounds = composeRule.onNodeWithTag("playback_scrubber").getUnclippedBoundsInRoot()
+        assertEquals(48f, (playingBounds.bottom - playingBounds.top).value, 1.5f)
+        composeRule.onNodeWithTag("playback_scrubber").performTouchInput { swipeRight() }
+        assertNotNull("Seek drag must work while playing with active rotation & glow", soughtFraction)
+
+        // Transition to paused state: freezes angle and settles back to clean static translucent halo
+        soughtFraction = null
+        playing = false
+        composeRule.mainClock.advanceTimeBy(500L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("playback_scrubber").assertIsDisplayed()
+        composeRule.onNodeWithTag("playback_scrubber_canvas").assertIsDisplayed()
+        composeRule.onNodeWithTag("playback_scrubber").performTouchInput { swipeRight() }
+        composeRule.waitForIdle()
+        assertNotNull("Seek drag must remain crisp while paused", soughtFraction)
     }
 
     @Test
@@ -1492,14 +1564,16 @@ class MusicIntelligenceAndPerfTest {
 
     @Test
     fun `HomeScreen renders personalized greeting Continue Listening progress and 2x2 shortcut grid`() {
-        // Verify deterministic time-of-day greeting formatter
+        // Verify deterministic time-of-day greeting formatter across all 5 buckets
+        assertEquals("Late night vibes", formatHomeGreeting("", hourOfDay = 0))
+        assertEquals("Late night vibes, Alex", formatHomeGreeting("Alex", hourOfDay = 2))
         assertEquals("Good morning, Alex!", formatHomeGreeting("Alex", hourOfDay = 8))
         assertEquals("Good afternoon, Alex!", formatHomeGreeting("  Alex  ", hourOfDay = 14))
         assertEquals("Good evening, Alex!", formatHomeGreeting("Alex", hourOfDay = 19))
-        assertEquals("Good evening, Alex!", formatHomeGreeting("Alex", hourOfDay = 23))
+        assertEquals("Good night, Alex!", formatHomeGreeting("Alex", hourOfDay = 23))
         assertEquals("Good morning!", formatHomeGreeting("   ", hourOfDay = 9))
         assertEquals("Good afternoon!", formatHomeGreeting("", hourOfDay = 13))
-        assertEquals("Good evening!", formatHomeGreeting("", hourOfDay = 21))
+        assertEquals("Good night!", formatHomeGreeting("", hourOfDay = 21))
 
         val currentTrack = sampleLibraryTracks.first()
         val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 60_000L, durationMs = 212_000L))
@@ -1673,7 +1747,12 @@ class MusicIntelligenceAndPerfTest {
 
         // 2. Tune Mix: High energy filter boosts high-BPM track to #1
         val highEnergyOut = engine.analyzeAndRecommend(
-            request = MusicIntelligenceRequest(energyFilter = "high", maxTracks = 5, nowMs = nowMs),
+            request = MusicIntelligenceRequest(
+                energyFilter = "high",
+                maxTracks = 5,
+                timeOfDay = "afternoon",
+                nowMs = nowMs
+            ),
             history = history,
             libraryTracks = tracks
         )

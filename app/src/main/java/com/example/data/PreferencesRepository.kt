@@ -126,6 +126,7 @@ class PreferencesRepository(private val context: Context) {
         val LEGACY_MIGRATED = booleanPreferencesKey("room_migration_v1_done")
         val USER_DISPLAY_NAME = stringPreferencesKey("user_display_name")
         val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
+        val SCAN_ALL_FOLDERS = booleanPreferencesKey("scan_all_folders_enabled")
     }
 
     val userProfileFlow: Flow<UserProfile> = context.cadenceDataStore.data.map { prefs ->
@@ -226,6 +227,17 @@ class PreferencesRepository(private val context: Context) {
             legacyImportedTrackUris = prefs[Keys.LEGACY_IMPORTED_URIS] ?: emptySet()
         )
     }.distinctUntilChanged()
+
+    val scanAllFoldersFlow: Flow<Boolean> = context.cadenceDataStore.data
+        .map { prefs -> prefs[Keys.SCAN_ALL_FOLDERS] ?: false }
+        .distinctUntilChanged()
+
+    suspend fun isScanAllFoldersEnabled(): Boolean =
+        context.cadenceDataStore.data.first()[Keys.SCAN_ALL_FOLDERS] ?: false
+
+    suspend fun setScanAllFoldersEnabled(enabled: Boolean) {
+        context.cadenceDataStore.edit { it[Keys.SCAN_ALL_FOLDERS] = enabled }
+    }
 
     suspend fun getMinTrackDurationSec(): Int =
         (context.cadenceDataStore.data.first()[Keys.MIN_TRACK_DURATION_SEC] ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300)

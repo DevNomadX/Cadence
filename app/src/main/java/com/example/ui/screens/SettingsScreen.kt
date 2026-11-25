@@ -117,6 +117,8 @@ fun SettingsScreen(
     onToggleAcousticEnhance: (Boolean) -> Unit = {},
     userDisplayName: String = "",
     onUpdateDisplayName: (String) -> Unit = {},
+    scanAllFolders: Boolean = false,
+    onToggleScanAllFolders: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
@@ -377,6 +379,14 @@ fun SettingsScreen(
                                     }
                                 }
                             }
+
+                            ExpressiveToggleRow(
+                                title = stringResource(R.string.settings_all_folders_title),
+                                description = stringResource(R.string.settings_all_folders_desc),
+                                checked = scanAllFolders,
+                                onCheckedChange = onToggleScanAllFolders,
+                                testTag = "settings_all_folders_switch"
+                            )
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),

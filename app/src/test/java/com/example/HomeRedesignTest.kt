@@ -34,8 +34,10 @@ import com.example.playback.PlaybackProgress
 import com.example.ui.icons.CadenceIcons
 import com.example.ui.player.HomeUiState
 import com.example.ui.screens.HomeScreen
-import com.example.ui.screens.HomeSessionPrompts
+import com.example.ui.screens.currentLocalHourOfDay
 import com.example.ui.screens.formatHomeGreeting
+import com.example.ui.screens.formatHomeSubtitle
+import com.example.ui.screens.homeSubtitleCandidates
 import com.example.ui.screens.resolveHomeHeroColors
 import com.example.ui.screens.resolveHomeLibraryGridColors
 import com.example.ui.screens.resolveHomeMoodDisplay
@@ -99,11 +101,13 @@ class HomeRedesignTest {
     private val tracks = listOf(hiResTrack, acousticTrack)
 
     @Test
-    fun `HomeScreen header hero card 310dp single play button interactive wavy seek and Your Library 156dp grid match spec`() {
+    fun `HomeScreen editorial header Jump Back In hero card Bento library grid and Gallery shelf match flagship M3 Expressive spec`() {
+        assertEquals("Late night vibes", formatHomeGreeting("", hourOfDay = 0))
+        assertEquals("Late night vibes", formatHomeGreeting("", hourOfDay = 1))
         assertEquals("Good morning!", formatHomeGreeting("", hourOfDay = 7))
         assertEquals("Good afternoon!", formatHomeGreeting("", hourOfDay = 15))
         assertEquals("Good evening!", formatHomeGreeting("", hourOfDay = 20))
-        assertEquals("Good evening!", formatHomeGreeting("", hourOfDay = 1))
+        assertEquals("Good night!", formatHomeGreeting("", hourOfDay = 21))
 
         val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 60_000L, durationMs = 240_000L))
         var expandedCount = 0
@@ -142,16 +146,22 @@ class HomeRedesignTest {
         }
         composeRule.waitForIdle()
 
-        // 1. Compact Header: Greeting + session subtitle + 42.dp circular Search & Settings buttons
+        // 1. Editorial Header: Greeting + session subtitle + 42.dp circular Search & Settings buttons
         composeRule.onNodeWithTag("home_header_title").assertIsDisplayed()
         val subtitleNode = composeRule.onNodeWithTag("home_header_subtitle").assertIsDisplayed()
         val subtitleText = subtitleNode.fetchSemanticsNode().config
             .getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Text) { emptyList() }
             .joinToString("") { it.text }
-        assertTrue(
-            "Session subtitle '$subtitleText' must come from HomeSessionPrompts",
-            subtitleText in HomeSessionPrompts
+        val expectedPool = homeSubtitleCandidates(
+            hourOfDay = currentLocalHourOfDay(),
+            trackCount = tracks.size,
+            hasLosslessTracks = true
         )
+        assertTrue(
+            "Session subtitle '$subtitleText' must come from time- and library-aware candidates $expectedPool",
+            subtitleText in expectedPool
+        )
+        assertNotEquals("Pick up where you left off.", subtitleText)
 
         val searchBounds = composeRule.onNodeWithTag("home_search_button").getUnclippedBoundsInRoot()
         val settingsBounds = composeRule.onNodeWithTag("settings_button").getUnclippedBoundsInRoot()
@@ -160,33 +170,57 @@ class HomeRedesignTest {
         assertEquals(42f, settingsBounds.width.value, 1.5f)
         assertEquals(42f, settingsBounds.height.value, 1.5f)
 
-        // 2. Main Now Playing Hero Card: 310.dp height, 108.dp artwork, HI-RES badge, ONLY ONE Play/Pause button
+        // 2. Main Now Playing Hero Card: 3 clean vertical tiers (100.dp artwork + 4-line metadata, wavy bar, centered 54.dp Play/Pause)
         val heroBounds = composeRule.onNodeWithTag("home_continue_card").getUnclippedBoundsInRoot()
-        assertEquals(310f, heroBounds.height.value, 2f)
+        assertTrue(
+            "Main Now Playing hero card must stay compact and balanced (was ${heroBounds.height.value})",
+            heroBounds.height.value in 220f..310f
+        )
 
         val artBounds = composeRule.onNodeWithTag("home_hero_artwork", useUnmergedTree = true).getUnclippedBoundsInRoot()
-        assertEquals(108f, artBounds.width.value, 1.5f)
-        assertEquals(108f, artBounds.height.value, 1.5f)
+        assertEquals(100f, artBounds.width.value, 1.5f)
+        assertEquals(100f, artBounds.height.value, 1.5f)
 
-        composeRule.onNodeWithTag("home_hero_hifi_badge", useUnmergedTree = true)
+        val statusBounds = composeRule.onNodeWithTag("home_hero_status_badge", useUnmergedTree = true)
             .assertIsDisplayed()
-        composeRule.onNodeWithText("HI-RES", useUnmergedTree = true)
+            .getUnclippedBoundsInRoot()
+        val titleBounds = composeRule.onNodeWithTag("home_hero_title", useUnmergedTree = true)
             .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        val artistBounds = composeRule.onNodeWithTag("home_hero_artist", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        val hifiBadgeBounds = composeRule.onNodeWithTag("home_hero_hifi_badge", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+
+        composeRule.onNodeWithText("NOW PLAYING", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("LOSSLESS", useUnmergedTree = true).assertIsDisplayed()
+
+        // Exact 4-line vertical metadata hierarchy: Status -> Title -> Artist -> Hi-Fi Audio badge
+        assertTrue("NOW PLAYING must sit above title", statusBounds.bottom.value <= titleBounds.top.value + 1f)
+        assertTrue("Title must sit above artist", titleBounds.bottom.value <= artistBounds.top.value + 1f)
+        assertTrue("Hi-Fi badge must sit below artist", hifiBadgeBounds.top.value >= artistBounds.bottom.value - 1f)
 
         val playBounds = composeRule.onNodeWithTag("home_continue_play_button", useUnmergedTree = true).getUnclippedBoundsInRoot()
         val waveBounds = composeRule.onNodeWithTag("home_continue_progress", useUnmergedTree = true).getUnclippedBoundsInRoot()
-        assertEquals("Stadium Play/Pause pill must be 42.dp tall", 42f, playBounds.height.value, 1.5f)
-        assertTrue("Stadium pill must be wider than tall to fit icon + label", playBounds.width.value > playBounds.height.value)
-        assertTrue("Stadium pill must sit above the wavy progress bar", playBounds.bottom.value <= waveBounds.top.value + 1f)
-        composeRule.onNodeWithTag("home_continue_play_label", useUnmergedTree = true)
-            .assertIsDisplayed()
-            .assertTextContains("Pause")
+        assertEquals("Centered Play/Pause button must be 54.dp wide", 54f, playBounds.width.value, 1.5f)
+        assertEquals("Centered Play/Pause button must be 54.dp tall", 54f, playBounds.height.value, 1.5f)
+        assertTrue("Wavy progress bar must sit below top tier artwork", waveBounds.top.value >= artBounds.bottom.value - 1f)
+        assertTrue("Centered Play/Pause button must sit below the wavy progress bar", playBounds.top.value >= waveBounds.bottom.value - 1f)
+        val heroCenterX = (heroBounds.left.value + heroBounds.right.value) / 2f
+        val playCenterX = (playBounds.left.value + playBounds.right.value) / 2f
+        assertEquals("Play/Pause button must be horizontally centered inside the hero card", heroCenterX, playCenterX, 2f)
+        composeRule.onNodeWithContentDescription("Pause", useUnmergedTree = true).assertIsDisplayed()
 
-        // Assert strictly ZERO Next/Previous/Shuffle/Repeat controls inside the Hero card
+        // Assert strictly ZERO Favorite, Shuffle, Previous, Next, Repeat, or Queue controls inside the Hero card
+        composeRule.onNodeWithTag("home_hero_favorite_button", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Toggle favorite", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Next track", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Previous track", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Toggle shuffle", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Cycle repeat mode", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Up Next", useUnmergedTree = true).assertDoesNotExist()
 
         // Interactive tap-to-seek and drag-to-seek on wavy progress bar do NOT trigger card expand
         composeRule.onNodeWithTag("home_continue_elapsed", useUnmergedTree = true).assertTextContains("1:00")
@@ -221,31 +255,41 @@ class HomeRedesignTest {
         composeRule.onNodeWithTag("home_hero_title", useUnmergedTree = true).performClick()
         assertEquals(1, expandedCount)
 
-        // 3. Your Library 2x2 Grid: 156.dp tall cards + 48.dp icon containers
+        // 3. Your Library 2x2 Bento Grid: 88.dp tiles + 44.dp expressive icon badges + unclipped labels at 360.dp
         composeRule.onNodeWithTag("home_list").performScrollToNode(hasTestTag("home_shortcuts_grid"))
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("home_your_library_header").assertIsDisplayed().assertTextContains("Your Library")
 
         listOf(
-            "home_shortcut_liked",
-            "home_shortcut_most_played",
-            "home_shortcut_recent_added",
-            "home_shortcut_shuffle_all"
-        ).forEach { tag ->
+            "home_shortcut_liked" to "Favorites",
+            "home_shortcut_most_played" to "Top Rotation",
+            "home_shortcut_recent_added" to "New Adds",
+            "home_shortcut_shuffle_all" to "Shuffle All"
+        ).forEach { (tag, label) ->
             val bounds = composeRule.onNodeWithTag(tag).getUnclippedBoundsInRoot()
-            assertEquals("Card $tag must be 156.dp tall", 156f, bounds.height.value, 2f)
+            assertEquals("Bento tile $tag must be 88.dp tall", 88f, bounds.height.value, 2f)
             val iconBounds = composeRule.onNodeWithTag("${tag}_icon", useUnmergedTree = true).getUnclippedBoundsInRoot()
-            assertEquals("Icon badge in $tag must be 48.dp", 48f, iconBounds.width.value, 1.5f)
-            assertEquals("Icon badge in $tag must be 48.dp", 48f, iconBounds.height.value, 1.5f)
+            assertEquals("Icon badge in $tag must be 44.dp", 44f, iconBounds.width.value, 1.5f)
+            assertEquals("Icon badge in $tag must be 44.dp", 44f, iconBounds.height.value, 1.5f)
+
+            val labelLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            composeRule.onNodeWithText(label, useUnmergedTree = true)
+                .fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult]
+                .action?.invoke(labelLayouts)
+            assertTrue("Shortcut label '$label' must resolve text layout", labelLayouts.isNotEmpty())
+            assertFalse(
+                "Shortcut label '$label' must not ellipsize at 360.dp",
+                labelLayouts.first().isLineEllipsized(0)
+            )
         }
 
-        // 4. Recently Played borderless shelf: 132.dp square artwork
+        // 4. Gallery-Grade Recently Played shelf: 140.dp borderless album artwork
         composeRule.onNodeWithTag("home_list").performScrollToNode(hasTestTag("home_recently_played_header"))
         composeRule.waitForIdle()
         val recentArtBounds = composeRule.onNodeWithTag("home_recent_art_${hiResTrack.id}", useUnmergedTree = true)
             .getUnclippedBoundsInRoot()
-        assertEquals(132f, recentArtBounds.width.value, 1.5f)
-        assertEquals(132f, recentArtBounds.height.value, 1.5f)
+        assertEquals(140f, recentArtBounds.width.value, 1.5f)
+        assertEquals(140f, recentArtBounds.height.value, 1.5f)
 
         // 5. Made for Your Mood is completely omitted when moodCollections is empty
         composeRule.onNodeWithTag("home_mood_section_header").assertDoesNotExist()
@@ -390,39 +434,49 @@ class HomeRedesignTest {
         val lightHero = resolveHomeHeroColors(light)
         val darkHero = resolveHomeHeroColors(dark)
 
-        // Hero card derives directly from MaterialTheme.colorScheme roles with opaque pre-blended surfaces
-        assertEquals(light.primaryContainer.opaqueOver(light.surfaceContainerHigh, 0.94f), lightHero.topColor)
-        assertEquals(light.onPrimaryContainer, lightHero.titleColor)
-        assertEquals(light.onPrimaryContainer, lightHero.timestampColor)
+        // Hero card derives calm low-glare M3 tonal layers directly from MaterialTheme.colorScheme
+        assertEquals(light.primaryContainer.opaqueOver(light.surfaceContainerHigh, 0.24f), lightHero.topColor)
+        assertEquals(light.onSurface, lightHero.titleColor)
+        assertEquals(light.onSurfaceVariant, lightHero.artistColor)
+        assertEquals(light.onSurfaceVariant, lightHero.timestampColor)
         assertEquals(light.primary, lightHero.playButtonContainer)
         assertEquals(light.onPrimary, lightHero.playButtonContent)
         assertEquals(light.primary, lightHero.wavePlayedColor)
-        assertEquals(light.surface.opaqueOver(lightHero.topColor, 0.28f), lightHero.pillContainer)
-        assertEquals(light.onPrimaryContainer.opaqueOver(lightHero.bottomColor, 0.24f), lightHero.waveUnplayedColor)
+        assertEquals(light.primary, lightHero.statusTextColor)
+        assertEquals(light.primary, lightHero.statusIconTint)
+        assertEquals(light.primary.opaqueOver(lightHero.topColor, 0.14f), lightHero.hifiPillContainer)
+        assertEquals(light.primary, lightHero.hifiPillText)
+        assertEquals(light.onSurfaceVariant.opaqueOver(lightHero.bottomColor, 0.24f), lightHero.waveUnplayedColor)
         assertEquals(1f, lightHero.topColor.alpha, 0.001f)
         assertEquals(1f, lightHero.bottomColor.alpha, 0.001f)
-        assertEquals(1f, lightHero.pillContainer.alpha, 0.001f)
+        assertEquals(1f, lightHero.hifiPillContainer.alpha, 0.001f)
         assertEquals(1f, lightHero.waveUnplayedColor.alpha, 0.001f)
 
         assertNotEquals("Hero surface must adapt between Light Cobalt and Dark Matcha", lightHero.topColor, darkHero.topColor)
         assertNotEquals("Hero play button must adapt across themes", lightHero.playButtonContainer, darkHero.playButtonContainer)
         assertNotEquals("Hero title color must adapt across Light and Dark", lightHero.titleColor, darkHero.titleColor)
 
-        // Your Library 2x2 grid cards map cleanly to distinct M3 tonal container roles
+        // Your Library 2x2 grid cards map cleanly to calm low-glare tonal surfaces with vibrant 44.dp icon badges
         val lightGrid = resolveHomeLibraryGridColors(light)
         val darkGrid = resolveHomeLibraryGridColors(dark)
 
+        assertEquals(light.primary.opaqueOver(light.surfaceContainerHigh, 0.12f), lightGrid.favorites.topColor)
         assertEquals(light.primary, lightGrid.favorites.iconContainerColor)
         assertEquals(light.onPrimary, lightGrid.favorites.iconTint)
-        assertEquals(light.onPrimaryContainer, lightGrid.favorites.titleColor)
+        assertEquals(light.onSurface, lightGrid.favorites.titleColor)
+        assertEquals(light.onSurfaceVariant, lightGrid.favorites.subtitleColor)
 
+        assertEquals(light.tertiary.opaqueOver(light.surfaceContainerHigh, 0.12f), lightGrid.topRotation.topColor)
         assertEquals(light.tertiary, lightGrid.topRotation.iconContainerColor)
         assertEquals(light.onTertiary, lightGrid.topRotation.iconTint)
-        assertEquals(light.onTertiaryContainer, lightGrid.topRotation.titleColor)
+        assertEquals(light.onSurface, lightGrid.topRotation.titleColor)
+        assertEquals(light.onSurfaceVariant, lightGrid.topRotation.subtitleColor)
 
+        assertEquals(light.secondary.opaqueOver(light.surfaceContainerHigh, 0.12f), lightGrid.newAdds.topColor)
         assertEquals(light.secondary, lightGrid.newAdds.iconContainerColor)
         assertEquals(light.onSecondary, lightGrid.newAdds.iconTint)
-        assertEquals(light.onSecondaryContainer, lightGrid.newAdds.titleColor)
+        assertEquals(light.onSurface, lightGrid.newAdds.titleColor)
+        assertEquals(light.onSurfaceVariant, lightGrid.newAdds.subtitleColor)
 
         assertEquals(light.primary.opaqueOver(lightGrid.shuffleAll.topColor, 0.16f), lightGrid.shuffleAll.iconContainerColor)
         assertEquals(light.primary, lightGrid.shuffleAll.iconTint)
@@ -520,8 +574,8 @@ class HomeRedesignTest {
     }
 
     @Test
-    fun `HomeScreen Hero card gives full width to artist subtitle without truncation and toggles Stadium Play Pause pill above wavy bar at 360dp`() {
-        val longArtistTrack = hiResTrack.copy(
+    fun `HomeScreen Hero card gives full width to artist subtitle without truncation and toggles centered 54dp Play Pause button below wavy bar at 360dp`() {
+        val longArtistTrack = acousticTrack.copy(
             title = "Velvet Horizon",
             artist = "Klara Lind & Quartet"
         )
@@ -534,7 +588,7 @@ class HomeRedesignTest {
                 Box(modifier = Modifier.width(360.dp).height(800.dp)) {
                     HomeScreen(
                         uiState = HomeUiState(
-                            allTracks = listOf(longArtistTrack, acousticTrack).toStableList(),
+                            allTracks = listOf(longArtistTrack, hiResTrack).toStableList(),
                             recentlyPlayed = listOf(longArtistTrack).toStableList(),
                             recentlyAdded = listOf(longArtistTrack).toStableList(),
                             likedTracks = listOf(longArtistTrack).toStableList(),
@@ -561,11 +615,11 @@ class HomeRedesignTest {
         }
         composeRule.waitForIdle()
 
-        // 1. Artist subtitle gets full remaining width (~162.dp on 360.dp screen) without horizontal truncation
+        // 1. Artist subtitle gets full remaining width (~168.dp on 360.dp screen) without horizontal truncation
         val artistNode = composeRule.onNodeWithTag("home_hero_artist", useUnmergedTree = true).assertIsDisplayed()
         val artistBounds = artistNode.getUnclippedBoundsInRoot()
         assertTrue(
-            "Artist subtitle should receive full remaining width (~162.dp) at 360.dp, was ${artistBounds.width.value}",
+            "Artist subtitle should receive full remaining width (~168.dp) at 360.dp, was ${artistBounds.width.value}",
             artistBounds.width.value >= 155f
         )
         val artistLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
@@ -579,32 +633,303 @@ class HomeRedesignTest {
             artistLayout.isLineEllipsized(0) || artistLayout.didOverflowWidth
         )
 
-        val artBounds = composeRule.onNodeWithTag("home_hero_artwork", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        // 2. HI-FI AUDIO pill sits directly below the artist subtitle
+        val hifiBounds = composeRule.onNodeWithTag("home_hero_hifi_badge", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        composeRule.onNodeWithText("HI-FI AUDIO", useUnmergedTree = true).assertIsDisplayed()
+        assertTrue("HI-FI AUDIO pill must sit below artist subtitle", hifiBounds.top.value >= artistBounds.bottom.value - 1f)
+
         val playBounds = composeRule.onNodeWithTag("home_continue_play_button", useUnmergedTree = true).getUnclippedBoundsInRoot()
         val waveBounds = composeRule.onNodeWithTag("home_continue_progress", useUnmergedTree = true).getUnclippedBoundsInRoot()
         val cardBounds = composeRule.onNodeWithTag("home_continue_card").getUnclippedBoundsInRoot()
 
-        // 2. Stadium Play/Pause pill sits bottom-right above the wavy progress bar and below the artwork row
-        assertEquals(42f, playBounds.height.value, 1.5f)
-        assertTrue("Stadium pill must sit below the artwork row", playBounds.top.value >= artBounds.bottom.value - 1f)
-        assertTrue("Stadium pill must sit right above the wavy progress bar", playBounds.bottom.value <= waveBounds.top.value + 1f)
-        assertTrue(
-            "Stadium pill must align to the trailing end of the hero card",
-            playBounds.right.value >= cardBounds.right.value - 24f
+        // 3. Single centered 54.dp Play/Pause button sits below wavy progress bar with no Favorite/Shuffle/Prev/Next/Queue buttons
+        assertEquals(54f, playBounds.width.value, 1.5f)
+        assertEquals(54f, playBounds.height.value, 1.5f)
+        assertTrue("Play/Pause button must sit below wavy progress bar", playBounds.top.value >= waveBounds.bottom.value - 1f)
+        assertEquals(
+            "Play/Pause button must be horizontally centered inside the hero card",
+            (cardBounds.left.value + cardBounds.right.value) / 2f,
+            (playBounds.left.value + playBounds.right.value) / 2f,
+            2f
         )
+        composeRule.onNodeWithTag("home_hero_favorite_button", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Toggle favorite", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Up Next", useUnmergedTree = true).assertDoesNotExist()
 
-        // 3. Displays "Pause" while playing, toggles cleanly to "Play" on click without expanding card
-        composeRule.onNodeWithTag("home_continue_play_label", useUnmergedTree = true)
-            .assertIsDisplayed()
-            .assertTextContains("Pause")
+        // 4. Displays NOW PLAYING + Pause while playing, toggles cleanly to PAUSED + Play on click without expanding card
+        composeRule.onNodeWithText("NOW PLAYING", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Pause", useUnmergedTree = true).assertIsDisplayed()
 
         composeRule.onNodeWithTag("home_continue_play_button", useUnmergedTree = true).performClick()
         composeRule.waitForIdle()
 
         assertEquals(1, toggleCalls)
-        assertEquals("Tapping Stadium Play/Pause pill must not trigger card expand", 0, expandCalls)
-        composeRule.onNodeWithTag("home_continue_play_label", useUnmergedTree = true)
-            .assertIsDisplayed()
-            .assertTextContains("Play")
+        assertEquals("Tapping centered Play/Pause button must not trigger card expand", 0, expandCalls)
+        composeRule.onNodeWithText("PAUSED", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Play", useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun `HomeScreen final mood section scrolls clear above the floating Mini-Player and navigation dock`() {
+        val mood = MoodSmartPlaylist(
+            mood = SmartMoodTag.LATE_NIGHT,
+            title = SmartMoodTag.LATE_NIGHT.label,
+            subtitle = "Nocturnal & ambient flow",
+            tracks = tracks.toStableList(),
+            totalMatchCount = tracks.size
+        )
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+                Box(modifier = Modifier.width(360.dp).height(800.dp)) {
+                    HomeScreen(
+                        uiState = HomeUiState(
+                            allTracks = tracks.toStableList(),
+                            recentlyPlayed = tracks.toStableList(),
+                            recentlyAdded = tracks.toStableList(),
+                            likedTracks = listOf(hiResTrack).toStableList(),
+                            mostPlayedTracks = tracks.toStableList(),
+                            moodCollections = listOf(mood).toStableList(),
+                            isInitialLibraryLoaded = true
+                        ),
+                        currentTrack = hiResTrack,
+                        isPlaying = true,
+                        artworkShape = ExpressiveArtworkShape.SCALLOP,
+                        onExpandNowPlaying = {},
+                        onTogglePlayPause = {},
+                        onSelectTrack = { _, _ -> },
+                        onPlayTracks = { _, _ -> },
+                        onToggleFavorite = {},
+                        onOpenSettings = {},
+                        onAddFolder = {},
+                        onScanDevice = {}
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // Scroll all the way to the bottom of the Home feed
+        composeRule.onNodeWithTag("home_list").performTouchInput {
+            swipe(
+                start = Offset(width / 2f, height * 0.85f),
+                end = Offset(width / 2f, height * 0.10f),
+                durationMillis = 150
+            )
+            swipe(
+                start = Offset(width / 2f, height * 0.85f),
+                end = Offset(width / 2f, height * 0.10f),
+                durationMillis = 150
+            )
+        }
+        composeRule.waitForIdle()
+
+        val moodRowBounds = composeRule.onNodeWithTag("home_mood_row").getUnclippedBoundsInRoot()
+        assertTrue(
+            "Final mood row bottom (${moodRowBounds.bottom.value}dp) must clear the 168.dp floating Mini-Player + nav dock on an 800.dp viewport (<= 640.dp)",
+            moodRowBounds.bottom.value <= 640f
+        )
+    }
+
+    @Test
+    fun `Recently Played shelf enforces 140dp item width 12dp spacing and unclipped ascenders for title and artist`() {
+        val longTitleTallAscenderTrack = hiResTrack.copy(
+            id = "rp_tall_1",
+            title = "Interlude: Jumping Over Tall Horizons (Extended Studio Mix)",
+            artist = "Furkan Şimşek & Istanbul Jazz Collective"
+        )
+        val neighborTrack = acousticTrack.copy(
+            id = "rp_tall_2",
+            title = "Fjord Echoes",
+            artist = "Şebnem Ferah & Friends"
+        )
+        val shelfTracks = listOf(longTitleTallAscenderTrack, neighborTrack)
+
+        composeRule.setContent {
+            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+                Box(modifier = Modifier.width(360.dp).height(800.dp)) {
+                    HomeScreen(
+                        uiState = HomeUiState(
+                            allTracks = shelfTracks.toStableList(),
+                            recentlyPlayed = shelfTracks.toStableList(),
+                            recentlyAdded = shelfTracks.toStableList(),
+                            likedTracks = listOf(longTitleTallAscenderTrack).toStableList(),
+                            mostPlayedTracks = shelfTracks.toStableList(),
+                            moodCollections = emptyList<MoodSmartPlaylist>().toStableList(),
+                            isInitialLibraryLoaded = true
+                        ),
+                        currentTrack = longTitleTallAscenderTrack,
+                        isPlaying = true,
+                        artworkShape = ExpressiveArtworkShape.SCALLOP,
+                        onExpandNowPlaying = {},
+                        onTogglePlayPause = {},
+                        onSelectTrack = { _, _ -> },
+                        onPlayTracks = { _, _ -> },
+                        onToggleFavorite = {},
+                        onOpenSettings = {},
+                        onAddFolder = {},
+                        onScanDevice = {}
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("home_list")
+            .performScrollToNode(hasTestTag("home_recent_row"))
+        composeRule.waitForIdle()
+
+        val firstTileBounds = composeRule.onNodeWithTag("home_recent_tile_rp_tall_1").getUnclippedBoundsInRoot()
+        val secondTileBounds = composeRule.onNodeWithTag("home_recent_tile_rp_tall_2").getUnclippedBoundsInRoot()
+        val firstArtBounds = composeRule.onNodeWithTag("home_recent_art_rp_tall_1", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val firstTitleNode = composeRule.onNodeWithTag("home_recent_title_rp_tall_1", useUnmergedTree = true).assertIsDisplayed()
+        val firstArtistNode = composeRule.onNodeWithTag("home_recent_artist_rp_tall_1", useUnmergedTree = true).assertIsDisplayed()
+        val firstTitleBounds = firstTitleNode.getUnclippedBoundsInRoot()
+        val firstArtistBounds = firstArtistNode.getUnclippedBoundsInRoot()
+
+        // 1. Item width locked strictly to 140.dp and 12.dp horizontal gap between neighboring tiles
+        assertEquals("Recently Played tile width must be locked to 140.dp", 140f, firstTileBounds.width.value, 1.5f)
+        assertEquals("Neighboring Recently Played tile width must be locked to 140.dp", 140f, secondTileBounds.width.value, 1.5f)
+        assertEquals(
+            "Horizontal gap between Recently Played tiles must be 12.dp",
+            12f,
+            secondTileBounds.left.value - firstTileBounds.right.value,
+            1.5f
+        )
+
+        // 2. Title and artist stay strictly inside their own 140.dp column without touching neighbor
+        assertTrue(
+            "Title right (${firstTitleBounds.right}) must stay inside 140.dp tile right (${firstTileBounds.right})",
+            firstTitleBounds.right.value <= firstTileBounds.right.value + 0.5f
+        )
+        assertTrue(
+            "Artist right (${firstArtistBounds.right}) must stay inside 140.dp tile right (${firstTileBounds.right})",
+            firstArtistBounds.right.value <= firstTileBounds.right.value + 0.5f
+        )
+        assertTrue(
+            "Artist right (${firstArtistBounds.right}) must remain 12.dp clear of neighboring tile left (${secondTileBounds.left})",
+            secondTileBounds.left.value - firstArtistBounds.right.value >= 10.5f
+        )
+
+        // 3. Clean vertical stacking: 8.dp below artwork, 2.dp between title and artist
+        assertEquals(
+            "Gap below artwork to title must be 8.dp",
+            8f,
+            firstTitleBounds.top.value - firstArtBounds.bottom.value,
+            1.5f
+        )
+        assertEquals(
+            "Gap between title and artist must be 2.dp",
+            2f,
+            firstArtistBounds.top.value - firstTitleBounds.bottom.value,
+            1.5f
+        )
+
+        // 4. Zero vertical glyph clipping on title and tall-ascender artist subtitle (F, I, J, Ş)
+        val titleLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        firstTitleNode.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult]
+            .action?.invoke(titleLayouts)
+        assertTrue("Title must resolve text layout", titleLayouts.isNotEmpty())
+        val titleLayout = titleLayouts.first()
+        assertEquals(1, titleLayout.lineCount)
+        assertTrue(
+            "Title line top (${titleLayout.getLineTop(0)}) must not be clipped above 0",
+            titleLayout.getLineTop(0) >= 0f
+        )
+        assertTrue(
+            "Title line bottom (${titleLayout.getLineBottom(0)}) must fit inside measured height (${titleLayout.size.height})",
+            titleLayout.getLineBottom(0) <= titleLayout.size.height + 0.5f
+        )
+        assertTrue(
+            "Title measured height (${titleLayout.size.height}) must fit full paragraph height (${titleLayout.multiParagraph.height})",
+            titleLayout.multiParagraph.height <= titleLayout.size.height + 0.5f
+        )
+        assertTrue("Long title should ellipsize cleanly inside 140.dp", titleLayout.isLineEllipsized(0))
+
+        val artistLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        firstArtistNode.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult]
+            .action?.invoke(artistLayouts)
+        assertTrue("Artist must resolve text layout", artistLayouts.isNotEmpty())
+        val artistLayout = artistLayouts.first()
+        assertEquals(1, artistLayout.lineCount)
+        assertTrue(
+            "Artist line top (${artistLayout.getLineTop(0)}) must not be clipped above 0",
+            artistLayout.getLineTop(0) >= 0f
+        )
+        assertTrue(
+            "Artist line bottom (${artistLayout.getLineBottom(0)}) must fit inside measured height (${artistLayout.size.height})",
+            artistLayout.getLineBottom(0) <= artistLayout.size.height + 0.5f
+        )
+        assertTrue(
+            "Artist measured height (${artistLayout.size.height}) must fit full paragraph height (${artistLayout.multiParagraph.height})",
+            artistLayout.multiParagraph.height <= artistLayout.size.height + 0.5f
+        )
+        assertTrue(
+            "Artist line height (${firstArtistBounds.height.value}dp) must allow unclipped ascenders (>= 16.dp)",
+            firstArtistBounds.height.value >= 16f
+        )
+        assertTrue("Long artist should ellipsize cleanly inside 140.dp", artistLayout.isLineEllipsized(0))
+    }
+
+    @Test
+    fun `formatHomeGreeting covers all 24 hours without midnight Good evening bug and formatHomeSubtitle rotates context-aware lines`() {
+        // Explicitly assert midnight (00:04 -> hour = 0) and 01:00–04:59 NEVER say "Good evening!"
+        for (hour in 0..4) {
+            val bare = formatHomeGreeting("", hourOfDay = hour)
+            val named = formatHomeGreeting("Alex", hourOfDay = hour)
+            assertEquals("Hour $hour must use late night greeting", "Late night vibes", bare)
+            assertEquals("Hour $hour named greeting", "Late night vibes, Alex", named)
+            assertFalse("Hour $hour must NEVER return Good evening!", bare.contains("evening", ignoreCase = true))
+        }
+        for (hour in 5..11) {
+            assertEquals("Good morning!", formatHomeGreeting("", hourOfDay = hour))
+            assertEquals("Good morning, Alex!", formatHomeGreeting("Alex", hourOfDay = hour))
+        }
+        for (hour in 12..16) {
+            assertEquals("Good afternoon!", formatHomeGreeting("", hourOfDay = hour))
+            assertEquals("Good afternoon, Alex!", formatHomeGreeting("Alex", hourOfDay = hour))
+        }
+        for (hour in 17..20) {
+            assertEquals("Good evening!", formatHomeGreeting("", hourOfDay = hour))
+            assertEquals("Good evening, Alex!", formatHomeGreeting("Alex", hourOfDay = hour))
+        }
+        for (hour in 21..23) {
+            assertEquals("Good night!", formatHomeGreeting("", hourOfDay = hour))
+            assertEquals("Good night, Alex!", formatHomeGreeting("Alex", hourOfDay = hour))
+        }
+
+        // Dynamic context-aware subheadings: deterministic per sessionSeed/hour, library-aware, never static
+        val midnightA = formatHomeSubtitle(hourOfDay = 0, trackCount = 42, hasLosslessTracks = true, sessionSeed = 7)
+        val midnightB = formatHomeSubtitle(hourOfDay = 0, trackCount = 42, hasLosslessTracks = true, sessionSeed = 7)
+        assertEquals("Same session seed and hour must not flicker", midnightA, midnightB)
+
+        val lateNightPool = homeSubtitleCandidates(hourOfDay = 0, trackCount = 42, hasLosslessTracks = true)
+        assertTrue(lateNightPool.contains("Quiet tracks for after midnight"))
+        assertTrue(lateNightPool.contains("Low-light listening, ready when you are"))
+        assertTrue(lateNightPool.contains("Unwind with your late-night rotation"))
+
+        val morningPool = homeSubtitleCandidates(hourOfDay = 8, trackCount = 42, hasLosslessTracks = false)
+        assertTrue(morningPool.contains("Set the tempo for your morning"))
+        assertTrue(morningPool.contains("Fresh tracks to start the day"))
+        assertTrue(morningPool.contains("42 offline tracks ready for the day"))
+
+        val afternoonPool = homeSubtitleCandidates(hourOfDay = 14, trackCount = 42, hasLosslessTracks = true)
+        assertTrue(afternoonPool.contains("42 offline tracks ready to spin"))
+        assertTrue(afternoonPool.contains("Dive back into your lossless library"))
+        assertTrue(afternoonPool.contains("Curated from your local collection"))
+
+        val emptyLibraryAfternoon = homeSubtitleCandidates(hourOfDay = 14, trackCount = 0, hasLosslessTracks = false)
+        assertTrue(
+            "Empty library must not claim '0 offline tracks'",
+            emptyLibraryAfternoon.none { it.startsWith("0 offline") }
+        )
+
+        for (hour in 0..23) {
+            val subtitle = formatHomeSubtitle(hourOfDay = hour, trackCount = 24, hasLosslessTracks = true, sessionSeed = 11)
+            assertTrue("Subtitle for hour $hour must be non-blank", subtitle.isNotBlank())
+            assertFalse("Subtitle for hour $hour must not use old static prompt", subtitle.contains("Pick up where you left off"))
+        }
     }
 }

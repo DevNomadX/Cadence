@@ -205,9 +205,15 @@ class MusicIntelligenceEngine {
         history: ListeningHistoryInput,
         libraryTracks: List<Track>
     ): MusicIntelligenceOutput {
-        val inputJson = buildInputJson(request, history, libraryTracks)
+        val cleanTracks = libraryTracks.filter { it.id.isNotBlank() }.distinctBy { it.id }
+        if (cleanTracks.isEmpty()) {
+            return parseOutputJson(buildEmptyOutputJson().toString(), emptySet())
+        }
+        // Warm/reuse versioned memoization snapshot so repeated Tune Mix & Match Mood calls stay fast
+        TrackIntelligenceCache.getOrBuildSnapshot(cleanTracks, this)
+        val inputJson = buildInputJson(request, history, cleanTracks)
         val outputJson = generateOfflineRecommendationJson(inputJson)
-        val validIds = libraryTracks.mapTo(HashSet(libraryTracks.size)) { it.id }
+        val validIds = cleanTracks.mapTo(HashSet(cleanTracks.size)) { it.id }
         return parseOutputJson(outputJson, validIds)
     }
 

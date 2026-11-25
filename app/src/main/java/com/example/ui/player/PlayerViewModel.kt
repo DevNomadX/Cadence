@@ -22,6 +22,7 @@ import com.example.data.ThemePreferences
 import com.example.data.Track
 import com.example.data.TrackGroup
 import com.example.data.UserProfile
+import com.example.data.intelligence.DailyPicksCurator
 import com.example.data.intelligence.DiscoverSection
 import com.example.data.intelligence.DiscoverTuneConfig
 import com.example.data.intelligence.ListeningInsights
@@ -30,9 +31,14 @@ import com.example.data.intelligence.MoodSmartPlaylist
 import com.example.data.intelligence.MusicIntelligenceEngine
 import com.example.data.intelligence.MusicIntelligenceOutput
 import com.example.data.intelligence.MusicIntelligenceRequest
+import com.example.data.intelligence.RoutineMix
+import com.example.data.intelligence.currentLocalDayOfWeek
+import com.example.data.intelligence.currentLocalEpochDay
+import com.example.data.library.FolderScopeMatcher
 import com.example.data.library.LibraryRepository
 import com.example.data.library.LibrarySearchEngine
 import com.example.data.library.ScanState
+import com.example.data.library.SelectedFoldersWatcher
 import com.example.data.lyrics.LyricsUiState
 import com.example.data.lyrics.OfflineLyricsLoader
 import com.example.data.toStableList
@@ -113,6 +119,7 @@ data class SmartPlaylistUiState(
 @Immutable
 data class HomeUiState(
     val allTracks: StableList<Track> = StableList(),
+    val dailyPicks: StableList<Track> = StableList(),
     val recentlyPlayed: StableList<Track> = StableList(),
     val recentlyAdded: StableList<Track> = StableList(),
     val likedTracks: StableList<Track> = StableList(),
@@ -125,6 +132,7 @@ data class HomeUiState(
 @Immutable
 data class DiscoverUiState(
     val allTracks: StableList<Track> = StableList(),
+    val routineMixes: StableList<RoutineMix> = StableList(),
     val sections: StableList<DiscoverSection> = StableList(),
     val moodPlaylists: StableList<MoodSmartPlaylist> = StableList(),
     val anchorTrackTitle: String? = null,
@@ -170,6 +178,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     private val discoverRefreshNonceFlow = MutableStateFlow(0)
     private val discoverTuneConfigFlow = MutableStateFlow(DiscoverTuneConfig())
+    private val currentEpochDayFlow = MutableStateFlow(currentLocalEpochDay())
+    private val currentTimeContextSlotFlow = MutableStateFlow(computeTimeContextSlot())
 
     private val categoryFlow = MutableStateFlow(LibraryCategory.SONGS)
     private val searchQueryFlow = MutableStateFlow("")
@@ -190,6 +200,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         .map { it.toStableList() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), StableList())
 
+    val scanAllFoldersState: StateFlow<Boolean> = preferencesRepo.scanAllFoldersFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), false)
+
     val audioSettingsState: StateFlow<AudioSettings> = preferencesRepo.audioSettingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), AudioSettings())
 
@@ -205,6 +218,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private var sleepTimerJob: Job? = null
     private var playlistObserveJob: Job? = null
     private var lyricsLoadJob: Job? = null
+    private var backgroundEnrichmentJob: Job? = null
+    private var startupSyncCompleted: Boolean = false
+
+    private val selectedFoldersWatcher = SelectedFoldersWatcher(
+        context = application,
+        scope = viewModelScope,
+        onFolderChangeDetected = {
+            syncSelectedFoldersInBackground()
+        }
+    )
 
     private val _lyricsState = MutableStateFlow<LyricsUiState>(LyricsUiState.Idle)
     val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
@@ -461,8 +484,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     val homeState: StateFlow<HomeUiState> = combine(
         libraryRepo.allTracksFlow,
-        minDurationForDiscoverFlow
-    ) { rawTracks, minDurSec ->
+        minDurationForDiscoverFlow,
+        currentEpochDayFlow
+    ) { rawTracks, minDurSec, epochDay ->
         val minDurMs = minDurSec.coerceAtLeast(0) * 1000L
         val eligible = (if (minDurMs > 0L) {
             rawTracks.filter { it.durationMs >= minDurMs }
@@ -471,6 +495,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         })
             .filter { it.id.isNotBlank() }
             .distinctBy { it.id }
+
+        val dailyPicks = DailyPicksCurator.generateDailyPicks(
+            libraryTracks = eligible,
+            epochDay = epochDay,
+            engine = intelligenceEngine
+        )
 
         val recentlyPlayed = eligible
             .filter { it.lastPlayedAt > 0L }
@@ -499,6 +529,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
         HomeUiState(
             allTracks = eligible.toStableList(),
+            dailyPicks = dailyPicks,
             recentlyPlayed = recentlyPlayed.toStableList(),
             recentlyAdded = recentlyAdded.toStableList(),
             likedTracks = likedTracks.toStableList(),
@@ -514,11 +545,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             initialValue = HomeUiState(isInitialLibraryLoaded = false)
         )
 
+    private val discoverRefreshTriggerFlow = combine(
+        discoverRefreshNonceFlow,
+        currentTimeContextSlotFlow
+    ) { nonce, _ -> nonce }
+
     val discoverState: StateFlow<DiscoverUiState> = combine(
         libraryRepo.allTracksFlow,
         currentTrackIdForDiscoverFlow,
         minDurationForDiscoverFlow,
-        discoverRefreshNonceFlow,
+        discoverRefreshTriggerFlow,
         discoverTuneConfigFlow
     ) { rawTracks, currentTrackId, minDurSec, nonce, tuneConfig ->
         val minDurMs = minDurSec.coerceAtLeast(0) * 1000L
@@ -541,6 +577,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             )
             DiscoverUiState(
                 allTracks = eligibleTracks.toStableList(),
+                routineMixes = feed.routineMixes,
                 sections = feed.sections,
                 moodPlaylists = feed.moodPlaylists,
                 anchorTrackTitle = feed.anchorTrackTitle,
@@ -556,6 +593,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             Log.e("PlayerViewModel", "Failed to build Discover feed", t)
             DiscoverUiState(
                 allTracks = eligibleTracks.toStableList(),
+                routineMixes = StableList(),
                 sections = StableList(),
                 moodPlaylists = StableList(),
                 anchorTrackTitle = null,
@@ -586,10 +624,90 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     init {
         playbackController.connect()
         viewModelScope.launch {
+            combine(
+                libraryRepo.savedFoldersFlow,
+                preferencesRepo.scanAllFoldersFlow
+            ) { folders, scanAll ->
+                folders.map { item ->
+                    FolderScopeMatcher.normalize(
+                        rawUriOrPath = item.treeUri,
+                        displayName = item.displayName
+                    )
+                } to scanAll
+            }.collect { (normalized, scanAll) ->
+                selectedFoldersWatcher.updateFolders(normalized, scanAll)
+            }
+        }
+        viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 libraryRepo.ensureInitialized()
             }
+            val savedFolders = libraryRepo.getSavedFoldersOnce()
+            val scanAll = preferencesRepo.isScanAllFoldersEnabled()
+            val existingCount = libraryRepo.getAllTracksOnce().size
+
+            // Stage 1 fast startup scan strictly on selected folders (or all folders if explicitly enabled)
+            if (savedFolders.isNotEmpty() || scanAll) {
+                val showStartupWave = existingCount == 0
+                libraryRepo.scanner.syncSelectedFolders(
+                    scanAllFolders = scanAll,
+                    showProgress = showStartupWave,
+                    pruneOutOfScope = true
+                )
+            }
+            startupSyncCompleted = true
             restorePlaybackSessionIfIdle()
+            scheduleStage2Enrichment()
+        }
+    }
+
+    fun onAppResumed() {
+        // Auto-refresh date-seeded Daily Picks across midnight & keep Routine Mixes aligned with clock
+        val latestDay = currentLocalEpochDay()
+        if (currentEpochDayFlow.value != latestDay) {
+            currentEpochDayFlow.value = latestDay
+        }
+        val latestSlot = computeTimeContextSlot()
+        if (currentTimeContextSlotFlow.value != latestSlot) {
+            currentTimeContextSlotFlow.value = latestSlot
+        }
+        selectedFoldersWatcher.start()
+        if (startupSyncCompleted) {
+            viewModelScope.launch {
+                syncSelectedFoldersInBackground()
+            }
+        }
+    }
+
+    private fun computeTimeContextSlot(nowMs: Long = System.currentTimeMillis()): Long {
+        val day = currentLocalEpochDay(nowMs)
+        val hour = LocalMoodAndAffinityEngine.currentLocalHour(nowMs)
+        val dow = currentLocalDayOfWeek(nowMs)
+        return (day shl 8) xor (dow.toLong() shl 5) xor hour.toLong()
+    }
+
+    fun onAppPaused() {
+        selectedFoldersWatcher.stop()
+    }
+
+    private suspend fun syncSelectedFoldersInBackground() {
+        val scanAll = preferencesRepo.isScanAllFoldersEnabled()
+        val savedFolders = libraryRepo.getSavedFoldersOnce()
+        if (!scanAll && savedFolders.isEmpty()) return
+        val result = libraryRepo.scanner.syncSelectedFolders(
+            scanAllFolders = scanAll,
+            showProgress = false,
+            pruneOutOfScope = true
+        )
+        if (result.addedCount > 0) {
+            scheduleStage2Enrichment()
+        }
+    }
+
+    private fun scheduleStage2Enrichment() {
+        backgroundEnrichmentJob?.cancel()
+        backgroundEnrichmentJob = viewModelScope.launch(Dispatchers.IO) {
+            libraryRepo.runBackgroundEnrichment()
         }
     }
 
@@ -931,24 +1049,78 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             if (!userProfileState.value.hasCompletedOnboarding) {
                 preferencesRepo.completeOnboarding(null)
             }
+            // Selecting an explicit music folder narrows scope strictly to selected folders
+            preferencesRepo.setScanAllFoldersEnabled(false)
             val minSec = preferencesRepo.getMinTrackDurationSec()
             val result = libraryRepo.scanner.scanSafFolderTree(treeUri, minSec)
-            showSnackbar(buildScanSummary(result.addedCount, result.skippedDuplicates, result.failedCount))
+            scheduleStage2Enrichment()
+            showSnackbar(buildScanSummary(result.addedCount, result.skippedDuplicates, result.failedCount, result.prunedCount))
         }
     }
 
     fun removeSavedFolder(treeUri: String) {
         viewModelScope.launch {
             libraryRepo.removeSavedFolder(treeUri)
+            val scanAll = preferencesRepo.isScanAllFoldersEnabled()
+            if (!scanAll) {
+                val remaining = libraryRepo.getSavedFoldersOnce()
+                if (remaining.isEmpty()) {
+                    libraryRepo.pruneAllFolderTracksIfNoScope()
+                } else {
+                    libraryRepo.scanner.syncSelectedFolders(
+                        scanAllFolders = false,
+                        showProgress = false,
+                        pruneOutOfScope = true
+                    )
+                }
+            }
             showSnackbar("Removed music folder")
+        }
+    }
+
+    fun setScanAllFoldersEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesRepo.setScanAllFoldersEnabled(enabled)
+            if (enabled) {
+                val result = libraryRepo.scanner.syncSelectedFolders(
+                    scanAllFolders = true,
+                    showProgress = true,
+                    pruneOutOfScope = false
+                )
+                scheduleStage2Enrichment()
+                showSnackbar(buildScanSummary(result.addedCount, result.skippedDuplicates, result.failedCount, result.prunedCount))
+            } else {
+                val remaining = libraryRepo.getSavedFoldersOnce()
+                if (remaining.isEmpty()) {
+                    libraryRepo.pruneAllFolderTracksIfNoScope()
+                    showSnackbar("Restricted to selected folders")
+                } else {
+                    val result = libraryRepo.scanner.syncSelectedFolders(
+                        scanAllFolders = false,
+                        showProgress = true,
+                        pruneOutOfScope = true
+                    )
+                    scheduleStage2Enrichment()
+                    showSnackbar(buildScanSummary(result.addedCount, result.skippedDuplicates, result.failedCount, result.prunedCount))
+                }
+            }
         }
     }
 
     fun rescanSavedFolders() {
         viewModelScope.launch {
-            val minSec = preferencesRepo.getMinTrackDurationSec()
-            val result = libraryRepo.scanner.rescanAllSavedFolders(minSec)
-            showSnackbar(buildScanSummary(result.addedCount, result.skippedDuplicates, result.failedCount))
+            val scanAll = preferencesRepo.isScanAllFoldersEnabled()
+            val savedFolders = libraryRepo.getSavedFoldersOnce()
+            if (!scanAll && savedFolders.isEmpty()) {
+                showSnackbar("Add a music folder first or enable All Folders")
+                return@launch
+            }
+            val result = libraryRepo.scanner.rescanAllSavedFolders(
+                scanAllFolders = scanAll,
+                showProgress = true
+            )
+            scheduleStage2Enrichment()
+            showSnackbar(buildScanSummary(result.addedCount, result.skippedDuplicates, result.failedCount, result.prunedCount))
         }
     }
 
@@ -957,10 +1129,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             if (!userProfileState.value.hasCompletedOnboarding) {
                 preferencesRepo.completeOnboarding(null)
             }
-            val minSec = preferencesRepo.getMinTrackDurationSec()
-            val result = libraryRepo.scanner.scanMediaStoreAudio(minSec)
-            libraryRepo.scanner.pruneMissingLocalTracks()
-            showSnackbar(buildScanSummary(result.addedCount, result.skippedDuplicates, result.failedCount))
+            val savedFolders = libraryRepo.getSavedFoldersOnce()
+            val scanAll = if (savedFolders.isEmpty()) {
+                preferencesRepo.setScanAllFoldersEnabled(true)
+                true
+            } else {
+                preferencesRepo.isScanAllFoldersEnabled()
+            }
+            val result = libraryRepo.scanner.scanMediaStoreAudio(scanAllFolders = scanAll)
+            scheduleStage2Enrichment()
+            showSnackbar(buildScanSummary(result.addedCount, result.skippedDuplicates, result.failedCount, result.prunedCount))
         }
     }
 
@@ -972,9 +1150,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun buildScanSummary(added: Int, duplicates: Int, failed: Int): String = when {
+    private fun buildScanSummary(
+        added: Int,
+        duplicates: Int,
+        failed: Int,
+        pruned: Int = 0
+    ): String = when {
+        added > 0 && pruned > 0 -> "Added $added · removed $pruned missing track${if (pruned == 1) "" else "s"}"
         added > 0 -> "Added $added track${if (added == 1) "" else "s"}" +
-            if (duplicates > 0) " · $duplicates skipped" else ""
+            if (duplicates > 0) " · $duplicates unchanged" else ""
+        pruned > 0 -> "Removed $pruned deleted track${if (pruned == 1) "" else "s"}"
         duplicates > 0 -> "Library up to date ($duplicates already indexed)"
         failed > 0 -> "No readable audio files found"
         else -> "No new audio files found"
@@ -1180,6 +1365,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        selectedFoldersWatcher.stop()
+        backgroundEnrichmentJob?.cancel()
         sleepTimerJob?.cancel()
         playlistObserveJob?.cancel()
         lyricsLoadJob?.cancel()
