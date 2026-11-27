@@ -195,7 +195,7 @@ fun CadenceApp(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val themePrefs by viewModel.themeState.collectAsStateWithLifecycle()
-    val userProfile by viewModel.userProfileState.collectAsStateWithLifecycle()
+    val onboardingGate by viewModel.onboardingGateState.collectAsStateWithLifecycle()
     val nowPlaying by viewModel.nowPlayingState.collectAsStateWithLifecycle()
     val hasDrillDown by viewModel.hasLibraryDrillDown.collectAsStateWithLifecycle()
 
@@ -431,26 +431,19 @@ fun CadenceApp(
                 scanStateFlow = viewModel.scanState,
                 artworkShape = themePrefs.artworkShape
             ) {
-                val showOnboarding = nowPlaying.isInitialLibraryLoaded &&
-                    !userProfile.hasCompletedOnboarding &&
-                    nowPlaying.currentTrack == null &&
-                    nowPlaying.queueTracks.isEmpty()
+                if (!onboardingGate.isResolved) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("onboarding_gate_loading")
+                    )
+                    return@CadenceScanGate
+                }
 
-                if (showOnboarding) {
-                    OnboardingScreen(
-                        initialName = userProfile.displayName,
-                        artworkShape = themePrefs.artworkShape,
-                        onContinueAndScanFolder = { enteredName ->
-                            viewModel.completeOnboarding(enteredName)
-                            onAddFolder()
-                        },
-                        onContinueAndScanDevice = { enteredName ->
-                            viewModel.completeOnboarding(enteredName)
-                            triggerDeviceScan()
-                        },
-                        onSkip = { enteredName ->
-                            viewModel.completeOnboarding(enteredName)
-                        }
+                if (onboardingGate.shouldShowOnboarding) {
+                    OnboardingHost(
+                        viewModel = viewModel,
+                        themePrefs = themePrefs
                     )
                     return@CadenceScanGate
                 }
@@ -521,7 +514,7 @@ fun CadenceApp(
                             .fillMaxHeight()
                             .windowInsetsPadding(
                                 WindowInsets.safeDrawing.only(
-                                    WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                                    WindowInsetsSides.Horizontal
                                 )
                             )
 
@@ -533,7 +526,6 @@ fun CadenceApp(
                                 SettingsTabHost(
                                     viewModel = viewModel,
                                     themePrefs = themePrefs,
-                                    userDisplayName = userProfile.displayName,
                                     currentTrack = currentTrack,
                                     isPlaying = nowPlaying.isPlaying,
                                     onCloseSettings = onCloseSettings,
@@ -548,7 +540,6 @@ fun CadenceApp(
                                         currentTrack = currentTrack,
                                         isPlaying = nowPlaying.isPlaying,
                                         artworkShape = themePrefs.artworkShape,
-                                        userDisplayName = userProfile.displayName,
                                         isActiveTab = isTabActive,
                                         onExpandNowPlaying = onExpandMiniPlayer,
                                         onTogglePlayPause = onTogglePlayPause,
@@ -590,6 +581,7 @@ fun CadenceApp(
                                         onSelectTrackFromSection = onSelectTrackFromLibrary,
                                         onPlayTracksFromLibrary = onPlayTracksFromLibrary,
                                         onOpenSettings = onOpenSettings,
+                                        onOpenSearch = onOpenLibrarySearch,
                                         onAddFolder = onAddFolder,
                                         onImportFiles = onImportFiles,
                                         onGenerateSmartPlaylist = onGenerateSmartPlaylist,
@@ -698,6 +690,105 @@ fun CadenceApp(
             }
         }
     }
+}
+
+@Composable
+private fun OnboardingHost(
+    viewModel: PlayerViewModel,
+    themePrefs: com.example.data.ThemePreferences
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val savedFolders by viewModel.savedFoldersState.collectAsStateWithLifecycle()
+
+    val audioPermission = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_AUDIO
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+    }
+
+    fun checkAudioGranted(): Boolean =
+        ContextCompat.checkSelfPermission(context, audioPermission) == PackageManager.PERMISSION_GRANTED
+
+    fun checkNotificationGranted(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+    var isAudioGranted by remember { mutableStateOf(checkAudioGranted()) }
+    var isNotificationGranted by remember { mutableStateOf(checkNotificationGranted()) }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isAudioGranted = checkAudioGranted()
+                isNotificationGranted = checkNotificationGranted()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        isAudioGranted = granted || checkAudioGranted()
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        isNotificationGranted = granted || checkNotificationGranted()
+    }
+
+    val onboardingFolderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri != null) {
+            viewModel.addOnboardingFolder(treeUri)
+        }
+    }
+
+    val onSelectPalette = remember(viewModel) { viewModel::setPalette }
+    val onSelectAppearance = remember(viewModel) { viewModel::setAppearanceMode }
+    val onRequestAudioPermission = remember(audioPermissionLauncher, audioPermission) {
+        { audioPermissionLauncher.launch(audioPermission) }
+    }
+    val onRequestNotificationPermission = remember(notificationPermissionLauncher) {
+        {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+    val onAddFolder = remember(onboardingFolderPickerLauncher) {
+        { onboardingFolderPickerLauncher.launch(null) }
+    }
+    val onRemoveFolder = remember(viewModel) { viewModel::removeOnboardingFolder }
+    val onStartListening = remember(viewModel) {
+        { scanAllFolders: Boolean ->
+            viewModel.completeOnboardingAndStartScan(scanAllFolders)
+        }
+    }
+
+    OnboardingScreen(
+        themePrefs = themePrefs,
+        savedFolders = savedFolders,
+        isAudioPermissionGranted = isAudioGranted,
+        isNotificationPermissionGranted = isNotificationGranted,
+        onSelectPalette = onSelectPalette,
+        onSelectAppearance = onSelectAppearance,
+        onRequestAudioPermission = onRequestAudioPermission,
+        onRequestNotificationPermission = onRequestNotificationPermission,
+        onAddFolder = onAddFolder,
+        onRemoveFolder = onRemoveFolder,
+        onStartListening = onStartListening,
+        drawAmbientBackdrop = false
+    )
 }
 
 /**
@@ -911,7 +1002,6 @@ private fun HomeTabHost(
     currentTrack: Track?,
     isPlaying: Boolean,
     artworkShape: ExpressiveArtworkShape,
-    userDisplayName: String,
     isActiveTab: Boolean,
     onExpandNowPlaying: () -> Unit,
     onTogglePlayPause: () -> Unit,
@@ -939,7 +1029,6 @@ private fun HomeTabHost(
         onOpenSettings = onOpenSettings,
         onAddFolder = onAddFolder,
         onScanDevice = onScanDevice,
-        userDisplayName = userDisplayName,
         progressFlow = viewModel.progressState,
         onSeek = onSeek,
         onOpenSearch = onOpenLibrarySearch,
@@ -1024,6 +1113,7 @@ private fun DiscoverTabHost(
     onSelectTrackFromSection: (Track, StableList<Track>) -> Unit,
     onPlayTracksFromLibrary: (List<Track>, Boolean) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenSearch: () -> Unit,
     onAddFolder: () -> Unit,
     onImportFiles: () -> Unit,
     onGenerateSmartPlaylist: (String?, Boolean) -> Unit,
@@ -1055,7 +1145,8 @@ private fun DiscoverTabHost(
         onGenerateSmartPlaylist = onGenerateSmartPlaylist,
         onUpdateTuneConfig = onUpdateTuneConfig,
         onResetTuneConfig = onResetTuneConfig,
-        onGenerateTunedSmartPlaylist = onGenerateTunedSmartPlaylist
+        onGenerateTunedSmartPlaylist = onGenerateTunedSmartPlaylist,
+        onOpenSearch = onOpenSearch
     )
 }
 
@@ -1063,7 +1154,6 @@ private fun DiscoverTabHost(
 private fun SettingsTabHost(
     viewModel: PlayerViewModel,
     themePrefs: com.example.data.ThemePreferences,
-    userDisplayName: String,
     currentTrack: Track?,
     isPlaying: Boolean,
     onCloseSettings: () -> Unit,
@@ -1096,8 +1186,6 @@ private fun SettingsTabHost(
         onTogglePauseOnHeadphoneDisconnect = viewModel::setPauseOnHeadphoneDisconnect,
         onSelectAudioFocusBehavior = viewModel::setAudioFocusBehavior,
         onToggleAcousticEnhance = viewModel::setAcousticEnhanceEnabled,
-        userDisplayName = userDisplayName,
-        onUpdateDisplayName = viewModel::setUserDisplayName,
         scanAllFolders = scanAllFolders,
         onToggleScanAllFolders = viewModel::setScanAllFoldersEnabled
     )

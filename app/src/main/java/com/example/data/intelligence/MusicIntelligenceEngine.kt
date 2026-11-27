@@ -560,8 +560,8 @@ class MusicIntelligenceEngine {
         val profile = PlaylistProfile(
             suggestedTitle = profileObj.optString("suggestedTitle", "Cadence Smart Mix")
                 .ifBlank { "Cadence Smart Mix" },
-            suggestedPalette = profileObj.optString("suggestedPalette", "terracotta")
-                .takeIf { it in VALID_PALETTES } ?: "terracotta",
+            suggestedPalette = profileObj.optString("suggestedPalette", "matcha")
+                .takeIf { it in VALID_PALETTES } ?: "matcha",
             cohesionScore = profileObj.optDouble("cohesionScore", 0.0)
                 .takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.0
         )
@@ -661,7 +661,7 @@ class MusicIntelligenceEngine {
             "playlistProfile",
             JSONObject().apply {
                 put("suggestedTitle", "Empty Local Mix")
-                put("suggestedPalette", "terracotta")
+                put("suggestedPalette", "matcha")
                 put("cohesionScore", 0.0)
             }
         )
@@ -942,12 +942,12 @@ class MusicIntelligenceEngine {
     }
 
     private fun paletteForMood(mood: String): String = when (mood) {
-        "warm" -> "terracotta"
+        "warm" -> "desert_copper"
         "organic", "calm" -> "matcha"
         "nocturnal", "melancholic", "cinematic" -> "cobalt"
-        "minimal", "focused" -> "berry"
+        "minimal", "focused" -> "obsidian_mono"
         "uplifting", "energetic" -> "citrus"
-        else -> "terracotta"
+        else -> "berry"
     }
 
     private fun computeCohesionScore(
@@ -978,7 +978,7 @@ class MusicIntelligenceEngine {
         return when (primaryMood) {
             "nocturnal" -> "Indigo After Hours"
             "calm" -> if (timeOfDay == "evening") "Evening Unwind" else "Quiet Horizon"
-            "warm" -> "Warm Terracotta Glow"
+            "warm" -> "Golden Amber Glow"
             "focused" -> "Minimal Deep Focus"
             "organic" -> "Botanical Acoustics"
             "energetic" -> "Citrus Kinetic Pulse"
@@ -1040,7 +1040,10 @@ class MusicIntelligenceEngine {
             "uplifting", "energetic", "organic", "minimal", "cinematic"
         )
 
-        val VALID_PALETTES = setOf("terracotta", "matcha", "cobalt", "berry", "citrus")
+        val VALID_PALETTES = setOf(
+            "berry", "matcha", "cobalt", "citrus",
+            "abyssal_teal", "crimson_ember", "cyber_violet", "desert_copper", "obsidian_mono"
+        )
 
         val SYSTEM_PROMPT: String = """
 SYSTEM PROMPT — CADENCE LOCAL MUSIC INTELLIGENCE ENGINE
@@ -1081,7 +1084,7 @@ MOOD CLASSIFICATION VOCABULARY
 REQUIRED OUTPUT JSON SCHEMA
 {
   "schemaVersion": "1.0",
-  "playlistProfile": { "suggestedTitle": string, "suggestedPalette": "terracotta" | "matcha" | "cobalt" | "berry" | "citrus", "cohesionScore": number },
+  "playlistProfile": { "suggestedTitle": string, "suggestedPalette": "berry" | "matcha" | "cobalt" | "citrus" | "abyssal_teal" | "crimson_ember" | "cyber_violet" | "desert_copper" | "obsidian_mono", "cohesionScore": number },
   "moodClassifications": [ { "mood": string, "confidence": number, "energyLevel": "low" | "medium" | "high", "valence": "dark" | "neutral" | "bright" } ],
   "tempoDescriptors": { "dominantBpmRange": { "min": integer, "max": integer }, "descriptor": "largo_ambient" | "downtempo_chill" | "midtempo_groove" | "upbeat_driving" | "fast_intense", "pacingCurve": "steady" | "gradual_build" | "wind_down" | "wave", "tempoInferred": boolean },
   "recommendedTracks": [ { "rank": integer, "trackId": string, "score": number, "moodTag": string, "tempoDescriptor": string, "reason": string } ]

@@ -13,7 +13,14 @@ import com.example.data.db.CadenceDatabase
 import com.example.data.db.PlaylistEntity
 import com.example.data.db.PlaylistTrackEntity
 import com.example.data.intelligence.LocalMoodAndAffinityEngine
+import com.example.data.intelligence.PlaybackSignal
+import com.example.data.intelligence.RawPlaybackEvent
+import com.example.data.intelligence.RecommendationCore
+import com.example.data.intelligence.RecommendationSnapshotRepository
+import com.example.data.intelligence.SignalProcessor
+import com.example.data.intelligence.SignalType
 import com.example.data.intelligence.SmartMoodTag
+import com.example.data.intelligence.TimeOfDayCategory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,15 +36,26 @@ import java.io.File
  */
 class LibraryRepository(
     context: Context,
-    private val preferencesRepository: PreferencesRepository
+    private val preferencesRepository: PreferencesRepository,
+    private val injectedDatabase: CadenceDatabase? = null
 ) {
     private val appContext = context.applicationContext
-    private val database by lazy { CadenceDatabase.getInstance(appContext) }
+    private val database by lazy { injectedDatabase ?: CadenceDatabase.getInstance(appContext) }
     private val trackDao by lazy { database.trackDao() }
     private val playlistDao by lazy { database.playlistDao() }
     private val queueDao by lazy { database.queueDao() }
     private val folderDao by lazy { database.folderDao() }
+    private val recommendationSnapshotDao by lazy { database.recommendationSnapshotDao() }
     private val artworkCache = ArtworkCacheManager(appContext)
+    private val recentSignalsLock = Any()
+    private val recentSignals = ArrayDeque<PlaybackSignal>(MAX_RECENT_SIGNALS)
+
+    val recommendationSnapshots: RecommendationSnapshotRepository by lazy {
+        RecommendationSnapshotRepository(
+            snapshotDao = recommendationSnapshotDao,
+            trackDao = trackDao
+        )
+    }
 
     val scanner: LocalLibraryScanner by lazy {
         LocalLibraryScanner(
@@ -80,6 +98,19 @@ class LibraryRepository(
                 rows.map { SavedFolderItem(it.treeUri, it.displayName, it.lastScannedAt) }
             }
             .flowOn(Dispatchers.Default)
+    }
+
+    fun recentSignalsSnapshot(): List<PlaybackSignal> = synchronized(recentSignalsLock) {
+        recentSignals.toList()
+    }
+
+    private fun appendRecentSignal(signal: PlaybackSignal) {
+        synchronized(recentSignalsLock) {
+            recentSignals.addLast(signal)
+            while (recentSignals.size > MAX_RECENT_SIGNALS) {
+                recentSignals.removeFirst()
+            }
+        }
     }
 
     suspend fun ensureInitialized() = withContext(Dispatchers.IO) {
@@ -126,7 +157,7 @@ class LibraryRepository(
         val pending = allEntities.filter { it.moodTags.isBlank() }
         if (pending.isEmpty()) return@withContext
         val nowMs = System.currentTimeMillis()
-        val localHour = LocalMoodAndAffinityEngine.currentLocalHour(nowMs)
+        val timeOfDay = TimeOfDayCategory.fromHour(LocalMoodAndAffinityEngine.currentLocalHour(nowMs))
         val maxPlays = allEntities.maxOfOrNull { it.playCount.coerceAtLeast(0) }?.coerceAtLeast(1) ?: 1
 
         for (entity in pending) {
@@ -140,10 +171,10 @@ class LibraryRepository(
                 val tags = LocalMoodAndAffinityEngine.classifyTrackMoods(baseTrack)
                 val encoded = SmartMoodTag.encode(tags)
                 val enriched = baseTrack.copy(moodTags = SmartMoodTag.decode(encoded))
-                val affinity = LocalMoodAndAffinityEngine.computeLocalAffinity(
+                val affinity = RecommendationCore.computeAffinityBreakdown(
                     track = enriched,
                     nowMs = nowMs,
-                    localHourOfDay = localHour,
+                    timeOfDay = timeOfDay,
                     maxLibraryPlays = maxPlays
                 ).score
                 encoded to affinity
@@ -160,7 +191,7 @@ class LibraryRepository(
     private suspend fun recalculateAndCacheAffinity(trackId: String) {
         val updated = trackDao.getTrackById(trackId) ?: return
         val score = withContext(Dispatchers.Default) {
-            LocalMoodAndAffinityEngine.computeLocalAffinity(updated.toDomain()).score
+            RecommendationCore.computeAffinityBreakdown(updated.toDomain()).score
         }
         trackDao.updateAffinityScore(trackId, score)
     }
@@ -179,10 +210,41 @@ class LibraryRepository(
         trackDao.getAllTracksOnce().map { it.toDomain() }
     }
 
+    /**
+     * Normalizes a [RawPlaybackEvent] via [SignalProcessor] strictly on [Dispatchers.IO],
+     * updates Room telemetry counters & cached [RecommendationCore] affinity, and returns
+     * the emitted [PlaybackSignal] (or `null` when filtered as noise).
+     */
+    suspend fun processPlaybackEvent(event: RawPlaybackEvent): PlaybackSignal? = withContext(Dispatchers.IO) {
+        val signal = SignalProcessor.process(event) ?: return@withContext null
+        appendRecentSignal(signal)
+        when (signal.type) {
+            SignalType.COMPLETION_BOOST -> {
+                trackDao.recordCompletedPlay(signal.trackId, signal.timestampMs)
+            }
+            SignalType.EARLY_SKIP_PENALTY -> {
+                trackDao.recordSkip(signal.trackId)
+            }
+            SignalType.MANUAL_FAVORITE_BOOST -> {
+                trackDao.setFavorite(signal.trackId, true)
+            }
+        }
+        recalculateAndCacheAffinity(signal.trackId)
+        signal
+    }
+
     suspend fun toggleFavorite(trackId: String): Boolean = withContext(Dispatchers.IO) {
         val current = trackDao.getTrackById(trackId) ?: return@withContext false
         val newValue = !current.isFavorite
         trackDao.setFavorite(trackId, newValue)
+        if (newValue) {
+            SignalProcessor.processFavoriteToggle(
+                trackId = trackId,
+                isFavorite = true,
+                trackDurationMs = current.durationMs,
+                timestampMs = System.currentTimeMillis()
+            )?.let { appendRecentSignal(it) }
+        }
         recalculateAndCacheAffinity(trackId)
         newValue
     }
@@ -193,13 +255,42 @@ class LibraryRepository(
     }
 
     suspend fun recordTrackCompletion(trackId: String) = withContext(Dispatchers.IO) {
-        trackDao.recordCompletedPlay(trackId, System.currentTimeMillis())
-        recalculateAndCacheAffinity(trackId)
+        val entity = trackDao.getTrackById(trackId)
+        val nowMs = System.currentTimeMillis()
+        val dur = entity?.durationMs?.coerceAtLeast(SignalProcessor.MIN_ACTIVE_PLAY_MS)
+            ?: (SignalProcessor.MIN_ACTIVE_PLAY_MS * 2L)
+        val processed = processPlaybackEvent(
+            RawPlaybackEvent(
+                trackId = trackId,
+                activePlayDurationMs = dur,
+                trackDurationMs = dur,
+                timestampMs = nowMs
+            )
+        )
+        if (processed == null) {
+            trackDao.recordCompletedPlay(trackId, nowMs)
+            recalculateAndCacheAffinity(trackId)
+        }
     }
 
     suspend fun recordTrackSkip(trackId: String) = withContext(Dispatchers.IO) {
-        trackDao.recordSkip(trackId)
-        recalculateAndCacheAffinity(trackId)
+        val entity = trackDao.getTrackById(trackId)
+        val nowMs = System.currentTimeMillis()
+        val dur = entity?.durationMs?.takeIf { it >= 30_000L } ?: 180_000L
+        val activeMs = SignalProcessor.MIN_ACTIVE_PLAY_MS
+        val processed = processPlaybackEvent(
+            RawPlaybackEvent(
+                trackId = trackId,
+                activePlayDurationMs = activeMs,
+                trackDurationMs = dur,
+                wasUserSkip = true,
+                timestampMs = nowMs
+            )
+        )
+        if (processed == null) {
+            trackDao.recordSkip(trackId)
+            recalculateAndCacheAffinity(trackId)
+        }
     }
 
     suspend fun removeTrack(trackId: String) = withContext(Dispatchers.IO) {
@@ -280,6 +371,8 @@ class LibraryRepository(
     // --- Library Grouping & Sorting Helpers ---
 
     companion object {
+        private const val MAX_RECENT_SIGNALS = 64
+
         fun sortTracks(tracks: List<Track>, order: LibrarySortOrder): List<Track> = when (order) {
             LibrarySortOrder.TITLE_ASC -> tracks.sortedBy { it.title.lowercase() }
             LibrarySortOrder.ARTIST_ASC -> tracks.sortedWith(

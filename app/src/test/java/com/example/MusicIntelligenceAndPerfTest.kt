@@ -28,6 +28,8 @@ import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -76,9 +78,17 @@ import com.example.ui.FloatingExpressiveNavDock
 import com.example.ui.FloatingNavBarState
 import com.example.ui.PersistentTabHost
 import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
+import com.example.ui.components.SCRUBBER_BLOOM_BASE_RADIUS_DP
+import com.example.ui.components.SCRUBBER_BLOOM_BREATH_DURATION_MS
+import com.example.ui.components.SCRUBBER_BLOOM_PAUSED_PEAK_ALPHA
+import com.example.ui.components.SCRUBBER_BLOOM_PAUSED_RADIUS_DP
+import com.example.ui.components.SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP
+import com.example.ui.components.SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP
+import com.example.ui.components.SCRUBBER_BLOOM_STOP_0_ALPHA
+import com.example.ui.components.SCRUBBER_BLOOM_STOP_1_ALPHA
+import com.example.ui.components.SCRUBBER_BLOOM_STOP_2_ALPHA
+import com.example.ui.components.SCRUBBER_BLOOM_STOP_3_ALPHA
 import com.example.ui.components.SCRUBBER_THUMB_CORE_DP
-import com.example.ui.components.SCRUBBER_THUMB_HALO_DRAG_DP
-import com.example.ui.components.SCRUBBER_THUMB_HALO_IDLE_DP
 import com.example.ui.components.SCRUBBER_THUMB_LOBE_COUNT
 import com.example.ui.components.SCRUBBER_THUMB_ROTATION_DURATION_MS
 import com.example.ui.components.SCRUBBER_TOUCH_HEIGHT_DP
@@ -293,7 +303,7 @@ class MusicIntelligenceAndPerfTest {
         var observedPerf = false
         composeRule.setContent {
             CadenceTheme(
-                palette = ExpressivePalette.TERRACOTTA,
+                palette = ExpressivePalette.MATCHA,
                 appearanceMode = AppearanceMode.LIGHT,
                 performanceMode = true
             ) {
@@ -322,7 +332,7 @@ class MusicIntelligenceAndPerfTest {
 
         composeRule.setContent {
             SideEffect { parentRecompositions++ }
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 LibraryScreen(
                     uiState = LibraryUiState(
                         allTracks = tracks.toStableList(),
@@ -366,10 +376,11 @@ class MusicIntelligenceAndPerfTest {
         composeRule.waitForIdle()
         assertEquals(baseline, parentRecompositions)
 
-        // Sparkles/AI trigger has moved out of Library top bar into the Discover nav tab
+        // Sparkles/AI trigger is in Discover; duplicate search icon button removed in favor of persistent search pill
         composeRule.onNodeWithTag("smart_mix_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("library_search_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("library_search_input").assertIsDisplayed()
         composeRule.onNodeWithTag("library_settings_button").assertIsDisplayed()
-        composeRule.onNodeWithTag("import_audio_button").assertIsDisplayed()
     }
 
     @Test
@@ -468,7 +479,7 @@ class MusicIntelligenceAndPerfTest {
         var activeTab by mutableStateOf(CadenceTab.HOME)
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 FloatingExpressiveNavDock(
                     activeTab = activeTab,
                     onSelectTab = { activeTab = it }
@@ -570,7 +581,13 @@ class MusicIntelligenceAndPerfTest {
         }
 
         composeRule.onNodeWithTag("discover_header_title").assertIsDisplayed()
-        composeRule.onNodeWithTag("discover_refresh_button").performClick()
+        composeRule.onNodeWithTag("discover_search_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("discover_settings_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("discover_list")
+            .performScrollToNode(hasTestTag("discover_daily_mix_menu"))
+        composeRule.onNodeWithTag("discover_daily_mix_menu").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("discover_daily_mix_refresh").performClick()
         assertTrue(refreshed)
 
         // Play All on Made for you
@@ -688,7 +705,7 @@ class MusicIntelligenceAndPerfTest {
         var retryClicks = 0
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 DiscoverScreen(
                     uiState = currentUiState,
                     currentTrackId = dupTrack.id,
@@ -819,8 +836,12 @@ class MusicIntelligenceAndPerfTest {
         composeRule.onNodeWithTag("discover_header_title").assertIsDisplayed()
         composeRule.onNodeWithTag("discover_section_made_for_you").assertIsDisplayed()
 
-        // 3. Trigger Refresh on Discover
-        composeRule.onNodeWithTag("discover_refresh_button").performClick()
+        // 3. Trigger Refresh on Discover via Made for you 3-dot menu
+        composeRule.onNodeWithTag("discover_list")
+            .performScrollToNode(hasTestTag("discover_daily_mix_menu"))
+        composeRule.onNodeWithTag("discover_daily_mix_menu").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("discover_daily_mix_refresh").performClick()
         composeRule.waitForIdle()
         assertEquals(1, refreshNonce)
         composeRule.onNodeWithTag("discover_section_made_for_you").assertIsDisplayed()
@@ -874,7 +895,7 @@ class MusicIntelligenceAndPerfTest {
         var expandedMiniPlayer = false
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     LibraryScreen(
                         uiState = LibraryUiState(
@@ -969,7 +990,7 @@ class MusicIntelligenceAndPerfTest {
         var lastSeekFraction: Float? = null
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 // Constrain to a compact standard portrait viewport (360dp x 640dp) to prove zero-scroll fit
                 Box(modifier = Modifier.size(width = 360.dp, height = 640.dp)) {
                     NowPlayingScreen(
@@ -981,7 +1002,7 @@ class MusicIntelligenceAndPerfTest {
                             currentQueueIndex = 0
                         ),
                         themePrefs = ThemePreferences(
-                            palette = ExpressivePalette.TERRACOTTA,
+                            palette = ExpressivePalette.MATCHA,
                             appearanceMode = AppearanceMode.LIGHT,
                             artworkShape = ExpressiveArtworkShape.SCALLOP
                         ),
@@ -1075,11 +1096,11 @@ class MusicIntelligenceAndPerfTest {
         assertEquals(14f, (chevronBounds.right - chevronBounds.left).value, 1f)
         assertEquals(14f, (chevronBounds.bottom - chevronBounds.top).value, 1f)
 
-        // Verify 8-lobe rotating thumb + glowing translucent halo scrubber specs, 48dp touch height, and drag seek
+        // Verify 8-lobe rotating thumb + edgeless 5-stop light bloom scrubber specs, 48dp touch height, and drag seek
         assertEquals(3f, SCRUBBER_UNPLAYED_TRACK_DP, 0.01f)
         assertEquals(14f, SCRUBBER_THUMB_CORE_DP, 0.01f)
-        assertEquals(24f, SCRUBBER_THUMB_HALO_IDLE_DP, 0.01f)
-        assertEquals(30f, SCRUBBER_THUMB_HALO_DRAG_DP, 0.01f)
+        assertEquals(28f, SCRUBBER_BLOOM_BASE_RADIUS_DP, 0.01f)
+        assertEquals(22f, SCRUBBER_BLOOM_PAUSED_RADIUS_DP, 0.01f)
         assertEquals(8, SCRUBBER_THUMB_LOBE_COUNT)
         assertEquals(6000, SCRUBBER_THUMB_ROTATION_DURATION_MS)
         assertEquals(48f, SCRUBBER_TOUCH_HEIGHT_DP, 0.01f)
@@ -1148,7 +1169,7 @@ class MusicIntelligenceAndPerfTest {
         val track = sampleLibraryTracks.first()
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.DARK) {
                 Box(modifier = Modifier.width(390.dp).height(844.dp)) {
                     NowPlayingScreen(
                         uiState = NowPlayingUiState(
@@ -1159,7 +1180,7 @@ class MusicIntelligenceAndPerfTest {
                             currentQueueIndex = 0
                         ),
                         themePrefs = ThemePreferences(
-                            palette = ExpressivePalette.TERRACOTTA,
+                            palette = ExpressivePalette.MATCHA,
                             wavyScrubberEnabled = true,
                             performanceModeEnabled = false
                         ),
@@ -1180,16 +1201,35 @@ class MusicIntelligenceAndPerfTest {
             }
         }
 
-        // Playing state: advance clock across rotation & glow pulse frames without crashing or clipping
-        composeRule.mainClock.advanceTimeBy(1200L)
+        // Verify edgeless 5-stop exponential light bloom specs for both playing and paused states
+        assertEquals(28f, SCRUBBER_BLOOM_BASE_RADIUS_DP, 0.01f)
+        assertEquals(26f, SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP, 0.01f)
+        assertEquals(32f, SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP, 0.01f)
+        assertEquals(22f, SCRUBBER_BLOOM_PAUSED_RADIUS_DP, 0.01f)
+        assertEquals(1800, SCRUBBER_BLOOM_BREATH_DURATION_MS)
+        assertEquals(0.46f, SCRUBBER_BLOOM_STOP_0_ALPHA, 0.001f)
+        assertEquals(0.24f, SCRUBBER_BLOOM_STOP_1_ALPHA, 0.001f)
+        assertEquals(0.09f, SCRUBBER_BLOOM_STOP_2_ALPHA, 0.001f)
+        assertEquals(0.02f, SCRUBBER_BLOOM_STOP_3_ALPHA, 0.001f)
+        assertEquals(0.22f, SCRUBBER_BLOOM_PAUSED_PEAK_ALPHA, 0.001f)
+        assertTrue(
+            "5-stop exponential bloom alphas must strictly decrease toward transparent",
+            SCRUBBER_BLOOM_STOP_0_ALPHA > SCRUBBER_BLOOM_STOP_1_ALPHA &&
+                SCRUBBER_BLOOM_STOP_1_ALPHA > SCRUBBER_BLOOM_STOP_2_ALPHA &&
+                SCRUBBER_BLOOM_STOP_2_ALPHA > SCRUBBER_BLOOM_STOP_3_ALPHA &&
+                SCRUBBER_BLOOM_STOP_3_ALPHA > 0f
+        )
+
+        // Playing state: advance clock across rotation & 1800ms bloom breath frames cleanly
+        composeRule.mainClock.advanceTimeBy(1800L)
         composeRule.onNodeWithTag("playback_scrubber").assertIsDisplayed()
         composeRule.onNodeWithTag("playback_scrubber_canvas").assertIsDisplayed()
         val playingBounds = composeRule.onNodeWithTag("playback_scrubber").getUnclippedBoundsInRoot()
         assertEquals(48f, (playingBounds.bottom - playingBounds.top).value, 1.5f)
         composeRule.onNodeWithTag("playback_scrubber").performTouchInput { swipeRight() }
-        assertNotNull("Seek drag must work while playing with active rotation & glow", soughtFraction)
+        assertNotNull("Seek drag must work while playing with active rotation & edgeless light bloom", soughtFraction)
 
-        // Transition to paused state: freezes angle and settles back to clean static translucent halo
+        // Transition to paused state: settles calmly to 22dp radius / 0.22f peak alpha bloom
         soughtFraction = null
         playing = false
         composeRule.mainClock.advanceTimeBy(500L)
@@ -1219,7 +1259,7 @@ class MusicIntelligenceAndPerfTest {
         val sleepTimerFlow = MutableStateFlow(SleepTimerState())
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.DARK) {
                 Box(modifier = Modifier.size(width = 360.dp, height = 640.dp)) {
                     NowPlayingScreen(
                         uiState = NowPlayingUiState(
@@ -1230,7 +1270,7 @@ class MusicIntelligenceAndPerfTest {
                             currentQueueIndex = 0
                         ),
                         themePrefs = ThemePreferences(
-                            palette = ExpressivePalette.TERRACOTTA,
+                            palette = ExpressivePalette.MATCHA,
                             appearanceMode = AppearanceMode.DARK
                         ),
                         progressFlow = progressFlow,
@@ -1303,7 +1343,7 @@ class MusicIntelligenceAndPerfTest {
         var nextClicks = 0
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 Box(modifier = Modifier.size(width = 390.dp, height = 780.dp)) {
                     when (activeTab) {
                         CadenceTab.HOME -> HomeScreen(
@@ -1358,7 +1398,7 @@ class MusicIntelligenceAndPerfTest {
                                 isInitialLibraryLoaded = true
                             ),
                             themePrefs = ThemePreferences(
-                                palette = ExpressivePalette.TERRACOTTA,
+                                palette = ExpressivePalette.MATCHA,
                                 appearanceMode = AppearanceMode.LIGHT
                             ),
                             progressFlow = progressFlow,
@@ -1471,48 +1511,50 @@ class MusicIntelligenceAndPerfTest {
     }
 
     @Test
-    fun `OnboardingScreen captures optional display name persists synchronously to PreferencesRepository and supports skip`() = runTest {
+    fun `OnboardingScreen omits display name prompt persists onboarding completion synchronously and completes 3-step flow`() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val prefs = PreferencesRepository(context)
-        var capturedFolderName: String? = null
-        var capturedSkipName: String? = null
+        var startedListening = false
+        var selectedScanAll: Boolean? = null
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 OnboardingScreen(
-                    onContinueAndScanFolder = { capturedFolderName = it },
-                    onContinueAndScanDevice = {},
-                    onSkip = { capturedSkipName = it }
+                    themePrefs = ThemePreferences(
+                        palette = ExpressivePalette.MATCHA,
+                        appearanceMode = AppearanceMode.LIGHT
+                    ),
+                    onStartListening = { scanAll ->
+                        startedListening = true
+                        selectedScanAll = scanAll
+                    }
                 )
             }
         }
 
         composeRule.onNodeWithTag("onboarding_screen").assertIsDisplayed()
-        composeRule.onNodeWithTag("onboarding_name_input").performTextInput("Alex")
-        composeRule.onNodeWithTag("onboarding_scan_folder_button").performClick()
-        assertEquals("Alex", capturedFolderName)
+        assertEquals(0, composeRule.onAllNodesWithTag("onboarding_name_input").fetchSemanticsNodes().size)
+        composeRule.onNodeWithTag("onboarding_get_started_button").performClick()
+        composeRule.waitForIdle()
+        assertEquals(0, composeRule.onAllNodesWithTag("onboarding_name_input").fetchSemanticsNodes().size)
+        composeRule.onNodeWithTag("onboarding_continue_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("onboarding_start_listening_button").performClick()
+        assertTrue(startedListening)
+        assertEquals(true, selectedScanAll)
 
-        composeRule.onNodeWithTag("onboarding_skip_button").performClick()
-        assertEquals("Alex", capturedSkipName)
-
-        // Verify DataStore + synchronous SharedPreferences startup snapshot persist & clear cleanly
-        prefs.completeOnboarding("Alex")
+        // Verify DataStore + synchronous SharedPreferences startup snapshot persist onboarding cleanly
+        prefs.setOnboardingCompleted(true)
         val syncSnapshot = PreferencesRepository.readStartupUserProfileSnapshot(context)
-        assertEquals("Alex", syncSnapshot.displayName)
         assertTrue(syncSnapshot.hasCompletedOnboarding)
-        assertEquals("Alex", prefs.userProfileFlow.first().displayName)
-
-        prefs.setUserDisplayName("")
-        assertEquals("", PreferencesRepository.readStartupUserProfileSnapshot(context).displayName)
-        assertEquals("", prefs.userProfileFlow.first().displayName)
+        assertTrue(prefs.hasCompletedOnboarding.first())
+        assertTrue(prefs.userProfileFlow.first().hasCompletedOnboarding)
     }
 
     @Test
-    fun `SettingsScreen Display Name dialog updates and clears user display name`() {
-        var displayName by mutableStateOf("Alex")
-
+    fun `SettingsScreen completely removes Display Name and renders pinned header with 5 bento categories`() {
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 SettingsScreen(
                     themePrefs = ThemePreferences(),
                     audioSettings = AudioSettings(),
@@ -1534,46 +1576,41 @@ class MusicIntelligenceAndPerfTest {
                     onToggleGaplessPlayback = {},
                     onChangeCrossfadeSec = {},
                     onTogglePauseOnHeadphoneDisconnect = {},
-                    onSelectAudioFocusBehavior = {},
-                    userDisplayName = displayName,
-                    onUpdateDisplayName = { displayName = it }
+                    onSelectAudioFocusBehavior = {}
                 )
             }
         }
 
-        composeRule.onNodeWithTag("settings_display_name_row").assertIsDisplayed()
-        composeRule.onNodeWithTag("settings_display_name_value", useUnmergedTree = true).assertTextContains("Alex")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_top_bar").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_search_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_appearance_card").assertIsDisplayed()
+        assertEquals(0, composeRule.onAllNodesWithTag("settings_display_name_row").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("Display Name", substring = true, ignoreCase = true).fetchSemanticsNodes().size)
 
-        // Edit display name via dialog
-        composeRule.onNodeWithTag("settings_display_name_row").performClick()
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag("settings_display_name_dialog").assertIsDisplayed()
-        composeRule.onNodeWithTag("settings_display_name_input").performTextClearance()
-        composeRule.onNodeWithTag("settings_display_name_input").performTextInput("Maya")
-        composeRule.onNodeWithTag("settings_display_name_save").performClick()
-        composeRule.waitForIdle()
-        assertEquals("Maya", displayName)
-
-        // Clear display name via dialog
-        composeRule.onNodeWithTag("settings_display_name_row").performClick()
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag("settings_display_name_clear").performClick()
-        composeRule.waitForIdle()
-        assertEquals("", displayName)
+        composeRule.onNodeWithTag("settings_category_appearance", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("settings_category_audio"))
+        composeRule.onNodeWithTag("settings_category_audio").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("settings_category_library"))
+        composeRule.onNodeWithTag("settings_category_library").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("settings_category_interface"))
+        composeRule.onNodeWithTag("settings_category_interface").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("settings_about_row"))
+        composeRule.onNodeWithTag("settings_about_row").assertIsDisplayed()
     }
 
     @Test
-    fun `HomeScreen renders personalized greeting Continue Listening progress and 2x2 shortcut grid`() {
-        // Verify deterministic time-of-day greeting formatter across all 5 buckets
-        assertEquals("Late night vibes", formatHomeGreeting("", hourOfDay = 0))
-        assertEquals("Late night vibes, Alex", formatHomeGreeting("Alex", hourOfDay = 2))
-        assertEquals("Good morning, Alex!", formatHomeGreeting("Alex", hourOfDay = 8))
-        assertEquals("Good afternoon, Alex!", formatHomeGreeting("  Alex  ", hourOfDay = 14))
-        assertEquals("Good evening, Alex!", formatHomeGreeting("Alex", hourOfDay = 19))
-        assertEquals("Good night, Alex!", formatHomeGreeting("Alex", hourOfDay = 23))
-        assertEquals("Good morning!", formatHomeGreeting("   ", hourOfDay = 9))
-        assertEquals("Good afternoon!", formatHomeGreeting("", hourOfDay = 13))
-        assertEquals("Good night!", formatHomeGreeting("", hourOfDay = 21))
+    fun `HomeScreen renders clean time-of-day greeting without display name Continue Listening progress and 2x2 shortcut grid`() {
+        // Verify deterministic time-of-day greeting formatter across all 5 buckets (no user-name interpolation)
+        assertEquals("Late night vibes", formatHomeGreeting(hourOfDay = 0))
+        assertEquals("Late night vibes", formatHomeGreeting(hourOfDay = 2))
+        assertEquals("Good morning!", formatHomeGreeting(hourOfDay = 8))
+        assertEquals("Good afternoon!", formatHomeGreeting(hourOfDay = 14))
+        assertEquals("Good evening!", formatHomeGreeting(hourOfDay = 19))
+        assertEquals("Good night!", formatHomeGreeting(hourOfDay = 23))
+        assertEquals("Good morning!", formatHomeGreeting(hourOfDay = 9))
+        assertEquals("Good afternoon!", formatHomeGreeting(hourOfDay = 13))
+        assertEquals("Good night!", formatHomeGreeting(hourOfDay = 21))
 
         val currentTrack = sampleLibraryTracks.first()
         val progressFlow = MutableStateFlow(PlaybackProgress(positionMs = 60_000L, durationMs = 212_000L))
@@ -1584,7 +1621,7 @@ class MusicIntelligenceAndPerfTest {
         var shortcutCategory: LibraryCategory? = null
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 HomeScreen(
                     uiState = HomeUiState(
                         allTracks = sampleLibraryTracks.toStableList(),
@@ -1608,7 +1645,6 @@ class MusicIntelligenceAndPerfTest {
                     onOpenSettings = {},
                     onAddFolder = {},
                     onScanDevice = {},
-                    userDisplayName = "Alex",
                     progressFlow = progressFlow,
                     onOpenSearch = { searchOpened = true },
                     onOpenLibraryShortcut = { shortcutCategory = it }
@@ -1617,7 +1653,8 @@ class MusicIntelligenceAndPerfTest {
         }
 
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("home_header_title").assertIsDisplayed().assertTextContains("Alex", substring = true)
+        composeRule.onNodeWithTag("home_header_title").assertIsDisplayed()
+        assertEquals(0, composeRule.onAllNodesWithText("Display Name", substring = true, ignoreCase = true).fetchSemanticsNodes().size)
         composeRule.onNodeWithTag("home_header_subtitle").assertIsDisplayed()
         composeRule.onNodeWithTag("home_search_button").performClick()
         assertTrue(searchOpened)
@@ -1901,6 +1938,7 @@ class MusicIntelligenceAndPerfTest {
                                 HomeScreen(
                                     uiState = HomeUiState(
                                         allTracks = manyTracks.toStableList(),
+                                        dailyPicks = manyTracks.take(6).toStableList(),
                                         recentlyPlayed = manyTracks.take(6).toStableList(),
                                         recentlyAdded = manyTracks.toStableList(),
                                         isInitialLibraryLoaded = true
@@ -1994,10 +2032,14 @@ class MusicIntelligenceAndPerfTest {
         // Scroll Home down past header & hero card before switching tabs
         composeRule.onNodeWithTag("home_header_title").assertIsDisplayed()
         composeRule.onNodeWithTag("home_list")
-            .performScrollToIndex(2)
+            .performScrollToNode(hasTestTag("home_recent_row"))
         composeRule.waitForIdle()
         val scrolledIndexBeforeSwitch = homeListState.firstVisibleItemIndex
-        assertTrue("Expected Home to scroll before switching tabs", scrolledIndexBeforeSwitch > 0)
+        val scrolledOffsetBeforeSwitch = homeListState.firstVisibleItemScrollOffset
+        assertTrue(
+            "Expected Home to scroll before switching tabs",
+            scrolledIndexBeforeSwitch > 0 || scrolledOffsetBeforeSwitch > 0
+        )
 
         // Switch to Library: Home stays warm (not disposed), inactive semantics cleared
         composeRule.onNodeWithTag("nav_library").performClick()
@@ -2018,6 +2060,7 @@ class MusicIntelligenceAndPerfTest {
         composeRule.onNodeWithTag("nav_home").performClick()
         composeRule.waitForIdle()
         assertEquals(scrolledIndexBeforeSwitch, homeListState.firstVisibleItemIndex)
+        assertEquals(scrolledOffsetBeforeSwitch, homeListState.firstVisibleItemScrollOffset)
         assertEquals(0, homeDisposed)
         assertEquals(0, libraryDisposed)
         assertEquals(0, discoverDisposed)
@@ -2193,7 +2236,7 @@ class MusicIntelligenceAndPerfTest {
         var resetClicks = 0
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.DARK) {
                 Box(modifier = Modifier.width(360.dp).height(760.dp)) {
                     SmartPlaylistSheetContent(
                         output = output,

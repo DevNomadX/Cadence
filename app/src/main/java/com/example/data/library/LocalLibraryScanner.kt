@@ -897,6 +897,23 @@ class LocalLibraryScanner(
         }
     }
 
+    suspend fun registerSafFolder(treeUri: Uri) = withContext(Dispatchers.IO) {
+        persistReadPermission(treeUri)
+        val rootDoc = DocumentFile.fromTreeUri(context, treeUri)
+        val normalized = FolderScopeMatcher.normalize(
+            rawUriOrPath = treeUri.toString(),
+            displayName = rootDoc?.name.orEmpty(),
+            primaryExternalRoot = primaryExternalRootProvider()
+        )
+        folderDao.upsertFolder(
+            SavedFolderEntity(
+                treeUri = treeUri.toString(),
+                displayName = normalized.displayName,
+                lastScannedAt = 0L
+            )
+        )
+    }
+
     suspend fun scanSafFolderTree(treeUri: Uri, minDurationSec: Int = 0): ScanResult {
         withContext(Dispatchers.IO) {
             persistReadPermission(treeUri)
@@ -1288,11 +1305,15 @@ class LocalLibraryScanner(
 
     private fun paletteForHash(hash: Int): ExpressivePalette {
         val choices = listOf(
-            ExpressivePalette.TERRACOTTA,
+            ExpressivePalette.BERRY,
             ExpressivePalette.MATCHA,
             ExpressivePalette.COBALT,
-            ExpressivePalette.BERRY,
-            ExpressivePalette.CITRUS
+            ExpressivePalette.CITRUS,
+            ExpressivePalette.ABYSSAL_TEAL,
+            ExpressivePalette.CRIMSON_EMBER,
+            ExpressivePalette.CYBER_VIOLET,
+            ExpressivePalette.DESERT_COPPER,
+            ExpressivePalette.OBSIDIAN_MONO
         )
         return choices[(hash and 0x7FFFFFFF) % choices.size]
     }

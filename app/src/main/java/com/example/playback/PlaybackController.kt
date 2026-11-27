@@ -3,6 +3,7 @@ package com.example.playback
 import android.content.ComponentName
 import android.content.Context
 import android.os.Looper
+import android.os.SystemClock
 import androidx.compose.runtime.Immutable
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
@@ -13,6 +14,9 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.example.data.RepeatMode
 import com.example.data.Track
+import com.example.data.intelligence.RawPlaybackEvent
+import com.example.data.intelligence.SignalProcessor
+import com.example.data.intelligence.SignalType
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,7 +56,8 @@ data class PlaybackProgress(
 
 /**
  * Bridges the UI/ViewModel layer with CadencePlaybackService via Media3 MediaController.
- * Splits low-frequency PlaybackState from high-frequency PlaybackProgress to eliminate recomposition storms.
+ * Splits low-frequency PlaybackState from high-frequency PlaybackProgress to eliminate recomposition storms
+ * and forwards bounded playback telemetry through [SignalProcessor].
  */
 class PlaybackController(
     private val context: Context,
@@ -63,7 +68,8 @@ class PlaybackController(
     private val onPlaybackError: (String) -> Unit,
     private val onTrackNaturallyEnded: () -> Unit,
     private val onTrackCompleted: (String) -> Unit = {},
-    private val onTrackSkippedEarly: (String) -> Unit = {}
+    private val onTrackSkippedEarly: (String) -> Unit = {},
+    private val onPlaybackSignalEvent: (RawPlaybackEvent) -> Unit = {}
 ) {
     private val mapper = MediaItemMapper(context)
     private val queueMutex = Mutex()
@@ -74,9 +80,10 @@ class PlaybackController(
     private var lastRecordedPlayTrackId: String? = null
     private var lastCheckpointTimeMs: Long = 0L
 
-    // Per-playback-session tracking for completion (>80%) & early skip (<20% after >=3s)
+    // Per-playback-session active listening tracker (scrub jumps never inflate active play time)
     private var sessionTrackId: String? = null
-    private var sessionMaxPositionMs: Long = 0L
+    private var sessionActivePlayMs: Long = 0L
+    private var lastPollRealtimeMs: Long = 0L
     private var sessionDurationMs: Long = 0L
     private var sessionCompletedRecorded: Boolean = false
     private var sessionSkipRecorded: Boolean = false
@@ -101,8 +108,11 @@ class PlaybackController(
                         onTrackPlayStarted(activeId)
                     }
                 }
+                lastPollRealtimeMs = SystemClock.elapsedRealtime()
                 startProgressPolling()
             } else {
+                accumulateActivePlayDelta()
+                lastPollRealtimeMs = 0L
                 stopProgressPolling()
                 saveCheckpointNow()
             }
@@ -111,6 +121,8 @@ class PlaybackController(
         override fun onPlaybackStateChanged(playbackState: Int) {
             syncFromPlayer()
             if (playbackState == Player.STATE_ENDED) {
+                accumulateActivePlayDelta()
+                lastPollRealtimeMs = 0L
                 stopProgressPolling()
                 val endedId = controller?.currentMediaItem?.mediaId ?: sessionTrackId
                 if (endedId != null) {
@@ -125,6 +137,7 @@ class PlaybackController(
             val naturalTransition = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
                 reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
             if (outgoingTrackId != null) {
+                accumulateActivePlayDelta()
                 if (naturalTransition) {
                     recordSessionCompletionIfEligible(outgoingTrackId, forceNaturalEnd = true)
                 } else if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK) {
@@ -144,6 +157,7 @@ class PlaybackController(
             // Only record play count / reset checkpoint when playback is actually active,
             // preventing cold-start session restoration from clobbering saved position or playCount.
             if (id != null && mc != null && (mc.isPlaying || mc.playWhenReady)) {
+                lastPollRealtimeMs = SystemClock.elapsedRealtime()
                 if (id != lastRecordedPlayTrackId || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
                     lastRecordedPlayTrackId = id
                     onTrackPlayStarted(id)
@@ -330,6 +344,23 @@ class PlaybackController(
         val mc = controller ?: return
         val duration = mc.duration.takeIf { it > 0L } ?: _progressState.value.durationMs
         val target = positionMs.coerceIn(0L, duration.coerceAtLeast(1L))
+        accumulateActivePlayDelta()
+        val activeId = mc.currentMediaItem?.mediaId ?: sessionTrackId
+        if (activeId != null) {
+            // Emit explicit scrub-jump event so SignalProcessor filters it cleanly as noise
+            onPlaybackSignalEvent(
+                RawPlaybackEvent(
+                    trackId = activeId,
+                    activePlayDurationMs = sessionActivePlayMs,
+                    trackDurationMs = duration.coerceAtLeast(0L),
+                    wasScrubJump = true,
+                    timestampMs = System.currentTimeMillis()
+                )
+            )
+        }
+        if (mc.isPlaying) {
+            lastPollRealtimeMs = SystemClock.elapsedRealtime()
+        }
         mc.seekTo(target)
         _progressState.value = _progressState.value.copy(positionMs = target)
         saveCheckpointNow()
@@ -471,6 +502,7 @@ class PlaybackController(
 
     private fun startProgressPolling() {
         stopProgressPolling()
+        lastPollRealtimeMs = SystemClock.elapsedRealtime()
         progressJob = scope.launch(Dispatchers.Main) {
             while (isActive) {
                 val mc = controller
@@ -485,8 +517,8 @@ class PlaybackController(
                             resetPlaybackSignalSession(activeId, dur)
                         }
                         if (dur > 0L) sessionDurationMs = dur
-                        if (pos > sessionMaxPositionMs) sessionMaxPositionMs = pos
-                        if (dur > 0L && pos >= (dur * COMPLETION_THRESHOLD_RATIO).toLong()) {
+                        accumulateActivePlayDelta()
+                        if (dur > 0L && sessionActivePlayMs > (dur * COMPLETION_THRESHOLD_RATIO).toLong()) {
                             recordSessionCompletionIfEligible(activeId, forceNaturalEnd = false)
                         }
                     }
@@ -504,9 +536,19 @@ class PlaybackController(
         }
     }
 
+    private fun accumulateActivePlayDelta() {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (lastPollRealtimeMs > 0L && nowElapsed >= lastPollRealtimeMs) {
+            val delta = (nowElapsed - lastPollRealtimeMs).coerceAtMost(1_000L)
+            sessionActivePlayMs += delta
+        }
+        lastPollRealtimeMs = nowElapsed
+    }
+
     private fun resetPlaybackSignalSession(trackId: String?, durationMs: Long) {
         sessionTrackId = trackId
-        sessionMaxPositionMs = 0L
+        sessionActivePlayMs = 0L
+        lastPollRealtimeMs = 0L
         sessionDurationMs = durationMs.coerceAtLeast(0L)
         sessionCompletedRecorded = false
         sessionSkipRecorded = false
@@ -514,25 +556,39 @@ class PlaybackController(
 
     private fun captureOutgoingSignalSnapshot(mc: MediaController) {
         val id = mc.currentMediaItem?.mediaId ?: return
-        val pos = mc.currentPosition.coerceAtLeast(0L)
         val dur = mc.duration.takeIf { it > 0L } ?: _progressState.value.durationMs
         if (sessionTrackId != id) {
             resetPlaybackSignalSession(id, dur)
         }
         if (dur > 0L) sessionDurationMs = dur
-        if (pos > sessionMaxPositionMs) sessionMaxPositionMs = pos
+        if (mc.isPlaying) {
+            accumulateActivePlayDelta()
+        }
         evaluateEarlySkipForOutgoingTrack(id)
     }
 
     private fun recordSessionCompletionIfEligible(trackId: String, forceNaturalEnd: Boolean) {
         if (sessionTrackId == trackId && sessionCompletedRecorded) return
         val dur = sessionDurationMs.takeIf { it > 0L } ?: _progressState.value.durationMs
-        val reachedThreshold = forceNaturalEnd ||
-            (dur > 0L && sessionMaxPositionMs >= (dur * COMPLETION_THRESHOLD_RATIO).toLong())
-        if (reachedThreshold) {
+        val effectiveActiveMs = if (forceNaturalEnd && dur > 0L && sessionActivePlayMs >= SignalProcessor.MIN_ACTIVE_PLAY_MS) {
+            maxOf(sessionActivePlayMs, dur)
+        } else {
+            sessionActivePlayMs
+        }
+        val rawEvent = RawPlaybackEvent(
+            trackId = trackId,
+            activePlayDurationMs = effectiveActiveMs,
+            trackDurationMs = dur.coerceAtLeast(0L),
+            wasScrubJump = false,
+            wasUserSkip = false,
+            timestampMs = System.currentTimeMillis()
+        )
+        val signal = SignalProcessor.process(rawEvent)
+        if (signal?.type == SignalType.COMPLETION_BOOST) {
             if (sessionTrackId == trackId) {
                 sessionCompletedRecorded = true
             }
+            onPlaybackSignalEvent(rawEvent)
             onTrackCompleted(trackId)
         }
     }
@@ -540,19 +596,27 @@ class PlaybackController(
     private fun evaluateEarlySkipForOutgoingTrack(trackId: String) {
         if (sessionTrackId != trackId || sessionCompletedRecorded || sessionSkipRecorded) return
         val dur = sessionDurationMs.takeIf { it > 0L } ?: _progressState.value.durationMs
-        if (dur > 0L &&
-            sessionMaxPositionMs >= EARLY_SKIP_MIN_MS &&
-            sessionMaxPositionMs < (dur * EARLY_SKIP_MAX_RATIO).toLong()
-        ) {
+        val rawEvent = RawPlaybackEvent(
+            trackId = trackId,
+            activePlayDurationMs = sessionActivePlayMs,
+            trackDurationMs = dur.coerceAtLeast(0L),
+            wasScrubJump = false,
+            wasUserSkip = true,
+            timestampMs = System.currentTimeMillis()
+        )
+        val signal = SignalProcessor.process(rawEvent)
+        if (signal?.type == SignalType.EARLY_SKIP_PENALTY) {
             sessionSkipRecorded = true
+            onPlaybackSignalEvent(rawEvent)
             onTrackSkippedEarly(trackId)
         }
     }
 
     companion object {
-        internal const val COMPLETION_THRESHOLD_RATIO = 0.80
-        internal const val EARLY_SKIP_MAX_RATIO = 0.25
-        internal const val EARLY_SKIP_MIN_MS = 3_000L
+        internal const val COMPLETION_THRESHOLD_RATIO = SignalProcessor.COMPLETION_RATIO_THRESHOLD
+        internal const val EARLY_SKIP_MAX_RATIO = SignalProcessor.EARLY_SKIP_RATIO_THRESHOLD
+        internal const val EARLY_SKIP_MIN_MS = SignalProcessor.MIN_ACTIVE_PLAY_MS
+        internal const val EARLY_SKIP_MAX_CAP_MS = SignalProcessor.EARLY_SKIP_MAX_CAP_MS
     }
 
     private fun stopProgressPolling() {

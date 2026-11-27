@@ -22,7 +22,7 @@ import com.example.data.ThemePreferences
 import com.example.data.Track
 import com.example.data.TrackGroup
 import com.example.data.UserProfile
-import com.example.data.intelligence.DailyPicksCurator
+import com.example.data.intelligence.DiscoverCategory
 import com.example.data.intelligence.DiscoverSection
 import com.example.data.intelligence.DiscoverTuneConfig
 import com.example.data.intelligence.ListeningInsights
@@ -30,8 +30,13 @@ import com.example.data.intelligence.LocalMoodAndAffinityEngine
 import com.example.data.intelligence.MoodSmartPlaylist
 import com.example.data.intelligence.MusicIntelligenceEngine
 import com.example.data.intelligence.MusicIntelligenceOutput
-import com.example.data.intelligence.MusicIntelligenceRequest
+import com.example.data.intelligence.PlaybackSignal
+import com.example.data.intelligence.RawPlaybackEvent
+import com.example.data.intelligence.RecommendationCore
+import com.example.data.intelligence.RecommendationSnapshotRepository
 import com.example.data.intelligence.RoutineMix
+import com.example.data.intelligence.SignalType
+import com.example.data.intelligence.TimeOfDayCategory
 import com.example.data.intelligence.currentLocalDayOfWeek
 import com.example.data.intelligence.currentLocalEpochDay
 import com.example.data.library.FolderScopeMatcher
@@ -66,11 +71,19 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 
 @Immutable
 data class SleepTimerState(
     val option: SleepTimerOption = SleepTimerOption.OFF,
     val remainingMs: Long? = null
+)
+
+@Keep
+@Immutable
+data class OnboardingGateState(
+    val isResolved: Boolean = false,
+    val shouldShowOnboarding: Boolean = false
 )
 
 @Immutable
@@ -112,7 +125,8 @@ data class SmartPlaylistUiState(
     val discoveryBalance: Float = 0.5f,
     val seedFromCurrent: Boolean = false,
     val isGenerating: Boolean = false,
-    val output: MusicIntelligenceOutput? = null
+    val output: MusicIntelligenceOutput? = null,
+    val activeSessionId: String? = null
 )
 
 @Keep
@@ -153,7 +167,7 @@ data class LibraryUiState(
     val genres: StableList<TrackGroup> = StableList(),
     val playlists: StableList<PlaylistSummary> = StableList(),
     val savedFolderCount: Int = 0,
-    val category: LibraryCategory = LibraryCategory.SONGS,
+    val category: LibraryCategory = LibraryCategory.OVERVIEW,
     val sortOrder: LibrarySortOrder = LibrarySortOrder.DATE_ADDED_DESC,
     val searchQuery: String = "",
     val drillDown: LibraryDrillDown? = null,
@@ -161,12 +175,33 @@ data class LibraryUiState(
     val isInitialLibraryLoaded: Boolean = true
 )
 
-class PlayerViewModel(application: Application) : AndroidViewModel(application) {
+class PlayerViewModel private constructor(
+    application: Application,
+    private val preferencesRepo: PreferencesRepository,
+    private val libraryRepo: LibraryRepository,
+    private val connectPlaybackController: Boolean,
+    private val runStartupSync: Boolean
+) : AndroidViewModel(application) {
 
-    private val preferencesRepo = PreferencesRepository(application)
-    private val libraryRepo = LibraryRepository(application, preferencesRepo)
+    constructor(application: Application) : this(
+        application = application,
+        preferencesRepo = PreferencesRepository(application)
+    )
+
+    private constructor(
+        application: Application,
+        preferencesRepo: PreferencesRepository
+    ) : this(
+        application = application,
+        preferencesRepo = preferencesRepo,
+        libraryRepo = LibraryRepository(application, preferencesRepo),
+        connectPlaybackController = true,
+        runStartupSync = true
+    )
+
     private val intelligenceEngine = MusicIntelligenceEngine()
     private val recentSkippedTrackIds = ArrayDeque<String>()
+    private val tuneSessionCounter = AtomicLong(0L)
 
     private val sleepTimerFlow = MutableStateFlow(SleepTimerState())
     val sleepTimerState: StateFlow<SleepTimerState> = sleepTimerFlow.asStateFlow()
@@ -178,15 +213,20 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     private val discoverRefreshNonceFlow = MutableStateFlow(0)
     private val discoverTuneConfigFlow = MutableStateFlow(DiscoverTuneConfig())
+    private val activeTuneSessionIdFlow = MutableStateFlow<String?>(null)
     private val currentEpochDayFlow = MutableStateFlow(currentLocalEpochDay())
+    private val currentDateKeyFlow = MutableStateFlow(RecommendationSnapshotRepository.formatDateKey())
     private val currentTimeContextSlotFlow = MutableStateFlow(computeTimeContextSlot())
 
-    private val categoryFlow = MutableStateFlow(LibraryCategory.SONGS)
+    private val categoryFlow = MutableStateFlow(LibraryCategory.OVERVIEW)
     private val searchQueryFlow = MutableStateFlow("")
     private val drillDownFlow = MutableStateFlow<LibraryDrillDown?>(null)
-    val hasLibraryDrillDown: StateFlow<Boolean> = drillDownFlow
-        .map { it != null }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), false)
+    val hasLibraryDrillDown: StateFlow<Boolean> = combine(
+        drillDownFlow,
+        categoryFlow
+    ) { drill, cat ->
+        drill != null || (cat != LibraryCategory.OVERVIEW && cat != LibraryCategory.SONGS)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), false)
 
     private val activePlaylistTracksFlow = MutableStateFlow<List<Track>>(emptyList())
     private val _snackbarMessage = MutableStateFlow<String?>(null)
@@ -236,18 +276,18 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         context = application,
         scope = viewModelScope,
         onTrackPlayStarted = { trackId ->
-            viewModelScope.launch {
+            viewModelScope.launch(Dispatchers.IO) {
                 libraryRepo.recordTrackPlay(trackId)
                 preferencesRepo.savePlaybackPosition(trackId, 0L)
             }
         },
         onQueueChanged = { ids ->
-            viewModelScope.launch {
+            viewModelScope.launch(Dispatchers.IO) {
                 libraryRepo.saveQueueTrackIds(ids)
             }
         },
         onPositionCheckpoint = { trackId, posMs ->
-            viewModelScope.launch {
+            viewModelScope.launch(Dispatchers.IO) {
                 preferencesRepo.savePlaybackPosition(trackId, posMs)
             }
         },
@@ -261,15 +301,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 showSnackbar("Paused at end of track")
             }
         },
-        onTrackCompleted = { trackId ->
-            viewModelScope.launch {
-                libraryRepo.recordTrackCompletion(trackId)
-            }
-        },
-        onTrackSkippedEarly = { trackId ->
-            recordSkippedTrack(trackId)
-            viewModelScope.launch {
-                libraryRepo.recordTrackSkip(trackId)
+        onPlaybackSignalEvent = { rawEvent ->
+            viewModelScope.launch(Dispatchers.IO) {
+                handlePlaybackSignalEvent(rawEvent)
             }
         }
     )
@@ -293,6 +327,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             started = SharingStarted.WhileSubscribed(5_000L),
             initialValue = initialUserProfileSnapshot
         )
+
+    private val _onboardingGateState = MutableStateFlow(
+        if (initialUserProfileSnapshot.hasCompletedOnboarding) {
+            OnboardingGateState(isResolved = true, shouldShowOnboarding = false)
+        } else {
+            OnboardingGateState(isResolved = false, shouldShowOnboarding = false)
+        }
+    )
+    val onboardingGateState: StateFlow<OnboardingGateState> = _onboardingGateState.asStateFlow()
 
     val progressState: StateFlow<PlaybackProgress> = playbackController.progressState
 
@@ -485,8 +528,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     val homeState: StateFlow<HomeUiState> = combine(
         libraryRepo.allTracksFlow,
         minDurationForDiscoverFlow,
-        currentEpochDayFlow
-    ) { rawTracks, minDurSec, epochDay ->
+        currentEpochDayFlow,
+        currentDateKeyFlow
+    ) { rawTracks, minDurSec, epochDay, dateKey ->
         val minDurMs = minDurSec.coerceAtLeast(0) * 1000L
         val eligible = (if (minDurMs > 0L) {
             rawTracks.filter { it.durationMs >= minDurMs }
@@ -496,11 +540,17 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             .filter { it.id.isNotBlank() }
             .distinctBy { it.id }
 
-        val dailyPicks = DailyPicksCurator.generateDailyPicks(
-            libraryTracks = eligible,
+        val nowMs = System.currentTimeMillis()
+        val signals = libraryRepo.recentSignalsSnapshot()
+
+        // Lock Daily Picks strictly once per YYYY-MM-DD calendar day (up to 6 distinct tracks)
+        val dailyPicks = libraryRepo.recommendationSnapshots.ensureDailyPicksLocked(
+            dateKey = dateKey,
+            eligibleTracks = eligible,
             epochDay = epochDay,
-            engine = intelligenceEngine
-        )
+            nowMs = nowMs,
+            signals = signals
+        ).toStableList()
 
         val recentlyPlayed = eligible
             .filter { it.lastPlayedAt > 0L }
@@ -523,9 +573,23 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                     .thenByDescending { it.lastPlayedAt }
             )
 
-        val moodCollections = LocalMoodAndAffinityEngine
-            .buildMoodSmartPlaylists(tracks = eligible)
-            .toStableList()
+        val eligibleIds = eligible.mapTo(HashSet(eligible.size * 2)) { it.id }
+        val rawMoodCollections = RecommendationCore.buildMoodPlaylists(
+            tracks = eligible,
+            signals = signals,
+            nowMs = nowMs,
+            maxTracksPerMood = RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE
+        )
+        val lockedMoodCollections = rawMoodCollections.mapNotNull { moodPl ->
+            val lockedTracks = libraryRepo.recommendationSnapshots.ensureSessionLocked(
+                sessionId = "mood:${moodPl.mood.id}:$dateKey:r0",
+                contextKey = "mood_${moodPl.mood.id}",
+                candidateTrackIds = moodPl.tracks.map { it.id },
+                eligibleTrackIds = eligibleIds,
+                nowMs = nowMs
+            )
+            if (lockedTracks.isEmpty()) null else moodPl.copy(tracks = lockedTracks.toStableList())
+        }.toStableList()
 
         HomeUiState(
             allTracks = eligible.toStableList(),
@@ -534,7 +598,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             recentlyAdded = recentlyAdded.toStableList(),
             likedTracks = likedTracks.toStableList(),
             mostPlayedTracks = mostPlayedTracks.toStableList(),
-            moodCollections = moodCollections,
+            moodCollections = lockedMoodCollections,
             isInitialLibraryLoaded = true
         )
     }
@@ -545,18 +609,32 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             initialValue = HomeUiState(isInitialLibraryLoaded = false)
         )
 
-    private val discoverRefreshTriggerFlow = combine(
+    private data class DiscoverContextTrigger(
+        val nonce: Int,
+        val dateKey: String,
+        val activeTuneSessionId: String?
+    )
+
+    private val discoverContextTriggerFlow = combine(
         discoverRefreshNonceFlow,
-        currentTimeContextSlotFlow
-    ) { nonce, _ -> nonce }
+        currentDateKeyFlow,
+        currentTimeContextSlotFlow,
+        activeTuneSessionIdFlow
+    ) { nonce, dateKey, _, activeTuneSessionId ->
+        DiscoverContextTrigger(
+            nonce = nonce,
+            dateKey = dateKey,
+            activeTuneSessionId = activeTuneSessionId
+        )
+    }.distinctUntilChanged()
 
     val discoverState: StateFlow<DiscoverUiState> = combine(
         libraryRepo.allTracksFlow,
         currentTrackIdForDiscoverFlow,
         minDurationForDiscoverFlow,
-        discoverRefreshTriggerFlow,
+        discoverContextTriggerFlow,
         discoverTuneConfigFlow
-    ) { rawTracks, currentTrackId, minDurSec, nonce, tuneConfig ->
+    ) { rawTracks, currentTrackId, minDurSec, trigger, tuneConfig ->
         val minDurMs = minDurSec.coerceAtLeast(0) * 1000L
         val eligibleTracks = (if (minDurMs > 0L) {
             rawTracks.filter { it.durationMs >= minDurMs }
@@ -567,21 +645,74 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             .distinctBy { it.id }
 
         val skippedSnapshot = synchronized(recentSkippedTrackIds) { recentSkippedTrackIds.toList() }
+        val nowMs = System.currentTimeMillis()
+        val eligibleIds = eligibleTracks.mapTo(HashSet(eligibleTracks.size * 2)) { it.id }
+        val dateKey = trigger.dateKey
+        val nonce = trigger.nonce
+        val tuneSignature = "${tuneConfig.selectedMood.orEmpty()}:${tuneConfig.energyFilter.orEmpty()}:${(tuneConfig.discoveryBalance * 100).toInt()}"
+
         try {
             val feed = intelligenceEngine.generateDiscoverFeed(
                 libraryTracks = eligibleTracks,
                 currentTrackId = currentTrackId,
                 skippedTrackIds = skippedSnapshot,
+                nowMs = nowMs,
                 shuffleNonce = nonce,
+                maxTracksPerSection = RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE,
                 tuneConfig = tuneConfig
             )
+
+            // Lock all Context-Aware Routine Mixes in Room (up to 10 distinct tracks per sessionId)
+            val lockedRoutineMixes = feed.routineMixes.mapNotNull { mix ->
+                val lockedTracks = libraryRepo.recommendationSnapshots.ensureSessionLocked(
+                    sessionId = "routine:${mix.type.id}:$dateKey:r$nonce",
+                    contextKey = "routine_${mix.type.id}",
+                    candidateTrackIds = mix.tracks.map { it.id },
+                    eligibleTrackIds = eligibleIds,
+                    nowMs = nowMs
+                )
+                if (lockedTracks.isEmpty()) null else mix.copy(tracks = lockedTracks.toStableList())
+            }.toStableList()
+
+            // Lock all Mood Playlists in Room (up to 10 distinct tracks per sessionId)
+            val lockedMoodPlaylists = feed.moodPlaylists.mapNotNull { moodPl ->
+                val lockedTracks = libraryRepo.recommendationSnapshots.ensureSessionLocked(
+                    sessionId = "mood:${moodPl.mood.id}:$dateKey:r$nonce",
+                    contextKey = "mood_${moodPl.mood.id}",
+                    candidateTrackIds = moodPl.tracks.map { it.id },
+                    eligibleTrackIds = eligibleIds,
+                    nowMs = nowMs
+                )
+                if (lockedTracks.isEmpty()) null else moodPl.copy(tracks = lockedTracks.toStableList())
+            }.toStableList()
+
+            // Lock all Discover sections (Made for You, Smart Mix / Tune Mix, Rediscover, etc.) up to 10 tracks
+            val lockedSections = feed.sections.map { section ->
+                val sessionId = when (section.category) {
+                    DiscoverCategory.MADE_FOR_YOU -> "made_for_you:$dateKey:r$nonce:$tuneSignature"
+                    DiscoverCategory.SMART_MIX -> trigger.activeTuneSessionId
+                        ?: "smart_mix:$dateKey:r$nonce:$tuneSignature"
+                    else -> "discover:${section.category.id}:$dateKey:r$nonce"
+                }
+                val lockedTracks = libraryRepo.recommendationSnapshots.ensureSessionLocked(
+                    sessionId = sessionId,
+                    contextKey = section.category.id,
+                    candidateTrackIds = section.tracks.map { it.id },
+                    eligibleTrackIds = eligibleIds,
+                    nowMs = nowMs
+                )
+                section.copy(tracks = lockedTracks.toStableList())
+            }.toStableList()
+
+            val liveInsights = RecommendationCore.computeListeningInsights(eligibleTracks)
+
             DiscoverUiState(
                 allTracks = eligibleTracks.toStableList(),
-                routineMixes = feed.routineMixes,
-                sections = feed.sections,
-                moodPlaylists = feed.moodPlaylists,
+                routineMixes = lockedRoutineMixes,
+                sections = lockedSections,
+                moodPlaylists = lockedMoodPlaylists,
                 anchorTrackTitle = feed.anchorTrackTitle,
-                insights = feed.insights,
+                insights = liveInsights,
                 tuneConfig = tuneConfig,
                 isInitialLibraryLoaded = true,
                 refreshCount = nonce,
@@ -597,7 +728,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 sections = StableList(),
                 moodPlaylists = StableList(),
                 anchorTrackTitle = null,
-                insights = ListeningInsights(),
+                insights = RecommendationCore.computeListeningInsights(eligibleTracks),
                 tuneConfig = tuneConfig,
                 isInitialLibraryLoaded = true,
                 refreshCount = nonce,
@@ -622,52 +753,72 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         )
 
     init {
-        playbackController.connect()
         viewModelScope.launch {
-            combine(
-                libraryRepo.savedFoldersFlow,
-                preferencesRepo.scanAllFoldersFlow
-            ) { folders, scanAll ->
-                folders.map { item ->
-                    FolderScopeMatcher.normalize(
-                        rawUriOrPath = item.treeUri,
-                        displayName = item.displayName
+            resolveStartupOnboardingGate()
+            preferencesRepo.hasCompletedOnboarding.collect { completed ->
+                if (completed && _onboardingGateState.value.shouldShowOnboarding) {
+                    _onboardingGateState.value = OnboardingGateState(
+                        isResolved = true,
+                        shouldShowOnboarding = false
                     )
-                } to scanAll
-            }.collect { (normalized, scanAll) ->
-                selectedFoldersWatcher.updateFolders(normalized, scanAll)
+                }
             }
         }
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                libraryRepo.ensureInitialized()
+        if (connectPlaybackController) {
+            playbackController.connect()
+        }
+        if (runStartupSync) {
+            viewModelScope.launch {
+                combine(
+                    libraryRepo.savedFoldersFlow,
+                    preferencesRepo.scanAllFoldersFlow
+                ) { folders, scanAll ->
+                    folders.map { item ->
+                        FolderScopeMatcher.normalize(
+                            rawUriOrPath = item.treeUri,
+                            displayName = item.displayName
+                        )
+                    } to scanAll
+                }.collect { (normalized, scanAll) ->
+                    selectedFoldersWatcher.updateFolders(normalized, scanAll)
+                }
             }
-            val savedFolders = libraryRepo.getSavedFoldersOnce()
-            val scanAll = preferencesRepo.isScanAllFoldersEnabled()
-            val existingCount = libraryRepo.getAllTracksOnce().size
+            viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    libraryRepo.ensureInitialized()
+                }
+                val savedFolders = libraryRepo.getSavedFoldersOnce()
+                val scanAll = preferencesRepo.isScanAllFoldersEnabled()
+                val existingCount = libraryRepo.getAllTracksOnce().size
 
-            // Stage 1 fast startup scan strictly on selected folders (or all folders if explicitly enabled)
-            if (savedFolders.isNotEmpty() || scanAll) {
-                val showStartupWave = existingCount == 0
-                libraryRepo.scanner.syncSelectedFolders(
-                    scanAllFolders = scanAll,
-                    showProgress = showStartupWave,
-                    pruneOutOfScope = true
-                )
+                // Stage 1 fast startup scan strictly on selected folders (or all folders if explicitly enabled)
+                if (savedFolders.isNotEmpty() || scanAll) {
+                    val showStartupWave = existingCount == 0
+                    libraryRepo.scanner.syncSelectedFolders(
+                        scanAllFolders = scanAll,
+                        showProgress = showStartupWave,
+                        pruneOutOfScope = true
+                    )
+                }
+                startupSyncCompleted = true
+                restorePlaybackSessionIfIdle()
+                scheduleStage2Enrichment()
             }
-            startupSyncCompleted = true
-            restorePlaybackSessionIfIdle()
-            scheduleStage2Enrichment()
         }
     }
 
     fun onAppResumed() {
         // Auto-refresh date-seeded Daily Picks across midnight & keep Routine Mixes aligned with clock
-        val latestDay = currentLocalEpochDay()
+        val nowMs = System.currentTimeMillis()
+        val latestDay = currentLocalEpochDay(nowMs)
         if (currentEpochDayFlow.value != latestDay) {
             currentEpochDayFlow.value = latestDay
         }
-        val latestSlot = computeTimeContextSlot()
+        val latestDateKey = RecommendationSnapshotRepository.formatDateKey(nowMs)
+        if (currentDateKeyFlow.value != latestDateKey) {
+            currentDateKeyFlow.value = latestDateKey
+        }
+        val latestSlot = computeTimeContextSlot(nowMs)
         if (currentTimeContextSlotFlow.value != latestSlot) {
             currentTimeContextSlotFlow.value = latestSlot
         }
@@ -798,17 +949,20 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun nextTrack() {
-        val progress = progressState.value
-        val active = nowPlayingState.value
-        val track = active.currentTrack
-        if (track != null) {
-            val dur = progress.durationMs.takeIf { it > 0L } ?: track.durationMs
-            if (active.isPlaying && dur > 0L && progress.positionMs < (dur * 0.30).toLong()) {
-                recordSkippedTrack(track.id)
-            }
-        }
+        // Early-skip evaluation (< min(25%, 45s) after >= 5s) is routed through PlaybackController -> SignalProcessor
         playbackController.next()
     }
+
+    private suspend fun handlePlaybackSignalEvent(event: RawPlaybackEvent): PlaybackSignal? {
+        val signal = libraryRepo.processPlaybackEvent(event) ?: return null
+        if (signal.type == SignalType.EARLY_SKIP_PENALTY) {
+            recordSkippedTrack(signal.trackId)
+        }
+        return signal
+    }
+
+    internal suspend fun recordPlaybackSignalForTest(event: RawPlaybackEvent): PlaybackSignal? =
+        handlePlaybackSignalEvent(event)
 
     private fun recordSkippedTrack(trackId: String) {
         synchronized(recentSkippedTrackIds) {
@@ -1028,7 +1182,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         if (uris.isEmpty()) return
         viewModelScope.launch {
             if (!userProfileState.value.hasCompletedOnboarding) {
-                preferencesRepo.completeOnboarding(null)
+                preferencesRepo.completeOnboarding()
             }
             val minSec = preferencesRepo.getMinTrackDurationSec()
             val result = libraryRepo.scanner.importAudioFiles(uris, minSec)
@@ -1047,7 +1201,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun addMusicFolder(treeUri: Uri) {
         viewModelScope.launch {
             if (!userProfileState.value.hasCompletedOnboarding) {
-                preferencesRepo.completeOnboarding(null)
+                preferencesRepo.completeOnboarding()
             }
             // Selecting an explicit music folder narrows scope strictly to selected folders
             preferencesRepo.setScanAllFoldersEnabled(false)
@@ -1127,7 +1281,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     fun scanDeviceMediaStore() {
         viewModelScope.launch {
             if (!userProfileState.value.hasCompletedOnboarding) {
-                preferencesRepo.completeOnboarding(null)
+                preferencesRepo.completeOnboarding()
             }
             val savedFolders = libraryRepo.getSavedFoldersOnce()
             val scanAll = if (savedFolders.isEmpty()) {
@@ -1165,30 +1319,106 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         else -> "No new audio files found"
     }
 
-    // --- User Profile & Onboarding ---
+    // --- Onboarding ---
 
-    fun setUserDisplayName(name: String) {
-        viewModelScope.launch {
-            val trimmed = name.trim()
-            preferencesRepo.setUserDisplayName(trimmed)
-            showSnackbar(if (trimmed.isEmpty()) "Display name cleared" else "Updated name to $trimmed")
+    private suspend fun resolveStartupOnboardingGate() {
+        val persistedCompleted = withContext(Dispatchers.IO) {
+            preferencesRepo.hasCompletedOnboarding.first()
+        }
+        if (persistedCompleted) {
+            _onboardingGateState.value = OnboardingGateState(
+                isResolved = true,
+                shouldShowOnboarding = false
+            )
+            return
+        }
+        val hasExistingLibraryData = withContext(Dispatchers.IO) {
+            libraryRepo.getAllTracksOnce().isNotEmpty() ||
+                libraryRepo.getSavedFoldersOnce().isNotEmpty()
+        }
+        if (hasExistingLibraryData) {
+            withContext(Dispatchers.IO) {
+                preferencesRepo.setOnboardingCompleted(true)
+            }
+            _onboardingGateState.value = OnboardingGateState(
+                isResolved = true,
+                shouldShowOnboarding = false
+            )
+        } else {
+            _onboardingGateState.value = OnboardingGateState(
+                isResolved = true,
+                shouldShowOnboarding = true
+            )
         }
     }
 
-    fun completeOnboarding(displayName: String? = null) {
-        viewModelScope.launch {
-            preferencesRepo.completeOnboarding(displayName)
+    fun setOnboardingCompleted(completed: Boolean) {
+        if (completed) {
+            _onboardingGateState.value = OnboardingGateState(
+                isResolved = true,
+                shouldShowOnboarding = false
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            preferencesRepo.setOnboardingCompleted(completed)
+        }
+    }
+
+    fun completeOnboarding() {
+        setOnboardingCompleted(true)
+    }
+
+    fun addOnboardingFolder(treeUri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            libraryRepo.scanner.registerSafFolder(treeUri)
+        }
+    }
+
+    fun removeOnboardingFolder(treeUri: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            libraryRepo.removeSavedFolder(treeUri)
+        }
+    }
+
+    fun completeOnboardingAndStartScan(scanAllFolders: Boolean) {
+        _onboardingGateState.value = OnboardingGateState(
+            isResolved = true,
+            shouldShowOnboarding = false
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            preferencesRepo.setOnboardingCompleted(true)
+            preferencesRepo.setScanAllFoldersEnabled(scanAllFolders)
+            val savedFolders = libraryRepo.getSavedFoldersOnce()
+            val shouldScan = scanAllFolders || savedFolders.isNotEmpty()
+            if (shouldScan) {
+                val result = runCatching {
+                    if (scanAllFolders) {
+                        libraryRepo.scanner.scanMediaStoreAudio(scanAllFolders = true)
+                    } else {
+                        libraryRepo.scanner.syncSelectedFolders(
+                            scanAllFolders = false,
+                            showProgress = true,
+                            pruneOutOfScope = false
+                        )
+                    }
+                }.getOrNull()
+                if (result != null && result.addedCount > 0) {
+                    scheduleStage2Enrichment()
+                }
+            }
         }
     }
 
     // --- Offline Local Music Intelligence & Smart Playlists ---
 
     fun refreshDiscoverFeed() {
+        activeTuneSessionIdFlow.value = null
         discoverRefreshNonceFlow.value += 1
     }
 
     fun updateDiscoverTuneConfig(config: DiscoverTuneConfig) {
         val clamped = config.copy(discoveryBalance = config.discoveryBalance.coerceIn(0f, 1f))
+        activeTuneSessionIdFlow.value = null
         discoverTuneConfigFlow.value = clamped
         _smartPlaylistState.value = _smartPlaylistState.value.copy(
             selectedMood = clamped.selectedMood,
@@ -1206,14 +1436,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         seedFromCurrent: Boolean = _smartPlaylistState.value.seedFromCurrent,
         energyFilter: String? = discoverTuneConfigFlow.value.energyFilter,
         discoveryBalance: Float = discoverTuneConfigFlow.value.discoveryBalance,
-        maxTracks: Int = 15
+        maxTracks: Int = RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE
     ) {
         val clampedBalance = discoveryBalance.coerceIn(0f, 1f)
-        discoverTuneConfigFlow.value = DiscoverTuneConfig(
+        val newConfig = DiscoverTuneConfig(
             selectedMood = targetMood,
             energyFilter = energyFilter,
             discoveryBalance = clampedBalance
         )
+        discoverTuneConfigFlow.value = newConfig
         _smartPlaylistState.value = _smartPlaylistState.value.copy(
             selectedMood = targetMood,
             energyFilter = energyFilter,
@@ -1222,27 +1453,37 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             isGenerating = true
         )
         val seedId = if (seedFromCurrent) nowPlayingState.value.currentTrack?.id else null
-        val skippedSnapshot = synchronized(recentSkippedTrackIds) { recentSkippedTrackIds.toList() }
+        val sessionId = "tune_mix:${tuneSessionCounter.incrementAndGet()}:${System.currentTimeMillis()}"
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
-                val result = withContext(Dispatchers.Default) {
-                    val tracks = libraryRepo.getAllTracksOnce()
-                        .filter { it.id.isNotBlank() }
-                        .distinctBy { it.id }
-                    val history = intelligenceEngine.deriveListeningHistory(tracks, skippedSnapshot)
-                    val request = MusicIntelligenceRequest(
-                        seedTrackId = seedId,
-                        targetMood = targetMood,
-                        energyFilter = energyFilter,
-                        discoveryBalance = clampedBalance,
-                        maxTracks = maxTracks
-                    )
-                    intelligenceEngine.analyzeAndRecommend(request, history, tracks)
-                }
+                val nowMs = System.currentTimeMillis()
+                val minDurMs = preferencesRepo.getMinTrackDurationSec().coerceAtLeast(0) * 1000L
+                val rawTracks = libraryRepo.getAllTracksOnce()
+                val eligibleTracks = (if (minDurMs > 0L) {
+                    rawTracks.filter { it.durationMs >= minDurMs }
+                } else {
+                    rawTracks
+                })
+                    .filter { it.id.isNotBlank() }
+                    .distinctBy { it.id }
+
+                val timeOfDay = TimeOfDayCategory.fromHour(LocalMoodAndAffinityEngine.currentLocalHour(nowMs))
+                val (_, output) = libraryRepo.recommendationSnapshots.createLockedTunedSession(
+                    sessionId = sessionId,
+                    contextKey = "tune_mix",
+                    eligibleTracks = eligibleTracks,
+                    tuneConfig = newConfig,
+                    seedTrackId = seedId,
+                    nowMs = nowMs,
+                    timeOfDay = timeOfDay,
+                    signals = libraryRepo.recentSignalsSnapshot()
+                )
+                activeTuneSessionIdFlow.value = sessionId
                 _smartPlaylistState.value = _smartPlaylistState.value.copy(
                     isGenerating = false,
-                    output = result
+                    output = output,
+                    activeSessionId = sessionId
                 )
             } catch (ce: CancellationException) {
                 throw ce
@@ -1372,5 +1613,19 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         lyricsLoadJob?.cancel()
         // Release MediaController only — CadencePlaybackService continues playing in background!
         playbackController.releaseController()
+    }
+
+    companion object {
+        internal fun createForTesting(
+            application: Application,
+            preferencesRepo: PreferencesRepository,
+            libraryRepo: LibraryRepository
+        ): PlayerViewModel = PlayerViewModel(
+            application = application,
+            preferencesRepo = preferencesRepo,
+            libraryRepo = libraryRepo,
+            connectPlaybackController = false,
+            runStartupSync = false
+        )
     }
 }

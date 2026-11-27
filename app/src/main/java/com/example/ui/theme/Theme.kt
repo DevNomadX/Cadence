@@ -123,7 +123,7 @@ fun resolveCadenceColorScheme(
 
 @Composable
 fun CadenceTheme(
-    palette: ExpressivePalette = ExpressivePalette.TERRACOTTA,
+    palette: ExpressivePalette = ExpressivePalette.DEFAULT,
     appearanceMode: AppearanceMode = AppearanceMode.SYSTEM,
     performanceMode: Boolean = false,
     content: @Composable () -> Unit

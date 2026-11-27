@@ -1,5 +1,6 @@
 package com.example.ui.theme
 
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Outline
@@ -208,6 +209,120 @@ data class SuperellipseSquircleShape(
         var i = stride
         while (i < unitX.size) {
             path.lineTo(cx + rx * unitX[i], cy + ry * unitY[i])
+            i += stride
+        }
+        path.close()
+        path
+    }
+}
+
+/**
+ * Lightweight morphable Material 3 Expressive scalloped "cookie" button silhouette.
+ * Smoothly interpolates between a clean circle ([lobeDepth] = 0f) and an [lobes]-lobe
+ * scalloped badge ([lobeDepth] = 1f) while caching [Outline.Generic] per [Size].
+ */
+data class ScallopedCookieShape(
+    val lobes: Int = 8,
+    val lobeDepth: Float = 1f,
+    val maxAmplitudeFraction: Float = 0.075f
+) : Shape {
+    private val clampedDepth: Float = lobeDepth.coerceIn(0f, 1f)
+    private val effectiveAmplitude: Float = maxAmplitudeFraction * clampedDepth
+    private val unitX: FloatArray?
+    private val unitY: FloatArray?
+    private val outlineCache: SizeOutlineCache?
+
+    init {
+        if (clampedDepth <= 0.001f || effectiveAmplitude <= 0.0001f || lobes <= 0) {
+            unitX = null
+            unitY = null
+            outlineCache = null
+        } else {
+            val steps = 96
+            val xs = FloatArray(steps + 1)
+            val ys = FloatArray(steps + 1)
+            val base = 1f - effectiveAmplitude
+            val twoPi = (2.0 * PI).toFloat()
+            for (i in 0..steps) {
+                val theta = (i.toFloat() / steps) * twoPi
+                val r = base + effectiveAmplitude * cos(lobes * theta)
+                xs[i] = r * cos(theta)
+                ys[i] = r * sin(theta)
+            }
+            unitX = xs
+            unitY = ys
+            outlineCache = SizeOutlineCache()
+        }
+    }
+
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val xs = unitX
+        val ys = unitY
+        val cache = outlineCache
+        if (xs == null || ys == null || cache == null) {
+            return CircleShape.createOutline(size, layoutDirection, density)
+        }
+        return cache.getOrCreate(size) {
+            val path = Path()
+            val cx = size.width * 0.5f
+            val cy = size.height * 0.5f
+            val radius = min(size.width, size.height) * 0.5f
+
+            path.moveTo(cx + radius * xs[0], cy + radius * ys[0])
+            for (i in 1 until xs.size) {
+                path.lineTo(cx + radius * xs[i], cy + radius * ys[i])
+            }
+            path.close()
+            path
+        }
+    }
+}
+
+/**
+ * Material 3 Expressive soft four-point star / sparkle badge silhouette with precomputed vertices
+ * and per-Size Outline caching for smooth low-end GPU performance.
+ */
+data class FourPointStarShape(
+    private val indentationFraction: Float = 0.22f
+) : Shape {
+    private val unitX: FloatArray
+    private val unitY: FloatArray
+    private val outlineCache = SizeOutlineCache()
+
+    init {
+        val steps = 96
+        unitX = FloatArray(steps + 1)
+        unitY = FloatArray(steps + 1)
+        val base = 1f - indentationFraction
+        val twoPi = (2.0 * PI).toFloat()
+        for (i in 0..steps) {
+            val theta = (i.toFloat() / steps) * twoPi
+            val r = base + indentationFraction * cos(4f * theta)
+            unitX[i] = r * cos(theta)
+            unitY[i] = r * sin(theta)
+        }
+    }
+
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline = outlineCache.getOrCreate(size) {
+        val path = Path()
+        val cx = size.width * 0.5f
+        val cy = size.height * 0.5f
+        val minDim = min(size.width, size.height)
+        val radius = minDim * 0.5f
+        val stride = if (minDim <= 160f) 2 else 1
+
+        path.moveTo(cx + radius * unitX[0], cy + radius * unitY[0])
+        var i = stride
+        while (i < unitX.size) {
+            path.lineTo(cx + radius * unitX[i], cy + radius * unitY[i])
             i += stride
         }
         path.close()

@@ -1,8 +1,8 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -11,7 +11,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -46,9 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -74,25 +71,21 @@ import com.example.ui.theme.DisplayFontFamily
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.LocalPerformanceMode
 import com.example.ui.theme.MonoFontFamily
-import com.example.ui.theme.opaqueOver
+import com.example.ui.theme.ScallopedCookieShape
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlin.math.PI
 import kotlin.math.sin
 
-private val HeroCardShape = RoundedCornerShape(28.dp)
-private val HeroArtworkShape = RoundedCornerShape(18.dp)
+private val HeroCardShape = RoundedCornerShape(30.dp)
+private val HeroArtworkShape = RoundedCornerShape(20.dp)
+internal val PermanentScallopedPlayShape = ScallopedCookieShape(lobes = 8, lobeDepth = 1f)
 
 @Immutable
 internal data class HomeHeroColors(
-    val topColor: Color,
-    val bottomColor: Color,
+    val cardSurface: Color,
     val cardBorder: Color,
-    val accentOrbColor: Color,
-    val accentRingColor: Color,
-    val statusTextColor: Color,
-    val statusIconTint: Color,
     val hifiPillContainer: Color,
     val hifiPillBorder: Color,
     val hifiPillText: Color,
@@ -108,55 +101,48 @@ internal data class HomeHeroColors(
 )
 
 internal fun resolveHomeHeroColors(colorScheme: ColorScheme): HomeHeroColors {
-    // Calm, low-glare M3 Expressive tonal surface: 24% primaryContainer pre-blended over surfaceContainerHigh
-    val topColor = colorScheme.primaryContainer.opaqueOver(colorScheme.surfaceContainerHigh, 0.24f)
-    val bottomColor = colorScheme.primaryContainer.opaqueOver(colorScheme.surfaceContainer, 0.16f)
-    val hifiPillBg = colorScheme.primary.opaqueOver(topColor, 0.14f)
+    val onContainer = colorScheme.onPrimaryContainer
     return HomeHeroColors(
-        topColor = topColor,
-        bottomColor = bottomColor,
-        cardBorder = colorScheme.primary.copy(alpha = 0.20f),
-        accentOrbColor = colorScheme.primary.copy(alpha = 0.05f),
-        accentRingColor = colorScheme.primary.copy(alpha = 0.08f),
-        statusTextColor = colorScheme.primary,
-        statusIconTint = colorScheme.primary,
-        hifiPillContainer = hifiPillBg,
-        hifiPillBorder = colorScheme.primary.copy(alpha = 0.28f),
-        hifiPillText = colorScheme.primary,
-        titleColor = colorScheme.onSurface,
-        artistColor = colorScheme.onSurfaceVariant,
-        timestampColor = colorScheme.onSurfaceVariant,
+        cardSurface = colorScheme.primaryContainer,
+        cardBorder = onContainer.copy(alpha = 0.14f),
+        hifiPillContainer = onContainer.copy(alpha = 0.12f),
+        hifiPillBorder = onContainer.copy(alpha = 0.22f),
+        hifiPillText = onContainer,
+        titleColor = onContainer,
+        artistColor = onContainer.copy(alpha = 0.78f),
+        timestampColor = onContainer.copy(alpha = 0.80f),
         playButtonContainer = colorScheme.primary,
         playButtonContent = colorScheme.onPrimary,
         wavePlayedColor = colorScheme.primary,
         waveHaloColor = colorScheme.primary.copy(alpha = 0.22f),
-        waveUnplayedColor = colorScheme.onSurfaceVariant.opaqueOver(bottomColor, 0.24f),
-        artworkBorderColor = colorScheme.outlineVariant.copy(alpha = 0.35f)
+        waveUnplayedColor = onContainer.copy(alpha = 0.24f),
+        artworkBorderColor = onContainer.copy(alpha = 0.16f)
     )
 }
 
 /**
- * Resolves the Hero card's Hi-Fi quality tier badge from real track audio metadata.
- * Displays "LOSSLESS" for lossless/24-bit/Hi-Res formats (FLAC, ALAC, WAV, PCM, >48 kHz)
- * and "HI-FI AUDIO" for high-bitrate/standard audio rather than raw file extensions like "MP3".
+ * Resolves the Hero card's compact Hi-Fi quality tier badge from real track audio metadata.
+ * Displays "LOSSLESS" for lossless/24-bit/Hi-Res formats (FLAC, ALAC, WAV, PCM, >48 kHz),
+ * "AAC" for AAC/M4A streams, and "HI-FI" for high-bitrate/standard audio (never raw "MP3").
  */
-internal fun resolveHomeHeroFormatBadge(track: Track, fallbackHiFi: String = "HI-FI AUDIO"): String {
+internal fun resolveHomeHeroFormatBadge(track: Track, fallbackHiFi: String = "HI-FI"): String {
     val spec = track.resolveAudioQualitySpec()
     return when {
         track.isLosslessFormat ||
             track.isHiRes ||
             spec?.tier == AudioQualityTier.HI_RES ||
             spec?.tier == AudioQualityTier.LOSSLESS -> "LOSSLESS"
-        else -> fallbackHiFi.ifBlank { "HI-FI AUDIO" }
+        track.resolvedCodec == "AAC" -> "AAC"
+        else -> fallbackHiFi.ifBlank { "HI-FI" }
     }
 }
 
 /**
- * Main Now Playing Hero Card arranged in three clean vertical tiers:
- * 1. Top Tier: 100.dp rounded-18dp artwork on left + 4-line metadata stack on right
- *    (inline status row, 1-line title, 1-line artist, tonal Hi-Fi Audio pill).
- * 2. Middle Tier: Full-width isolated draw-phase sinusoidal wavy progress bar & mono timestamps.
- * 3. Bottom Tier: Single centered 54.dp Play/Pause button (circle when paused <-> 16.dp squircle when playing).
+ * Flagship M3 Expressive Main Now Playing Hero Card:
+ * 1. Solid opaque `primaryContainer` surface (`RoundedCornerShape(30.dp)`) with `onPrimaryContainer` tokens.
+ * 2. Compact upper Box: 112.dp rounded-20dp artwork + static 14.dp waveform Hi-Fi badge, 22.sp title,
+ *    14.sp artist (with 66.dp end clearance), and bottom-right 58.dp permanently 8-lobe scalloped Play/Pause button.
+ * 3. Lower full-width isolated draw-phase sinusoidal wavy seek bar (3.5.dp stroke, 12.dp thumb) + 12.sp mono timestamps.
  */
 @Composable
 internal fun HomeJumpBackInHeroCard(
@@ -171,7 +157,7 @@ internal fun HomeJumpBackInHeroCard(
     onSeek: (Float) -> Unit
 ) {
     val isLowEndMode = LocalPerformanceMode.current
-    val fallbackHiFi = stringResource(R.string.badge_hifi_audio)
+    val fallbackHiFi = stringResource(R.string.badge_hifi_short)
     val formatBadge = remember(
         track.id,
         track.codec,
@@ -183,24 +169,38 @@ internal fun HomeJumpBackInHeroCard(
     ) {
         resolveHomeHeroFormatBadge(track, fallbackHiFi)
     }
-    val heroBrush = remember(heroColors.topColor, heroColors.bottomColor) {
-        Brush.verticalGradient(listOf(heroColors.topColor, heroColors.bottomColor))
-    }
 
     val playInteraction = remember { MutableInteractionSource() }
     val isPlayPressed by playInteraction.collectIsPressedAsState()
-    val playScale by animateFloatAsState(
-        targetValue = if (!isLowEndMode && isPlayPressed) 0.94f else 1f,
+    val pressScale by animateFloatAsState(
+        targetValue = if (!isLowEndMode && isPlayPressed) 0.93f else 1f,
         animationSpec = spring(dampingRatio = 0.72f, stiffness = 620f),
         label = "jump_back_in_play_scale"
     )
-    val targetPlayCorner = if (isPlaying) 16.dp else 27.dp
-    val animatedPlayCorner by animateDpAsState(
-        targetValue = targetPlayCorner,
-        animationSpec = spring(dampingRatio = 0.72f, stiffness = 540f),
-        label = "jump_back_in_play_corner"
+    // Subtle rotation & breathing pulse on the permanently scalloped 8-lobe button ONLY while playing
+    val activePlayTransition = if (isPlaying && isActiveTab && !isLowEndMode) {
+        rememberInfiniteTransition(label = "jump_back_in_scallop_active")
+    } else {
+        null
+    }
+    val scallopRotationState = activePlayTransition?.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 18_000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "jump_back_in_scallop_rotation"
     )
-    val playButtonShape = RoundedCornerShape(if (isLowEndMode) targetPlayCorner else animatedPlayCorner)
+    val scallopPulseState = activePlayTransition?.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.035f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "jump_back_in_scallop_pulse"
+    )
 
     Box(
         modifier = Modifier
@@ -209,7 +209,7 @@ internal fun HomeJumpBackInHeroCard(
     ) {
         Surface(
             shape = HeroCardShape,
-            color = heroColors.topColor,
+            color = heroColors.cardSurface,
             border = BorderStroke(1.dp, heroColors.cardBorder),
             modifier = Modifier
                 .testTag("home_continue_card")
@@ -220,160 +220,130 @@ internal fun HomeJumpBackInHeroCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(heroBrush)
-                    .drawBehind {
-                        val center = Offset(size.width * 0.94f, size.height * 0.12f)
-                        drawCircle(
-                            color = heroColors.accentOrbColor,
-                            radius = size.width * 0.36f,
-                            center = center
-                        )
-                        drawCircle(
-                            color = heroColors.accentRingColor,
-                            radius = size.width * 0.46f,
-                            center = center,
-                            style = Stroke(width = 1.dp.toPx())
-                        )
-                    }
-                    .padding(horizontal = 18.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .padding(18.dp)
             ) {
-                // Tier 1: 100.dp Rounded Artwork + 4-Line Metadata Stack
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        shape = HeroArtworkShape,
-                        color = Color.Transparent,
-                        border = BorderStroke(1.dp, heroColors.artworkBorderColor),
+                // Upper Section: 112.dp Artwork + Full-Width Metadata cleanly above Bottom-Right 58.dp 8-Lobe Play/Pause Button
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Row(
                         modifier = Modifier
-                            .testTag("home_hero_artwork")
-                            .size(100.dp)
+                            .fillMaxWidth()
+                            .padding(bottom = 40.dp),
+                        verticalAlignment = Alignment.Top
                     ) {
-                        ExpressiveArtworkFrame(
-                            track = track,
-                            artworkShape = artworkShape,
-                            isPlaying = isPlaying,
-                            animateScale = false,
-                            decodeSizePx = 300,
-                            shapeOverride = HeroArtworkShape,
-                            showHairlineBorder = false,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
-                    ) {
-                        // 1. Clean Inline Playback Status ("NOW PLAYING" / "PAUSED")
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.testTag("home_hero_status_badge")
-                        ) {
-                            Icon(
-                                imageVector = CadenceIcons.GraphicEq,
-                                contentDescription = null,
-                                tint = heroColors.statusIconTint,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Text(
-                                text = stringResource(if (isPlaying) R.string.now_playing_label else R.string.status_paused),
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = MonoFontFamily,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 0.8.sp
-                                ),
-                                color = heroColors.statusTextColor,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
-
-                        // 2. Song Title (1-line Bricolage Grotesque)
-                        Text(
-                            text = track.title,
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontFamily = DisplayFontFamily,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = (-0.3).sp
-                            ),
-                            color = heroColors.titleColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("home_hero_title")
-                        )
-
-                        // 3. Artist Name (1-line Plus Jakarta Sans)
-                        Text(
-                            text = track.artist,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = heroColors.artistColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("home_hero_artist")
-                        )
-
-                        Spacer(modifier = Modifier.height(3.dp))
-
-                        // 4. Compact Hi-Fi Audio Tonal Pill (Below Artist)
                         Surface(
-                            shape = CircleShape,
-                            color = heroColors.hifiPillContainer,
-                            border = BorderStroke(1.dp, heroColors.hifiPillBorder),
-                            modifier = Modifier.testTag("home_hero_hifi_badge")
+                            shape = HeroArtworkShape,
+                            color = Color.Transparent,
+                            border = BorderStroke(1.dp, heroColors.artworkBorderColor),
+                            modifier = Modifier
+                                .testTag("home_hero_artwork")
+                                .size(112.dp)
                         ) {
+                            ExpressiveArtworkFrame(
+                                track = track,
+                                artworkShape = artworkShape,
+                                isPlaying = isPlaying,
+                                animateScale = false,
+                                decodeSizePx = 336,
+                                shapeOverride = HeroArtworkShape,
+                                showHairlineBorder = false,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 14.dp, bottom = 26.dp)
+                        ) {
+                            // Static Hi-Fi / Lossless Audio Badge (Zero animation)
+                            Surface(
+                                shape = CircleShape,
+                                color = heroColors.hifiPillContainer,
+                                border = BorderStroke(1.dp, heroColors.hifiPillBorder),
+                                modifier = Modifier
+                                    .height(26.dp)
+                                    .testTag("home_hero_hifi_badge")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                    modifier = Modifier.padding(horizontal = 10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = CadenceIcons.GraphicEq,
+                                        contentDescription = null,
+                                        tint = heroColors.hifiPillText,
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .testTag("home_hero_hifi_icon")
+                                    )
+                                    Text(
+                                        text = formatBadge,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontFamily = MonoFontFamily,
+                                            fontWeight = FontWeight.Bold,
+                                            letterSpacing = 0.6.sp
+                                        ),
+                                        color = heroColors.hifiPillText,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+
+                            // Song Title (1-line Bricolage Grotesque, 22.sp Bold, full horizontal width)
                             Text(
-                                text = formatBadge,
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = MonoFontFamily,
+                                text = track.title,
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontFamily = DisplayFontFamily,
+                                    fontSize = 22.sp,
+                                    lineHeight = 26.sp,
                                     fontWeight = FontWeight.Bold,
-                                    letterSpacing = 0.6.sp
+                                    letterSpacing = (-0.3).sp
                                 ),
-                                color = heroColors.hifiPillText,
+                                color = heroColors.titleColor,
                                 maxLines = 1,
-                                softWrap = false,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp)
+                                    .testTag("home_hero_title")
+                            )
+
+                            // Artist Subtitle (1-line Plus Jakarta Sans, 14.sp, full horizontal width above 58.dp button)
+                            Text(
+                                text = track.artist,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontSize = 14.sp,
+                                    lineHeight = 18.sp
+                                ),
+                                color = heroColors.artistColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 2.dp)
+                                    .testTag("home_hero_artist")
                             )
                         }
                     }
-                }
 
-                // Tier 2: Full-Width Interactive Sinusoidal Wavy Progress Bar & Mono Timestamps
-                HomeHeroWavyProgressSection(
-                    trackDurationMs = track.durationMs,
-                    isPlaying = isPlaying,
-                    heroColors = heroColors,
-                    progressFlow = progressFlow,
-                    isActiveTab = isActiveTab,
-                    onSeek = onSeek
-                )
-
-                // Tier 3: Single Centered 54.dp Morphing Play/Pause Button Only
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
+                    // Bottom-Right 58.dp Permanently 8-Lobe Scalloped M3 Expressive Play/Pause Button
                     Surface(
-                        shape = playButtonShape,
+                        shape = PermanentScallopedPlayShape,
                         color = heroColors.playButtonContainer,
                         contentColor = heroColors.playButtonContent,
                         modifier = Modifier
+                            .align(Alignment.BottomEnd)
                             .testTag("home_continue_play_button")
                             .graphicsLayer {
-                                scaleX = playScale
-                                scaleY = playScale
+                                val combinedScale = pressScale * (scallopPulseState?.value ?: 1f)
+                                scaleX = combinedScale
+                                scaleY = combinedScale
+                                rotationZ = scallopRotationState?.value ?: 0f
                             }
-                            .size(54.dp)
-                            .clip(playButtonShape)
+                            .size(58.dp)
+                            .clip(PermanentScallopedPlayShape)
                             .clickable(
                                 interactionSource = playInteraction,
                                 indication = ripple(),
@@ -387,11 +357,27 @@ internal fun HomeJumpBackInHeroCard(
                                 contentDescription = stringResource(
                                     if (isPlaying) R.string.action_pause else R.string.action_play
                                 ),
-                                modifier = Modifier.size(26.dp)
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .graphicsLayer {
+                                        rotationZ = -(scallopRotationState?.value ?: 0f)
+                                    }
                             )
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Lower Wavy Seek Bar & JetBrains Mono Timestamps
+                HomeHeroWavyProgressSection(
+                    trackDurationMs = track.durationMs,
+                    isPlaying = isPlaying,
+                    heroColors = heroColors,
+                    progressFlow = progressFlow,
+                    isActiveTab = isActiveTab,
+                    onSeek = onSeek
+                )
             }
         }
     }
@@ -410,7 +396,7 @@ private fun HomeHeroWavyProgressSection(
 
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(0.dp)
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         HomeHeroWavyProgressBar(
             progressFlow = progressFlow,
@@ -478,7 +464,7 @@ private fun HomeHeroWavyProgressBar(
         modifier = Modifier
             .testTag("home_continue_progress")
             .fillMaxWidth()
-            .height(30.dp)
+            .height(24.dp)
             .pointerInput(onSeek) {
                 detectTapGestures { offset ->
                     val thumbPad = 8.dp.toPx()
@@ -520,9 +506,9 @@ private fun HomeHeroWavyProgressBar(
         val dragFraction = dragFractionState.value
         val fraction = (dragFraction ?: liveFraction).coerceIn(0f, 1f)
 
-        val thumbRadius = 5.5.dp.toPx()
+        val thumbRadius = 6.dp.toPx()
         val haloRadius = if (dragFraction != null) 12.dp.toPx() else 9.5.dp.toPx()
-        val strokeWidthPx = 3.2.dp.toPx()
+        val strokeWidthPx = 3.5.dp.toPx()
         val padX = thumbRadius + 2.dp.toPx()
         val startX = padX
         val endX = (size.width - padX).coerceAtLeast(startX + 1f)
@@ -621,7 +607,7 @@ private fun HomeHeroTimestampsRow(
 
     val monoStyle = MaterialTheme.typography.labelSmall.copy(
         fontFamily = MonoFontFamily,
-        fontSize = 11.5.sp,
+        fontSize = 12.sp,
         fontFeatureSettings = "tnum"
     )
 

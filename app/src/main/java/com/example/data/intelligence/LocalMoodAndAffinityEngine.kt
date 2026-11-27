@@ -10,11 +10,9 @@ import com.example.data.toStableList
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.random.Random
 
 /**
  * Multi-label smart mood tags computed deterministically offline on Dispatchers.Default.
@@ -476,11 +474,8 @@ object LocalMoodAndAffinityEngine {
     }
 
     /**
-     * Computes a normalized local affinity score (`0.0f..1.0f`) combining:
-     * - Completion rate (>80% listens via [Track.completedPlayCount]) & favorite affinity
-     * - Early skip penalty (<25% skips via [Track.skipCount])
-     * - Time-of-day context (`21:00–04:59` favors calm/warm moods; `06:00–20:59` favors upbeat)
-     * - Recency decay (`24-hour` cooldown penalty) & rediscovery boost (`21+ days` untouched high-affinity tracks)
+     * Computes a normalized local affinity score (`0.0f..1.0f`) by delegating directly to
+     * [RecommendationCore.computeAffinityBreakdown] as the single source of truth.
      */
     fun computeLocalAffinity(
         track: Track,
@@ -488,109 +483,13 @@ object LocalMoodAndAffinityEngine {
         localHourOfDay: Int = currentLocalHour(nowMs),
         maxLibraryPlays: Int = 10,
         sessionSkippedIds: Set<String> = emptySet()
-    ): TrackAffinityBreakdown {
-        val plays = track.playCount.coerceAtLeast(0)
-        val completed = track.completedPlayCount.coerceAtLeast(0)
-        val skips = track.skipCount.coerceAtLeast(0)
-        val safeMaxPlays = maxOf(1, maxLibraryPlays)
-
-        // 1. Completion rate & favorite signal
-        val attempts = maxOf(plays, completed + skips)
-        val completionRatio = if (attempts > 0) {
-            (completed.toFloat() / attempts.toFloat()).coerceIn(0f, 1f)
-        } else {
-            0.5f
-        }
-        val completedDepth = if (completed > 0) {
-            (ln(completed.toDouble() + 1.0) / ln(safeMaxPlays.toDouble() + 2.0)).toFloat().coerceIn(0f, 1f)
-        } else {
-            0f
-        }
-        val playVolume = if (plays > 0) {
-            (ln(plays.toDouble() + 1.0) / ln(safeMaxPlays.toDouble() + 2.0)).toFloat().coerceIn(0f, 1f)
-        } else {
-            0f
-        }
-
-        val completionSignal = (
-            (if (attempts > 0) (completionRatio - 0.5f) * 0.24f else 0f) +
-                completedDepth * 0.22f +
-                playVolume * 0.08f +
-                (if (track.isFavorite) 0.16f else 0f)
-            ).coerceIn(-0.14f, 0.44f)
-
-        // 2. Skip penalty (<25% early skips)
-        val skipRatio = if (attempts > 0) {
-            (skips.toFloat() / attempts.toFloat()).coerceIn(0f, 1f)
-        } else {
-            0f
-        }
-        val sessionSkipExtra = if (track.id in sessionSkippedIds) 0.14f else 0f
-        val skipPenalty = (
-            (skipRatio * 0.24f) +
-                (min(skips, 6) * 0.035f) +
-                sessionSkipExtra
-            ).coerceIn(0f, 0.46f)
-
-        // 3. Time-of-day context (21:00–04:59 calm/warm vs 06:00–20:59 energetic/upbeat)
-        val resolvedTags = track.resolvedMoodTags()
-        val isLateNightWindow = localHourOfDay >= 21 || localHourOfDay <= 4
-        val isDaytimeWindow = localHourOfDay in 6..20
-        val timeOfDayBoost = when {
-            isLateNightWindow -> {
-                var delta = 0f
-                if (SmartMoodTag.LATE_NIGHT in resolvedTags) delta += 0.11f
-                if (SmartMoodTag.ACOUSTIC in resolvedTags) delta += 0.06f
-                if (SmartMoodTag.SOULFUL in resolvedTags) delta += 0.06f
-                if (SmartMoodTag.UPBEAT in resolvedTags &&
-                    SmartMoodTag.LATE_NIGHT !in resolvedTags &&
-                    SmartMoodTag.SOULFUL !in resolvedTags
-                ) {
-                    delta -= 0.06f
-                }
-                delta.coerceIn(-0.08f, 0.14f)
-            }
-            isDaytimeWindow -> {
-                var delta = 0f
-                if (SmartMoodTag.UPBEAT in resolvedTags) delta += 0.11f
-                if (SmartMoodTag.SOULFUL in resolvedTags) delta += 0.02f
-                if (SmartMoodTag.LATE_NIGHT in resolvedTags && SmartMoodTag.UPBEAT !in resolvedTags) {
-                    delta -= 0.04f
-                }
-                delta.coerceIn(-0.06f, 0.12f)
-            }
-            else -> {
-                // 05:00 dawn transition
-                if (SmartMoodTag.ACOUSTIC in resolvedTags || SmartMoodTag.SOULFUL in resolvedTags) 0.05f else 0f
-            }
-        }
-
-        // 4. Recency decay (24-hour cooldown) & rediscovery boost (21+ days untouched high-affinity)
-        val ageMs = if (track.lastPlayedAt > 0L) (nowMs - track.lastPlayedAt).coerceAtLeast(0L) else -1L
-        val isHighAffinityTrack = track.isFavorite || completed >= 2 || (plays >= 3 && skips <= completed + 1)
-        val recencyAdjustment = when {
-            ageMs in 0L until TWENTY_FOUR_HOURS_MS -> {
-                val freshness = 1f - (ageMs.toFloat() / TWENTY_FOUR_HOURS_MS.toFloat()).coerceIn(0f, 1f)
-                -(0.08f + freshness * 0.18f) // -0.26f immediately after play, decaying smoothly to -0.08f at 24h
-            }
-            ageMs >= TWENTY_ONE_DAYS_MS && isHighAffinityTrack && skips <= maxOf(1, completed) -> {
-                val ageWeeks = ((ageMs / ONE_DAY_MS).toFloat() / 21f).coerceIn(1f, 3f)
-                (0.11f + (ageWeeks - 1f) * 0.025f).coerceAtMost(0.16f)
-            }
-            else -> 0f
-        }
-
-        val rawScore = 0.44f + completionSignal - skipPenalty + timeOfDayBoost + recencyAdjustment
-        val finalScore = if (rawScore.isFinite()) rawScore.coerceIn(0f, 1f) else 0.44f
-
-        return TrackAffinityBreakdown(
-            score = finalScore,
-            completionSignal = safeFiniteFloat(completionSignal),
-            skipPenalty = safeFiniteFloat(skipPenalty),
-            timeOfDayBoost = safeFiniteFloat(timeOfDayBoost),
-            recencyAdjustment = safeFiniteFloat(recencyAdjustment)
-        )
-    }
+    ): TrackAffinityBreakdown = RecommendationCore.computeAffinityBreakdown(
+        track = track,
+        nowMs = nowMs,
+        timeOfDay = TimeOfDayCategory.fromHour(localHourOfDay),
+        maxLibraryPlays = maxLibraryPlays,
+        sessionSkipped = track.id in sessionSkippedIds
+    )
 
     /**
      * Enforces a strict maximum of [maxPerArtist] songs per normalized artist name (case-insensitive)
@@ -621,12 +520,8 @@ object LocalMoodAndAffinityEngine {
     }
 
     /**
-     * Assembles a balanced offline recommendation mix with ~60% high-affinity favorites,
-     * ~25% forgotten gems (21+ days untouched high-affinity tracks), and ~15% under-played
-     * tracks (`playCount <= 1` with low skip count), strictly capped at 2 songs per artist.
-     *
-     * Pre-computes all sort keys prior to `sortedWith(...)` so TimSort transitivity is guaranteed
-     * for arbitrarily large libraries (32+ tracks).
+     * Assembles a balanced offline recommendation mix (`60%` high-affinity favorites / `25%`
+     * forgotten gems / `15%` under-played tracks) by delegating directly to [RecommendationCore].
      */
     fun buildBalancedMix(
         tracks: List<Track>,
@@ -637,228 +532,76 @@ object LocalMoodAndAffinityEngine {
         tuneConfig: DiscoverTuneConfig = DiscoverTuneConfig(),
         seed: Int = 0,
         excludedIds: Set<String> = emptySet(),
-        maxPerArtist: Int = MAX_SONGS_PER_ARTIST
+        maxPerArtist: Int = MAX_SONGS_PER_ARTIST,
+        signals: List<PlaybackSignal> = emptyList()
     ): BalancedMixResult {
-        if (tracks.isEmpty() || targetSize <= 0) {
+        val clean = tracks.filter { it.id.isNotBlank() }.distinctBy { it.id }
+        if (clean.isEmpty() || targetSize <= 0) {
             return BalancedMixResult(StableList(), 0, 0, 0, 0)
         }
-
-        val rng = Random(seed)
-        val snapshot = TrackIntelligenceCache.getOrBuildSnapshot(tracks)
-        val cachedAffinities = if (sessionSkippedIds.isEmpty()) {
-            snapshot.getOrComputeAffinities(tracks, nowMs, localHourOfDay)
+        TrackIntelligenceCache.getOrBuildSnapshot(clean)
+        val combinedSignals = if (sessionSkippedIds.isEmpty()) {
+            signals
         } else {
-            null
-        }
-        val maxPlays = snapshot.maxLibraryPlays
-
-        // Pre-compute all deterministic sort keys BEFORE sorting (TimSort transitivity guarantee)
-        val candidates = tracks.map { track ->
-            val breakdown = cachedAffinities?.get(track.id) ?: computeLocalAffinity(
-                track = track,
-                nowMs = nowMs,
-                localHourOfDay = localHourOfDay,
-                maxLibraryPlays = maxPlays,
-                sessionSkippedIds = sessionSkippedIds
-            )
-            val moodAdjust = computeTuneAdjustment(track, tuneConfig)
-            val jitter = rng.nextDouble(0.0, 0.035)
-            val unusedPenalty = if (track.id in excludedIds) -0.25 else 0.0
-            val ageMs = if (track.lastPlayedAt > 0L) (nowMs - track.lastPlayedAt).coerceAtLeast(0L) else -1L
-            val isHighAffinity = track.isFavorite ||
-                track.completedPlayCount >= 2 ||
-                (track.playCount >= 2 && track.skipCount <= track.completedPlayCount + 1)
-            val isForgottenGem = ageMs >= TWENTY_ONE_DAYS_MS &&
-                isHighAffinity &&
-                track.skipCount <= maxOf(1, track.completedPlayCount)
-            val isUnderPlayed = track.playCount <= 1 && track.skipCount <= 1
-            val isFavoriteBucket = (isHighAffinity || breakdown.score >= 0.54f) &&
-                !isForgottenGem &&
-                track.skipCount <= maxOf(1, track.completedPlayCount + 1)
-
-            val primarySortKey = safeFiniteDouble(breakdown.score.toDouble() + moodAdjust + unusedPenalty + jitter)
-            val rediscoveryKey = safeFiniteDouble(
-                breakdown.score.toDouble() +
-                    (if (ageMs >= TWENTY_ONE_DAYS_MS) 0.25 else 0.0) +
-                    moodAdjust + unusedPenalty + jitter
-            )
-            val underplayedKey = safeFiniteDouble(
-                breakdown.score.toDouble() +
-                    (if (track.playCount == 0) 0.18 else 0.08) +
-                    (if (track.isHiFi) 0.04 else 0.0) +
-                    moodAdjust + unusedPenalty + jitter
-            )
-
-            PrecomputedMixCandidate(
-                track = track,
-                affinityScore = breakdown.score,
-                primarySortKey = primarySortKey,
-                rediscoverySortKey = rediscoveryKey,
-                underplayedSortKey = underplayedKey,
-                isFavoriteBucket = isFavoriteBucket,
-                isForgottenGem = isForgottenGem,
-                isUnderPlayed = isUnderPlayed
-            )
-        }
-
-        val favoriteRanked = candidates
-            .filter { it.isFavoriteBucket }
-            .sortedWith(
-                compareByDescending<PrecomputedMixCandidate> { it.primarySortKey }
-                    .thenBy { it.track.id }
-            )
-        val forgottenRanked = candidates
-            .filter { it.isForgottenGem }
-            .sortedWith(
-                compareByDescending<PrecomputedMixCandidate> { it.rediscoverySortKey }
-                    .thenBy { it.track.id }
-            )
-        val underplayedRanked = candidates
-            .filter { it.isUnderPlayed }
-            .sortedWith(
-                compareByDescending<PrecomputedMixCandidate> { it.underplayedSortKey }
-                    .thenBy { it.track.id }
-            )
-        val allRanked = candidates.sortedWith(
-            compareByDescending<PrecomputedMixCandidate> { it.primarySortKey }
-                .thenBy { it.track.id }
-        )
-
-        // Compute 60 / 25 / 15 quotas (nudged cleanly if user customizes discoveryBalance slider)
-        val balance = tuneConfig.discoveryBalance.coerceIn(0f, 1f)
-        val defaultBalanceDelta = balance - 0.35f
-        val favRatio = (0.60f - defaultBalanceDelta * 0.30f).coerceIn(0.35f, 0.75f)
-        val forgottenRatio = 0.25f
-        val effectiveTarget = minOf(targetSize, tracks.size)
-        val favQuota = (effectiveTarget * favRatio).roundToInt().coerceIn(0, effectiveTarget)
-        val forgottenQuota = (effectiveTarget * forgottenRatio).roundToInt()
-            .coerceIn(0, (effectiveTarget - favQuota).coerceAtLeast(0))
-        val underplayedQuota = (effectiveTarget - favQuota - forgottenQuota).coerceAtLeast(0)
-
-        val picked = ArrayList<Track>(effectiveTarget)
-        val usedIds = HashSet<String>(effectiveTarget * 2)
-        val artistCounts = HashMap<String, Int>()
-        val safeCap = maxPerArtist.coerceAtLeast(1)
-
-        fun tryAddFrom(pool: List<PrecomputedMixCandidate>, quota: Int): Int {
-            var added = 0
-            for (cand in pool) {
-                if (added >= quota || picked.size >= effectiveTarget) break
-                val track = cand.track
-                if (track.id in usedIds) continue
-                val artistKey = normalizedArtistKey(track.artist)
-                val count = artistCounts[artistKey] ?: 0
-                if (count >= safeCap) continue
-                usedIds.add(track.id)
-                artistCounts[artistKey] = count + 1
-                picked.add(track)
-                added++
+            val extraSkips = sessionSkippedIds.map { skippedId ->
+                PlaybackSignal(
+                    trackId = skippedId,
+                    type = SignalType.EARLY_SKIP_PENALTY,
+                    affinityDelta = SignalProcessor.EARLY_SKIP_PENALTY_DELTA,
+                    activePlayDurationMs = SignalProcessor.MIN_ACTIVE_PLAY_MS,
+                    trackDurationMs = 180_000L,
+                    completionRatio = 0.05f,
+                    timestampMs = nowMs
+                )
             }
-            return added
+            signals + extraSkips
         }
 
-        // Pick forgotten gems & under-played first up to their exact quotas so high-affinity
-        // overlap doesn't starve the 25% and 15% slices, then fill the 60% favorites slice.
-        val forgottenAdded = tryAddFrom(forgottenRanked, forgottenQuota)
-        val underplayedAdded = tryAddFrom(underplayedRanked, underplayedQuota)
-        val favoritesAdded = tryAddFrom(favoriteRanked, favQuota)
-
-        // Graceful fallback backfill (strictly honoring maxPerArtist = 2) when any bucket was sparse
-        val backfillAdded = if (picked.size < effectiveTarget) {
-            tryAddFrom(allRanked, effectiveTarget - picked.size)
-        } else {
-            0
-        }
-
-        val spaced = spaceAdjacentArtists(picked)
+        val result = RecommendationCore.generateTunedPlaylist(
+            matrix = TrackFeatureMatrix.fromTracks(clean),
+            targetSize = targetSize,
+            signals = combinedSignals,
+            nowMs = nowMs,
+            timeOfDay = TimeOfDayCategory.fromHour(localHourOfDay),
+            tuneConfig = tuneConfig,
+            excludedTrackIds = excludedIds,
+            rotationSeed = if (seed != 0) seed.toLong() else null,
+            rotationWeight = if (seed != 0) 0.03f else 0f,
+            maxPerArtist = maxPerArtist.coerceAtLeast(1),
+            strictArtistCap = true
+        )
+        val byId = clean.associateBy { it.id }
+        val resolved = result.trackIds.mapNotNull { byId[it] }
         return BalancedMixResult(
-            tracks = spaced.toStableList(),
-            favoritesCount = favoritesAdded,
-            forgottenGemsCount = forgottenAdded,
-            underPlayedCount = underplayedAdded,
-            backfillCount = backfillAdded
+            tracks = resolved.toStableList(),
+            favoritesCount = result.favoritesCount,
+            forgottenGemsCount = result.forgottenGemsCount,
+            underPlayedCount = result.underPlayedCount,
+            backfillCount = result.waterfallFallbackCount
         )
     }
 
     /**
-     * Builds the compact Discover "Mood Playlists" shelf for Late Night, Acoustic, Soulful, and Upbeat.
-     * Enforces strict max 2 songs per artist and omits empty moods cleanly.
+     * Builds the compact Discover & Home "Mood Playlists" shelf by delegating directly to
+     * [RecommendationCore.buildMoodPlaylists] (capped at [maxTracksPerMood], default 10 tracks).
      */
     fun buildMoodSmartPlaylists(
         tracks: List<Track>,
         nowMs: Long = System.currentTimeMillis(),
         localHourOfDay: Int = currentLocalHour(nowMs),
-        maxTracksPerMood: Int = 16
+        maxTracksPerMood: Int = RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE,
+        signals: List<PlaybackSignal> = emptyList()
     ): List<MoodSmartPlaylist> {
-        if (tracks.isEmpty()) return emptyList()
-        val snapshot = TrackIntelligenceCache.getOrBuildSnapshot(tracks)
-        val affinities = snapshot.getOrComputeAffinities(tracks, nowMs, localHourOfDay)
-
-        val precomputed = tracks.map { track ->
-            val cached = snapshot.vectorsById[track.id]
-            val resolvedTags = cached?.smartMoodTags ?: track.resolvedMoodTags()
-            val moodScores = cached?.smartMoodScores ?: computeMoodAffinityScores(
-                title = track.title,
-                album = track.album,
-                artist = track.artist,
-                genre = track.genre,
-                folderName = track.folderName,
-                bpm = track.bpm,
-                artworkColorArgb = track.artworkColorArgb
-            )
-            val affinity = affinities[track.id]?.score ?: computeLocalAffinity(
-                track = track,
-                nowMs = nowMs,
-                localHourOfDay = localHourOfDay,
-                maxLibraryPlays = snapshot.maxLibraryPlays
-            ).score
-            PrecomputedMoodTrack(
-                track = track,
-                tags = resolvedTags,
-                moodScores = moodScores,
-                affinityScore = affinity
-            )
-        }
-
-        return SmartMoodTag.discoverMoods.mapNotNull { mood ->
-            val matching = precomputed.filter { mood in it.tags }
-            if (matching.isEmpty()) return@mapNotNull null
-
-            val ranked = matching
-                .map { item ->
-                    val fit = item.moodScores[mood] ?: 0.5f
-                    val sortKey = safeFiniteDouble(item.affinityScore * 0.65 + fit * 0.35)
-                    item.track to sortKey
-                }
-                .sortedWith(
-                    compareByDescending<Pair<Track, Double>> { it.second }
-                        .thenBy { it.first.id }
-                )
-                .map { it.first }
-
-            val curated = enforceArtistDiversityCap(
-                candidates = ranked,
-                maxPerArtist = MAX_SONGS_PER_ARTIST,
-                limit = maxTracksPerMood
-            )
-            if (curated.isEmpty()) return@mapNotNull null
-
-            val subtitle = when (mood) {
-                SmartMoodTag.LATE_NIGHT -> "Nocturnal & ambient flow"
-                SmartMoodTag.ACOUSTIC -> "Warm organic & stripped"
-                SmartMoodTag.SOULFUL -> "Velvet vocals & deep groove"
-                SmartMoodTag.UPBEAT -> "High-tempo energy lift"
-                SmartMoodTag.LOSSLESS_HIFI -> "Bit-perfect studio fidelity"
-            }
-
-            MoodSmartPlaylist(
-                mood = mood,
-                title = mood.label,
-                subtitle = subtitle,
-                tracks = curated.toStableList(),
-                totalMatchCount = matching.size
-            )
-        }
+        val clean = tracks.filter { it.id.isNotBlank() }.distinctBy { it.id }
+        if (clean.isEmpty()) return emptyList()
+        TrackIntelligenceCache.getOrBuildSnapshot(clean)
+        return RecommendationCore.buildMoodPlaylists(
+            tracks = clean,
+            signals = signals,
+            nowMs = nowMs,
+            timeOfDay = TimeOfDayCategory.fromHour(localHourOfDay),
+            maxTracksPerMood = maxTracksPerMood
+        )
     }
 
     internal fun normalizedArtistKey(artist: String): String {
@@ -883,31 +626,6 @@ object LocalMoodAndAffinityEngine {
         return result
     }
 
-    private fun computeTuneAdjustment(track: Track, tuneConfig: DiscoverTuneConfig): Double {
-        var adjust = 0.0
-        val tags = track.resolvedMoodTags()
-        tuneConfig.selectedMood?.lowercase(Locale.ROOT)?.let { selected ->
-            val matches = when (selected) {
-                "nocturnal", "calm", "late_night" -> SmartMoodTag.LATE_NIGHT in tags
-                "organic", "focused", "acoustic" -> SmartMoodTag.ACOUSTIC in tags
-                "warm", "soulful" -> SmartMoodTag.SOULFUL in tags
-                "energetic", "uplifting", "upbeat" -> SmartMoodTag.UPBEAT in tags
-                else -> false
-            }
-            adjust += if (matches) 0.22 else -0.08
-        }
-        tuneConfig.energyFilter?.lowercase(Locale.ROOT)?.let { energy ->
-            val bpm = track.bpm
-            adjust += when (energy) {
-                "low" -> if (bpm in 1..95 || SmartMoodTag.LATE_NIGHT in tags || SmartMoodTag.ACOUSTIC in tags) 0.16 else -0.14
-                "high" -> if (bpm >= 118 || SmartMoodTag.UPBEAT in tags) 0.16 else -0.14
-                "medium" -> if (bpm in 92..118 || SmartMoodTag.SOULFUL in tags) 0.12 else -0.04
-                else -> 0.0
-            }
-        }
-        return adjust
-    }
-
     private fun matchesAnyTerm(haystack: String, terms: List<String>): Boolean {
         if (haystack.isEmpty()) return false
         for (term in terms) {
@@ -915,25 +633,4 @@ object LocalMoodAndAffinityEngine {
         }
         return false
     }
-
-    private fun safeFiniteFloat(value: Float): Float = if (value.isFinite()) value else 0f
-    private fun safeFiniteDouble(value: Double): Double = if (value.isFinite()) value else 0.0
-
-    private data class PrecomputedMixCandidate(
-        val track: Track,
-        val affinityScore: Float,
-        val primarySortKey: Double,
-        val rediscoverySortKey: Double,
-        val underplayedSortKey: Double,
-        val isFavoriteBucket: Boolean,
-        val isForgottenGem: Boolean,
-        val isUnderPlayed: Boolean
-    )
-
-    private data class PrecomputedMoodTrack(
-        val track: Track,
-        val tags: StableList<SmartMoodTag>,
-        val moodScores: Map<SmartMoodTag, Float>,
-        val affinityScore: Float
-    )
 }

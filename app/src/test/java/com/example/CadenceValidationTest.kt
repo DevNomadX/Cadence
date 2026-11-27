@@ -7,20 +7,31 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
 import androidx.room.Room
@@ -61,6 +72,8 @@ import com.example.ui.theme.AppearanceMode
 import com.example.ui.theme.CadenceTheme
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.ExpressivePalette
+import com.example.ui.theme.colorScheme
+import com.example.ui.theme.resolveCadenceColorScheme
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -164,13 +177,13 @@ class CadenceValidationTest {
         composeRule.setContent {
             SideEffect { parentRecompositionCount++ }
             CadenceTheme(
-                palette = ExpressivePalette.TERRACOTTA,
+                palette = ExpressivePalette.MATCHA,
                 appearanceMode = AppearanceMode.LIGHT
             ) {
                 NowPlayingScreen(
                     uiState = uiState,
                     themePrefs = ThemePreferences(
-                        palette = ExpressivePalette.TERRACOTTA,
+                        palette = ExpressivePalette.MATCHA,
                         appearanceMode = AppearanceMode.LIGHT
                     ),
                     progressFlow = progressFlow,
@@ -236,7 +249,7 @@ class CadenceValidationTest {
         var deviceScanned = false
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 NowPlayingScreen(
                     uiState = NowPlayingUiState(currentTrack = null, queueTracks = StableList()),
                     themePrefs = ThemePreferences(),
@@ -310,7 +323,7 @@ class CadenceValidationTest {
         var collapseClicked = false
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 NowPlayingScreen(
                     uiState = NowPlayingUiState(
                         currentTrack = sampleTracks.first(),
@@ -322,7 +335,7 @@ class CadenceValidationTest {
                         repeatMode = RepeatMode.ALL
                     ),
                     themePrefs = ThemePreferences(
-                        palette = ExpressivePalette.TERRACOTTA,
+                        palette = ExpressivePalette.MATCHA,
                         appearanceMode = AppearanceMode.LIGHT
                     ),
                     progressFlow = progressFlow,
@@ -388,7 +401,7 @@ class CadenceValidationTest {
         var selectedSpeed = 1.0f
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 NowPlayingScreen(
                     uiState = NowPlayingUiState(
                         currentTrack = sampleTracks.first(),
@@ -398,7 +411,7 @@ class CadenceValidationTest {
                         playbackSpeed = selectedSpeed
                     ),
                     themePrefs = ThemePreferences(
-                        palette = ExpressivePalette.TERRACOTTA,
+                        palette = ExpressivePalette.MATCHA,
                         appearanceMode = AppearanceMode.LIGHT
                     ),
                     progressFlow = progressFlow,
@@ -438,7 +451,7 @@ class CadenceValidationTest {
         var selectedTimer: SleepTimerOption? = null
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 NowPlayingScreen(
                     uiState = NowPlayingUiState(
                         currentTrack = sampleTracks.first(),
@@ -447,7 +460,7 @@ class CadenceValidationTest {
                         isPlaying = false
                     ),
                     themePrefs = ThemePreferences(
-                        palette = ExpressivePalette.TERRACOTTA,
+                        palette = ExpressivePalette.MATCHA,
                         appearanceMode = AppearanceMode.LIGHT
                     ),
                     progressFlow = progressFlow,
@@ -544,7 +557,9 @@ class CadenceValidationTest {
         composeRule.waitForIdle()
         assertEquals("Solstice", latestQuery)
 
-        composeRule.onNodeWithTag("filter_albums").performClick()
+        composeRule.onNodeWithTag("library_search_clear_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("library_bento_albums").performClick()
         assertEquals(LibraryCategory.ALBUMS, latestCategory)
 
         composeRule.onNodeWithTag("track_row_${tracks.first().id}").assertIsDisplayed()
@@ -564,6 +579,7 @@ class CadenceValidationTest {
         var rescanClicked = false
         var minDurationPicked: Int? = null
         var gaplessChanged: Boolean? = null
+        var crossfadePicked: Int? = null
         var headphoneChanged: Boolean? = null
         var audioFocusPicked: AudioFocusBehavior? = null
         var backClicked = false
@@ -573,10 +589,10 @@ class CadenceValidationTest {
         ).toStableList()
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.SYSTEM) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.SYSTEM) {
                 SettingsScreen(
                     themePrefs = ThemePreferences(
-                        palette = ExpressivePalette.TERRACOTTA,
+                        palette = ExpressivePalette.MATCHA,
                         appearanceMode = AppearanceMode.SYSTEM,
                         artworkShape = ExpressiveArtworkShape.SQUIRCLE,
                         wavyScrubberEnabled = true,
@@ -605,35 +621,77 @@ class CadenceValidationTest {
                     onRescanFolders = { rescanClicked = true },
                     onSelectMinTrackDurationSec = { minDurationPicked = it },
                     onToggleGaplessPlayback = { gaplessChanged = it },
-                    onChangeCrossfadeSec = {},
+                    onChangeCrossfadeSec = { crossfadePicked = it },
                     onTogglePauseOnHeadphoneDisconnect = { headphoneChanged = it },
                     onSelectAudioFocusBehavior = { audioFocusPicked = it }
                 )
             }
         }
 
-        // Theme Studio controls
+        // Pinned top bar & back action
         composeRule.onNodeWithTag("settings_header_title")
             .assertIsDisplayed()
             .assertTextContains("Settings")
         composeRule.onNodeWithTag("settings_back_button").performClick()
         assertTrue(backClicked)
 
+        // Appearance & Theme summary card 3-column pills -> open Appearance sub-screen
+        composeRule.onNodeWithTag("appearance_summary_palette", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("appearance_summary_mode", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("appearance_summary_shape", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_appearance_card").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_active_style_card").assertIsDisplayed()
         composeRule.onNodeWithTag("appearance_${AppearanceMode.DARK.id}").performClick()
         assertEquals(AppearanceMode.DARK, selectedAppearance)
 
-        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("palette_${ExpressivePalette.COBALT.id}"))
+        composeRule.onNodeWithTag("appearance_subscreen_list")
+            .performScrollToNode(hasTestTag("palette_${ExpressivePalette.COBALT.id}"))
         composeRule.onNodeWithTag("palette_${ExpressivePalette.COBALT.id}").performClick()
         assertEquals(ExpressivePalette.COBALT, selectedPalette)
 
-        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("shape_${ExpressiveArtworkShape.CLOVER.id}"))
+        composeRule.onNodeWithTag("appearance_subscreen_list")
+            .performScrollToNode(hasTestTag("shape_${ExpressiveArtworkShape.CLOVER.id}"))
         composeRule.onNodeWithTag("shape_${ExpressiveArtworkShape.CLOVER.id}").performClick()
         assertEquals(ExpressiveArtworkShape.CLOVER, selectedShape)
 
-        // Library & Folders controls
-        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("remove_folder_0"))
+        // Return to main Settings Bento screen
+        composeRule.onNodeWithTag("appearance_back_button").performClick()
+        composeRule.waitForIdle()
+
+        // Audio & Playback controls
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("toggle_gapless"))
+        composeRule.onNodeWithTag("toggle_gapless").performClick()
+        assertEquals(false, gaplessChanged)
+
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("crossfade_selector_pill"))
+        composeRule.onNodeWithTag("crossfade_selector_pill").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("crossfade_preset_9").performClick()
+        assertEquals(9, crossfadePicked)
+        composeRule.onNodeWithTag("crossfade_sheet_close").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("toggle_headphone_pause"))
+        composeRule.onNodeWithTag("toggle_headphone_pause").performClick()
+        assertEquals(false, headphoneChanged)
+
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("audio_focus_row"))
+        composeRule.onNodeWithTag("audio_focus_row").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("audio_focus_${AudioFocusBehavior.PAUSE.id}").performClick()
+        composeRule.waitForIdle()
+        assertEquals(AudioFocusBehavior.PAUSE, audioFocusPicked)
+
+        // Library & Storage controls
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("scanned_folders_row"))
+        composeRule.onNodeWithTag("scanned_folders_row").performClick()
+        composeRule.waitForIdle()
         composeRule.onNodeWithTag("remove_folder_0").performClick()
         assertEquals("content://com.android.externalstorage/tree/primary:Music", removedFolderUri)
+        composeRule.onNodeWithTag("folders_sheet_close").performClick()
+        composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("settings_add_folder_button"))
         composeRule.onNodeWithTag("settings_add_folder_button").performClick()
@@ -646,20 +704,7 @@ class CadenceValidationTest {
         composeRule.onNodeWithTag("min_duration_30").performClick()
         assertEquals(30, minDurationPicked)
 
-        // Playback & Audio controls
-        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("toggle_gapless"))
-        composeRule.onNodeWithTag("toggle_gapless").performClick()
-        assertEquals(false, gaplessChanged)
-
-        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("toggle_headphone_pause"))
-        composeRule.onNodeWithTag("toggle_headphone_pause").performClick()
-        assertEquals(false, headphoneChanged)
-
-        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("audio_focus_${AudioFocusBehavior.PAUSE.id}"))
-        composeRule.onNodeWithTag("audio_focus_${AudioFocusBehavior.PAUSE.id}").performClick()
-        assertEquals(AudioFocusBehavior.PAUSE, audioFocusPicked)
-
-        // Performance & Interface controls
+        // Interface & Performance controls
         composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("toggle_performance_mode"))
         composeRule.onNodeWithTag("toggle_performance_mode").performClick()
         assertEquals(true, perfChanged)
@@ -671,6 +716,28 @@ class CadenceValidationTest {
         composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("toggle_ambient_aura"))
         composeRule.onNodeWithTag("toggle_ambient_aura").performClick()
         assertEquals(false, auraChanged)
+
+        // Cardless About entry row -> opens dedicated full-page About sub-screen
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("settings_about_row"))
+        composeRule.onNodeWithTag("settings_about_row").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("about_top_bar").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_emblem").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_version_pill").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_subscreen_list").performScrollToNode(hasTestTag("about_privacy_row"))
+        composeRule.onNodeWithTag("about_privacy_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_engine_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_source_code_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_licenses_row").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("about_licenses_dialog").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_licenses_close").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("about_back_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_top_bar").assertIsDisplayed()
     }
 
     // --- 4. PreferencesRepository Round-Trip & Read-Only Migration Flag ---
@@ -686,7 +753,7 @@ class CadenceValidationTest {
         repo.markLegacyMigrationDone()
         assertTrue(repo.isLegacyMigrationDone())
 
-        repo.setPalette(ExpressivePalette.TERRACOTTA)
+        repo.setPalette(ExpressivePalette.MATCHA)
         repo.setAppearanceMode(AppearanceMode.DARK)
         repo.setArtworkShape(ExpressiveArtworkShape.ARCH)
         repo.setWavyScrubberEnabled(false)
@@ -694,7 +761,7 @@ class CadenceValidationTest {
         repo.setPerformanceModeEnabled(true)
 
         val theme = repo.themePreferencesFlow.first()
-        assertEquals(ExpressivePalette.TERRACOTTA, theme.palette)
+        assertEquals(ExpressivePalette.MATCHA, theme.palette)
         assertEquals(AppearanceMode.DARK, theme.appearanceMode)
         assertEquals(ExpressiveArtworkShape.ARCH, theme.artworkShape)
         assertFalse(theme.wavyScrubberEnabled)
@@ -752,7 +819,7 @@ class CadenceValidationTest {
         val tracks = listOf(shortTrack, longTrack)
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 LibraryScreen(
                     uiState = LibraryUiState(
                         allTracks = tracks.toStableList(),
@@ -919,7 +986,7 @@ class CadenceValidationTest {
 
         composeRule.setContent {
             backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 LibraryScreen(
                     uiState = LibraryUiState(
                         allTracks = tracks.toStableList(),
@@ -980,7 +1047,7 @@ class CadenceValidationTest {
         var loaded by mutableStateOf(false)
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 NowPlayingScreen(
                     uiState = NowPlayingUiState(
                         currentTrack = null,
@@ -1029,7 +1096,7 @@ class CadenceValidationTest {
     fun `LibraryScreen hides empty card before Room loads and uses compact circular import icon button`() {
         var loaded by mutableStateOf(false)
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 LibraryScreen(
                     uiState = LibraryUiState(
                         allTracks = StableList(),
@@ -1068,18 +1135,22 @@ class CadenceValidationTest {
         // Before initial Room load completes, no empty card flash
         composeRule.onNodeWithTag("library_empty_card").assertDoesNotExist()
 
-        // Compact circular import icon button (48dp x 48dp) leaves ample width for "Soundscape"
-        val importBounds = composeRule.onNodeWithTag("import_audio_button").getUnclippedBoundsInRoot()
-        assertEquals(48f, importBounds.width.value, 2f)
-        assertEquals(48f, importBounds.height.value, 2f)
+        // Single circular Settings button (48dp) + persistent stadium Search pill (no duplicate search icon button)
+        composeRule.onNodeWithTag("library_search_button").assertDoesNotExist()
+        composeRule.onNodeWithTag("library_search_input").assertIsDisplayed()
+        val settingsBounds = composeRule.onNodeWithTag("library_settings_button").getUnclippedBoundsInRoot()
+        assertEquals(48f, settingsBounds.width.value, 2f)
+        assertEquals(48f, settingsBounds.height.value, 2f)
 
         composeRule.onNodeWithTag("library_header_title")
             .assertIsDisplayed()
-            .assertTextContains("Soundscape")
-        composeRule.onNodeWithTag("library_header_subtitle").assertDoesNotExist()
+            .assertTextContains("Your Music")
+        composeRule.onNodeWithTag("library_header_subtitle")
+            .assertIsDisplayed()
+            .assertTextContains("Your library, your vibe.")
         val titleBounds = composeRule.onNodeWithTag("library_header_title").getUnclippedBoundsInRoot()
         assertTrue(
-            "Header title must have generous horizontal width (>= 140dp) so 'Soundscape' never truncates",
+            "Header title must have generous horizontal width (>= 140dp) so 'Your Music' never truncates",
             titleBounds.width.value >= 140f
         )
 
@@ -1197,7 +1268,7 @@ class CadenceValidationTest {
         var dispatchCount = 0
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.LIGHT) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.LIGHT) {
                 val filtered = rememberFilteredTestTracks(sampleTracks, activeQuery)
                 LibraryScreen(
                     uiState = LibraryUiState(
@@ -1693,7 +1764,7 @@ class CadenceValidationTest {
             ) {
                 SettingsScreen(
                     themePrefs = ThemePreferences(
-                        palette = ExpressivePalette.TERRACOTTA,
+                        palette = ExpressivePalette.MATCHA,
                         appearanceMode = AppearanceMode.DARK,
                         artworkShape = ExpressiveArtworkShape.SQUIRCLE
                     ),
@@ -1721,13 +1792,277 @@ class CadenceValidationTest {
             }
         }
 
-        composeRule.onNodeWithTag("settings_list")
+        composeRule.onNodeWithTag("settings_appearance_card").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("appearance_subscreen_list")
             .performScrollToNode(hasTestTag("palette_${ExpressivePalette.DYNAMIC.id}"))
         composeRule.onNodeWithTag("palette_${ExpressivePalette.DYNAMIC.id}")
             .assertIsDisplayed()
             .assertTextContains("System")
             .performClick()
-
         assertEquals(ExpressivePalette.DYNAMIC, selectedPalette)
+    }
+
+    @Test
+    fun `All 10 distinct palettes resolve hue-matched Light and Dark schemes fall back safely to Berry Velvet sync Bento summary and render unclipped at 360dp`() {
+        val expectedNames = listOf(
+            "System",
+            "Berry Velvet",
+            "Matcha Grove",
+            "Cobalt Pulse",
+            "Citrus Pop",
+            "Abyssal Teal",
+            "Crimson Ember",
+            "Cyber Violet",
+            "Desert Copper",
+            "Obsidian Mono"
+        )
+        assertEquals("Must have exactly 10 palettes (5 symmetrical rows of 2)", 10, ExpressivePalette.entries.size)
+        assertEquals(expectedNames, ExpressivePalette.entries.map { it.displayName })
+
+        // Verify all overlapping/removed legacy palettes are gone and fall back safely to Berry Velvet
+        val removedIds = listOf(
+            "sakura_coral", "amethyst_dusk", "glacier_mint",
+            "nordic_slate", "solar_amber", "terracotta", "terracotta_sun",
+            "TERRACOTTA", "unknown_corrupted_id"
+        )
+        removedIds.forEach { legacyId ->
+            assertTrue("Removed palette '$legacyId' must not exist", ExpressivePalette.entries.none { it.id == legacyId.lowercase() })
+            assertEquals(
+                "Removed palette '$legacyId' must safely fall back to Berry Velvet",
+                ExpressivePalette.BERRY,
+                ExpressivePalette.fromId(legacyId)
+            )
+        }
+        assertEquals(ExpressivePalette.BERRY, ExpressivePalette.fromId(null))
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val syncPrefs = context.getSharedPreferences(PreferencesRepository.SYNC_THEME_PREFS_NAME, Context.MODE_PRIVATE)
+        syncPrefs.edit().putString(PreferencesRepository.SYNC_KEY_PALETTE, "sakura_coral").commit()
+        val upgradedSnapshot = PreferencesRepository.readStartupThemeSnapshot(context)
+        assertEquals(ExpressivePalette.BERRY, upgradedSnapshot.palette)
+
+        // Every curated palette provides distinct Light & Dark surfaces and accents
+        val curatedPalettes = ExpressivePalette.entries.filter { it != ExpressivePalette.DYNAMIC }
+        val distinctLightBackgrounds = curatedPalettes.map { it.colorScheme(darkTheme = false).background }.toSet()
+        val distinctDarkBackgrounds = curatedPalettes.map { it.colorScheme(darkTheme = true).background }.toSet()
+        val distinctLightPrimaries = curatedPalettes.map { it.colorScheme(darkTheme = false).primary }.toSet()
+        val distinctDarkPrimaries = curatedPalettes.map { it.colorScheme(darkTheme = true).primary }.toSet()
+        assertEquals("All 9 curated light themes must have unique hue-tinted/achromatic backgrounds", 9, distinctLightBackgrounds.size)
+        assertEquals("All 9 curated dark themes must have unique hue-tinted/achromatic backgrounds", 9, distinctDarkBackgrounds.size)
+        assertEquals("All 9 curated light themes must have unique primary colors", 9, distinctLightPrimaries.size)
+        assertEquals("All 9 curated dark themes must have unique primary colors", 9, distinctDarkPrimaries.size)
+
+        // Verify Obsidian Mono is strictly achromatic (R == G == B across key surfaces and accents)
+        val monoDark = ExpressivePalette.OBSIDIAN_MONO.colorScheme(darkTheme = true)
+        val monoLight = ExpressivePalette.OBSIDIAN_MONO.colorScheme(darkTheme = false)
+        listOf(
+            monoDark.background, monoDark.surface, monoDark.surfaceContainerLow,
+            monoDark.surfaceContainerHigh, monoDark.primary, monoDark.secondary,
+            monoLight.background, monoLight.surface, monoLight.surfaceContainerLow,
+            monoLight.surfaceContainerHigh, monoLight.primary, monoLight.secondary
+        ).forEach { c ->
+            assertTrue("Obsidian Mono must be strictly achromatic (R==G==B), was $c", c.red == c.green && c.green == c.blue)
+        }
+
+        // Verify Cobalt Pulse is pure sapphire blue (blue channel strictly dominant over red, zero purple)
+        val cobaltLight = ExpressivePalette.COBALT.colorScheme(darkTheme = false)
+        val cobaltDark = ExpressivePalette.COBALT.colorScheme(darkTheme = true)
+        assertTrue("Cobalt Pulse light primary must be pure blue", cobaltLight.primary.blue > cobaltLight.primary.red * 3f)
+        assertTrue("Cobalt Pulse dark primary must be blue-dominant", cobaltDark.primary.blue > cobaltDark.primary.red)
+
+        ExpressivePalette.entries.forEach { palette ->
+            val light = palette.colorScheme(darkTheme = false)
+            val dark = palette.colorScheme(darkTheme = true)
+            assertTrue("${palette.displayName} light/dark backgrounds must differ", light.background != dark.background)
+            assertTrue("${palette.displayName} light primary vs onPrimary contrast", light.primary != light.onPrimary)
+            assertTrue("${palette.displayName} dark primary vs onPrimary contrast", dark.primary != dark.onPrimary)
+            assertTrue("${palette.displayName} light primaryContainer contrast", light.primaryContainer != light.onPrimaryContainer)
+            assertTrue("${palette.displayName} dark primaryContainer contrast", dark.primaryContainer != dark.onPrimaryContainer)
+            assertTrue(
+                "${palette.displayName} preview swatches must be 3 distinct colors",
+                setOf(palette.previewPrimary, palette.previewSecondary, palette.previewTertiary).size == 3
+            )
+            assertNotNull(resolveCadenceColorScheme(palette, darkTheme = false, context = context))
+            assertNotNull(resolveCadenceColorScheme(palette, darkTheme = true, context = context))
+        }
+
+        // Render SettingsScreen at 360dp width with reactive palette state and verify Bento cards, search, pills, and live sync
+        var activePalette by mutableStateOf(ExpressivePalette.ABYSSAL_TEAL)
+        composeRule.setContent {
+            CadenceTheme(palette = activePalette, appearanceMode = AppearanceMode.DARK) {
+                Box(modifier = Modifier.width(360.dp).height(800.dp)) {
+                    SettingsScreen(
+                        themePrefs = ThemePreferences(
+                            palette = activePalette,
+                            appearanceMode = AppearanceMode.DARK,
+                            artworkShape = ExpressiveArtworkShape.SCALLOP
+                        ),
+                        audioSettings = AudioSettings(),
+                        savedFolders = StableList(),
+                        minTrackDurationSec = 60,
+                        currentTrack = sampleTracks.first(),
+                        isPlaying = true,
+                        onBack = {},
+                        onSelectPalette = { activePalette = it },
+                        onSelectAppearance = {},
+                        onSelectArtworkShape = {},
+                        onToggleWavyScrubber = {},
+                        onToggleAmbientAura = {},
+                        onTogglePerformanceMode = {},
+                        onAddFolder = {},
+                        onRemoveFolder = {},
+                        onRescanFolders = {},
+                        onSelectMinTrackDurationSec = {},
+                        onToggleGaplessPlayback = {},
+                        onChangeCrossfadeSec = {},
+                        onTogglePauseOnHeadphoneDisconnect = {},
+                        onSelectAudioFocusBehavior = {}
+                    )
+                }
+            }
+        }
+        composeRule.waitForIdle()
+
+        // Confirm Display Name is completely absent and summary card shows initial palette
+        assertEquals(0, composeRule.onAllNodesWithTag("settings_display_name_row").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("Display Name", substring = true, ignoreCase = true).fetchSemanticsNodes().size)
+        composeRule.onNodeWithTag("settings_appearance_card")
+            .assertTextContains("Abyssal Teal")
+
+        // Verify pinned top bar sits cleanly above the scrolling list
+        val topBarBounds = composeRule.onNodeWithTag("settings_top_bar").assertIsDisplayed().getUnclippedBoundsInRoot()
+        val listBounds = composeRule.onNodeWithTag("settings_list").assertIsDisplayed().getUnclippedBoundsInRoot()
+        assertTrue(
+            "LazyColumn top (${listBounds.top}) must sit at or below pinned TopAppBar bottom (${topBarBounds.bottom})",
+            listBounds.top >= topBarBounds.bottom - 1.dp
+        )
+
+        // Verify inline Settings search filters rows in real time and handles empty state
+        composeRule.onNodeWithTag("settings_search_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_search_input").performTextInput("crossfade")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("crossfade_selector_pill").assertIsDisplayed()
+        assertEquals(0, composeRule.onAllNodesWithTag("settings_appearance_card").fetchSemanticsNodes().size)
+
+        composeRule.onNodeWithTag("settings_search_input").performTextClearance()
+        composeRule.onNodeWithTag("settings_search_input").performTextInput("zzzz_not_a_setting")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_search_empty").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_search_clear").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_search_button").performClick()
+        composeRule.waitForIdle()
+
+        // Verify 4 equal-weight short-clip pills stay on one single horizontal row at 360dp
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("min_duration_0"))
+        val pill0Bounds = composeRule.onNodeWithTag("min_duration_0").assertIsDisplayed().getUnclippedBoundsInRoot()
+        val pill60Bounds = composeRule.onNodeWithTag("min_duration_60").assertIsDisplayed().getUnclippedBoundsInRoot()
+        assertEquals("Short-clip pills must align on a single horizontal row", pill0Bounds.top.value, pill60Bounds.top.value, 1f)
+
+        // Scroll back to top, open Appearance & Theme sub-screen, and verify all 10 palette taglines fit on 1 line at 360dp
+        composeRule.onNodeWithTag("settings_list").performScrollToIndex(0)
+        composeRule.onNodeWithTag("settings_appearance_card").performClick()
+        composeRule.waitForIdle()
+
+        ExpressivePalette.entries.forEach { palette ->
+            composeRule.onNodeWithTag("appearance_subscreen_list")
+                .performScrollToNode(hasTestTag("palette_${palette.id}"))
+            val taglineNode = composeRule
+                .onNodeWithTag("palette_tagline_${palette.id}", useUnmergedTree = true)
+                .fetchSemanticsNode()
+            val results = mutableListOf<TextLayoutResult>()
+            taglineNode.config[SemanticsActions.GetTextLayoutResult].action?.invoke(results)
+            assertTrue("Expected layout result for ${palette.displayName} tagline", results.isNotEmpty())
+            val layout = results.first()
+            assertEquals("Tagline for ${palette.displayName} must stay 1 line", 1, layout.lineCount)
+            assertFalse(
+                "Tagline '${palette.tagline}' for ${palette.displayName} must not clip/ellipsize at 360dp " +
+                    "(constraints=${layout.layoutInput.constraints}, mp=${layout.multiParagraph.width}x${layout.multiParagraph.height}, size=${layout.size})",
+                layout.isLineEllipsized(0) || layout.hasVisualOverflow
+            )
+        }
+
+        // Verify tapping Obsidian Mono updates both Active Style live preview card and Bento summary pill
+        composeRule.onNodeWithTag("appearance_subscreen_list")
+            .performScrollToNode(hasTestTag("palette_${ExpressivePalette.OBSIDIAN_MONO.id}"))
+        composeRule.onNodeWithTag("palette_${ExpressivePalette.OBSIDIAN_MONO.id}").performClick()
+        composeRule.waitForIdle()
+        assertEquals(ExpressivePalette.OBSIDIAN_MONO, activePalette)
+
+        composeRule.onNodeWithTag("appearance_subscreen_list").performScrollToIndex(0)
+        composeRule.onNodeWithTag("settings_active_style_card").assertIsDisplayed()
+        assertTrue(
+            "Active Style live preview card and palette grid should display Obsidian Mono",
+            composeRule.onAllNodesWithText("Obsidian Mono").fetchSemanticsNodes().size >= 2
+        )
+
+        composeRule.onNodeWithTag("appearance_back_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_appearance_card")
+            .assertTextContains("Obsidian Mono")
+
+        // Verify About row is discoverable via search ("GitHub") and renders unclipped at 360dp
+        composeRule.onNodeWithTag("settings_search_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_search_input").performTextInput("GitHub")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_about_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_search_button").performClick() // clear query
+        composeRule.onNodeWithTag("settings_search_button").performClick() // close search
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("settings_about_row"))
+        val aboutSubtitleNode = composeRule
+            .onNodeWithTag("settings_about_subtitle", useUnmergedTree = true)
+            .fetchSemanticsNode()
+        val aboutSubtitleLayouts = mutableListOf<TextLayoutResult>()
+        aboutSubtitleNode.config[SemanticsActions.GetTextLayoutResult].action?.invoke(aboutSubtitleLayouts)
+        assertTrue("Expected layout result for About subtitle", aboutSubtitleLayouts.isNotEmpty())
+        val aboutSubtitleLayout = aboutSubtitleLayouts.first()
+        assertEquals("About subtitle must stay 1 line at 360dp", 1, aboutSubtitleLayout.lineCount)
+        assertFalse(
+            "About subtitle must not clip/ellipsize at 360dp",
+            aboutSubtitleLayout.isLineEllipsized(0) || aboutSubtitleLayout.hasVisualOverflow
+        )
+
+        // Tap About row -> open dedicated full-page About screen and verify zero clipping at 360dp
+        composeRule.onNodeWithTag("settings_about_row").performClick()
+        composeRule.waitForIdle()
+
+        val aboutTopBounds = composeRule.onNodeWithTag("about_top_bar").assertIsDisplayed().getUnclippedBoundsInRoot()
+        val aboutListBounds = composeRule.onNodeWithTag("about_subscreen_list").assertIsDisplayed().getUnclippedBoundsInRoot()
+        assertTrue(
+            "About list top (${aboutListBounds.top}) must sit at or below pinned About TopAppBar (${aboutTopBounds.bottom})",
+            aboutListBounds.top >= aboutTopBounds.bottom - 1.dp
+        )
+
+        composeRule.onNodeWithTag("about_emblem").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_app_name").assertIsDisplayed().assertTextContains("Cadence")
+        composeRule.onNodeWithTag("about_version_pill").assertIsDisplayed()
+
+        val aboutTaglineNode = composeRule
+            .onNodeWithTag("about_tagline", useUnmergedTree = true)
+            .fetchSemanticsNode()
+        val aboutTaglineLayouts = mutableListOf<TextLayoutResult>()
+        aboutTaglineNode.config[SemanticsActions.GetTextLayoutResult].action?.invoke(aboutTaglineLayouts)
+        assertTrue("Expected layout result for About tagline", aboutTaglineLayouts.isNotEmpty())
+        val aboutTaglineLayout = aboutTaglineLayouts.first()
+        assertEquals("About tagline must stay 1 line at 360dp", 1, aboutTaglineLayout.lineCount)
+        assertFalse(
+            "About tagline must not clip/ellipsize at 360dp",
+            aboutTaglineLayout.isLineEllipsized(0) || aboutTaglineLayout.hasVisualOverflow
+        )
+
+        composeRule.onNodeWithTag("about_subscreen_list").performScrollToNode(hasTestTag("about_licenses_row"))
+        composeRule.onNodeWithTag("about_privacy_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_engine_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_source_code_row").assertIsDisplayed()
+        composeRule.onNodeWithTag("about_licenses_row").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("about_back_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_top_bar").assertIsDisplayed()
     }
 }

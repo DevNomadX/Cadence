@@ -290,7 +290,7 @@ class FolderScopedScannerTest {
     @Test
     fun `FullScreenScanningView renders M3 Expressive wavy progress indicator with live track count and determinate percentage`() {
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.DARK) {
                 FullScreenScanningView(
                     scanState = ScanState(
                         isScanning = true,

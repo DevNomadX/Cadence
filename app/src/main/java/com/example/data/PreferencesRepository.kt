@@ -29,13 +29,12 @@ private val Context.cadenceDataStore: DataStore<Preferences> by preferencesDataS
 @Keep
 @Immutable
 data class UserProfile(
-    val displayName: String = "",
     val hasCompletedOnboarding: Boolean = false
 )
 
 @Immutable
 data class ThemePreferences(
-    val palette: ExpressivePalette = ExpressivePalette.TERRACOTTA,
+    val palette: ExpressivePalette = ExpressivePalette.DEFAULT,
     val appearanceMode: AppearanceMode = AppearanceMode.SYSTEM,
     val artworkShape: ExpressiveArtworkShape = ExpressiveArtworkShape.SCALLOP,
     val wavyScrubberEnabled: Boolean = true,
@@ -70,7 +69,7 @@ data class PlaybackPreferences(
 
 @Immutable
 data class UserPreferences(
-    val palette: ExpressivePalette = ExpressivePalette.TERRACOTTA,
+    val palette: ExpressivePalette = ExpressivePalette.DEFAULT,
     val appearanceMode: AppearanceMode = AppearanceMode.SYSTEM,
     val artworkShape: ExpressiveArtworkShape = ExpressiveArtworkShape.SCALLOP,
     val wavyScrubberEnabled: Boolean = true,
@@ -124,31 +123,24 @@ class PreferencesRepository(private val context: Context) {
         val LEGACY_FAVORITES = stringSetPreferencesKey("favorite_track_ids")
         val LEGACY_IMPORTED_URIS = stringSetPreferencesKey("imported_track_uris")
         val LEGACY_MIGRATED = booleanPreferencesKey("room_migration_v1_done")
-        val USER_DISPLAY_NAME = stringPreferencesKey("user_display_name")
         val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         val SCAN_ALL_FOLDERS = booleanPreferencesKey("scan_all_folders_enabled")
     }
 
     val userProfileFlow: Flow<UserProfile> = context.cadenceDataStore.data.map { prefs ->
-        val rawName = prefs[Keys.USER_DISPLAY_NAME]
         val rawDone = prefs[Keys.ONBOARDING_COMPLETED]
-        val resolvedName = sanitizeDisplayName(
-            rawName ?: syncThemePrefs.getString(SYNC_KEY_USER_DISPLAY_NAME, "").orEmpty()
-        )
         val resolvedDone = rawDone ?: syncThemePrefs.getBoolean(SYNC_KEY_ONBOARDING_COMPLETED, false)
-        if ((rawName != null && !syncThemePrefs.contains(SYNC_KEY_USER_DISPLAY_NAME)) ||
-            (rawDone != null && !syncThemePrefs.contains(SYNC_KEY_ONBOARDING_COMPLETED))
-        ) {
+        if (rawDone != null && !syncThemePrefs.contains(SYNC_KEY_ONBOARDING_COMPLETED)) {
             syncThemePrefs.edit()
-                .putString(SYNC_KEY_USER_DISPLAY_NAME, resolvedName)
                 .putBoolean(SYNC_KEY_ONBOARDING_COMPLETED, resolvedDone)
                 .apply()
         }
-        UserProfile(
-            displayName = resolvedName,
-            hasCompletedOnboarding = resolvedDone
-        )
+        UserProfile(hasCompletedOnboarding = resolvedDone)
     }.distinctUntilChanged()
+
+    val hasCompletedOnboarding: Flow<Boolean> = userProfileFlow
+        .map { it.hasCompletedOnboarding }
+        .distinctUntilChanged()
 
     val themePreferencesFlow: Flow<ThemePreferences> = context.cadenceDataStore.data.map { prefs ->
         val manualPerf = prefs[Keys.PERFORMANCE_MODE]
@@ -184,7 +176,7 @@ class PreferencesRepository(private val context: Context) {
     val audioSettingsFlow: Flow<AudioSettings> = context.cadenceDataStore.data.map { prefs ->
         AudioSettings(
             gaplessPlaybackEnabled = prefs[Keys.GAPLESS_PLAYBACK] ?: true,
-            crossfadeDurationSec = (prefs[Keys.CROSSFADE_SEC] ?: 0).coerceIn(0, 10),
+            crossfadeDurationSec = (prefs[Keys.CROSSFADE_SEC] ?: 0).coerceIn(0, 12),
             pauseOnHeadphoneDisconnect = prefs[Keys.PAUSE_ON_HEADPHONE_DISCONNECT] ?: true,
             audioFocusBehavior = AudioFocusBehavior.fromId(prefs[Keys.AUDIO_FOCUS_BEHAVIOR]),
             acousticEnhanceEnabled = prefs[Keys.ACOUSTIC_ENHANCE] ?: false
@@ -219,7 +211,7 @@ class PreferencesRepository(private val context: Context) {
             sortOrder = LibrarySortOrder.fromId(prefs[Keys.SORT_ORDER]),
             minTrackDurationSec = (prefs[Keys.MIN_TRACK_DURATION_SEC] ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300),
             gaplessPlaybackEnabled = prefs[Keys.GAPLESS_PLAYBACK] ?: true,
-            crossfadeDurationSec = (prefs[Keys.CROSSFADE_SEC] ?: 0).coerceIn(0, 10),
+            crossfadeDurationSec = (prefs[Keys.CROSSFADE_SEC] ?: 0).coerceIn(0, 12),
             pauseOnHeadphoneDisconnect = prefs[Keys.PAUSE_ON_HEADPHONE_DISCONNECT] ?: true,
             audioFocusBehavior = AudioFocusBehavior.fromId(prefs[Keys.AUDIO_FOCUS_BEHAVIOR]),
             acousticEnhanceEnabled = prefs[Keys.ACOUSTIC_ENHANCE] ?: false,
@@ -249,26 +241,17 @@ class PreferencesRepository(private val context: Context) {
         context.cadenceDataStore.edit { it[Keys.LEGACY_MIGRATED] = true }
     }
 
-    suspend fun setUserDisplayName(name: String) {
-        val cleaned = sanitizeDisplayName(name)
-        syncThemePrefs.edit().putString(SYNC_KEY_USER_DISPLAY_NAME, cleaned).apply()
-        context.cadenceDataStore.edit { it[Keys.USER_DISPLAY_NAME] = cleaned }
+    suspend fun setOnboardingCompleted(completed: Boolean) {
+        syncThemePrefs.edit()
+            .putBoolean(SYNC_KEY_ONBOARDING_COMPLETED, completed)
+            .apply()
+        context.cadenceDataStore.edit { prefs ->
+            prefs[Keys.ONBOARDING_COMPLETED] = completed
+        }
     }
 
-    suspend fun completeOnboarding(displayName: String? = null) {
-        val cleaned = displayName?.let { sanitizeDisplayName(it) }
-        syncThemePrefs.edit().apply {
-            putBoolean(SYNC_KEY_ONBOARDING_COMPLETED, true)
-            if (cleaned != null) {
-                putString(SYNC_KEY_USER_DISPLAY_NAME, cleaned)
-            }
-        }.apply()
-        context.cadenceDataStore.edit { prefs ->
-            prefs[Keys.ONBOARDING_COMPLETED] = true
-            if (cleaned != null) {
-                prefs[Keys.USER_DISPLAY_NAME] = cleaned
-            }
-        }
+    suspend fun completeOnboarding() {
+        setOnboardingCompleted(true)
     }
 
     suspend fun setPalette(palette: ExpressivePalette) {
@@ -313,7 +296,7 @@ class PreferencesRepository(private val context: Context) {
     }
 
     suspend fun setCrossfadeDurationSec(seconds: Int) {
-        context.cadenceDataStore.edit { it[Keys.CROSSFADE_SEC] = seconds.coerceIn(0, 10) }
+        context.cadenceDataStore.edit { it[Keys.CROSSFADE_SEC] = seconds.coerceIn(0, 12) }
     }
 
     suspend fun setPauseOnHeadphoneDisconnect(enabled: Boolean) {
@@ -361,11 +344,7 @@ class PreferencesRepository(private val context: Context) {
         internal const val SYNC_KEY_AMBIENT_AURA = "ambient_aura_enabled"
         internal const val SYNC_KEY_HAS_MANUAL_PERF = "has_manual_performance_mode"
         internal const val SYNC_KEY_PERFORMANCE_MODE = "performance_mode_enabled"
-        internal const val SYNC_KEY_USER_DISPLAY_NAME = "user_display_name"
         internal const val SYNC_KEY_ONBOARDING_COMPLETED = "onboarding_completed"
-
-        internal fun sanitizeDisplayName(raw: String): String =
-            raw.trim().replace(Regex("\\s+"), " ").take(40)
 
         private fun isDeviceLowRam(context: Context): Boolean {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
@@ -373,8 +352,8 @@ class PreferencesRepository(private val context: Context) {
         }
 
         /**
-         * Reads the mirrored user profile synchronously from SharedPreferences so
-         * cold start renders the personalized greeting and onboarding gate with zero frame-1 flicker.
+         * Reads the mirrored onboarding state synchronously from SharedPreferences so
+         * cold start resolves the onboarding gate with zero frame-1 flicker.
          */
         fun readStartupUserProfileSnapshot(context: Context): UserProfile {
             val prefs = context.applicationContext.getSharedPreferences(
@@ -382,7 +361,6 @@ class PreferencesRepository(private val context: Context) {
                 Context.MODE_PRIVATE
             )
             return UserProfile(
-                displayName = sanitizeDisplayName(prefs.getString(SYNC_KEY_USER_DISPLAY_NAME, "").orEmpty()),
                 hasCompletedOnboarding = prefs.getBoolean(SYNC_KEY_ONBOARDING_COMPLETED, false)
             )
         }

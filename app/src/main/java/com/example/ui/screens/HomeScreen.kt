@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -60,10 +61,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
@@ -193,33 +198,57 @@ internal fun currentLocalHourOfDay(): Int {
 }
 
 /**
- * Formats the time-of-day Home greeting across all 24 hours with optional user display name:
- * - `00:00 – 04:59`: "Late night vibes" / "Late night vibes, Alex"
- * - `05:00 – 11:59`: "Good morning!" / "Good morning, Alex!"
- * - `12:00 – 16:59`: "Good afternoon!" / "Good afternoon, Alex!"
- * - `17:00 – 20:59`: "Good evening!" / "Good evening, Alex!"
- * - `21:00 – 23:59`: "Good night!" / "Good night, Alex!"
+ * Formats the clean time-of-day Home greeting across all 24 hours:
+ * - `00:00 – 04:59`: "Late night vibes"
+ * - `05:00 – 11:59`: "Good morning!"
+ * - `12:00 – 16:59`: "Good afternoon!"
+ * - `17:00 – 20:59`: "Good evening!"
+ * - `21:00 – 23:59`: "Good night!"
  */
 fun formatHomeGreeting(
-    displayName: String,
     hourOfDay: Int = currentLocalHourOfDay()
 ): String {
     val normalizedHour = ((hourOfDay % 24) + 24) % 24
-    val cleanName = displayName.trim()
-    if (normalizedHour in 0..4) {
-        return if (cleanName.isEmpty()) "Late night vibes" else "Late night vibes, $cleanName"
+    return when (normalizedHour) {
+        in 0..4 -> "Late night vibes"
+        in 5..11 -> "Good morning!"
+        in 12..16 -> "Good afternoon!"
+        in 17..20 -> "Good evening!"
+        else -> "Good night!"
     }
-    val greeting = when (normalizedHour) {
-        in 5..11 -> "Good morning"
-        in 12..16 -> "Good afternoon"
-        in 17..20 -> "Good evening"
-        else -> "Good night"
-    }
-    return if (cleanName.isEmpty()) "$greeting!" else "$greeting, $cleanName!"
 }
 
 /**
- * Returns the time- and context-aware pool of Home screen 1-line subheadings.
+ * Styles the Home greeting with [baseColor] for the leading text and [accentColor] (`primary`)
+ * for the final word (e.g., "Late night " + "vibes", "Good " + "morning!").
+ */
+internal fun formatHighlightedHomeGreeting(
+    greeting: String,
+    baseColor: Color,
+    accentColor: Color
+): AnnotatedString {
+    val trimmed = greeting.trim()
+    if (trimmed.isEmpty()) return AnnotatedString("")
+    val lastSpace = trimmed.lastIndexOf(' ')
+    return buildAnnotatedString {
+        if (lastSpace <= 0 || lastSpace >= trimmed.lastIndex) {
+            withStyle(SpanStyle(color = accentColor)) {
+                append(trimmed)
+            }
+        } else {
+            withStyle(SpanStyle(color = baseColor)) {
+                append(trimmed.substring(0, lastSpace + 1))
+            }
+            withStyle(SpanStyle(color = accentColor)) {
+                append(trimmed.substring(lastSpace + 1))
+            }
+        }
+    }
+}
+
+/**
+ * Returns the time- and context-aware pool of concise 1-line Home screen subheadings.
+ * Every candidate is intentionally kept compact so it never truncates with "..." on 360.dp screens.
  */
 internal fun homeSubtitleCandidates(
     hourOfDay: Int = currentLocalHourOfDay(),
@@ -229,34 +258,34 @@ internal fun homeSubtitleCandidates(
     val normalizedHour = ((hourOfDay % 24) + 24) % 24
     return when (normalizedHour) {
         in 0..4 -> buildList {
-            add("Quiet tracks for after midnight")
-            add("Low-light listening, ready when you are")
-            add("Unwind with your late-night rotation")
-            if (hasLosslessTracks) add("Soft after-hours sound in lossless clarity")
+            add("Quiet tracks for midnight")
+            add("Low-light listening")
+            add("Your late-night rotation")
+            if (hasLosslessTracks) add("Soft after-hours lossless")
         }
         in 5..11 -> buildList {
-            add("Set the tempo for your morning")
-            add("Fresh tracks to start the day")
-            add("Your morning soundcheck is ready")
-            if (trackCount > 0) add("$trackCount offline tracks ready for the day")
+            add("Set your morning tempo")
+            add("Fresh tracks for today")
+            add("Morning soundcheck ready")
+            if (trackCount > 0) add("$trackCount tracks ready today")
         }
         in 12..16 -> buildList {
-            if (trackCount > 0) add("$trackCount offline tracks ready to spin")
-            if (hasLosslessTracks) add("Dive back into your lossless library")
-            add("Curated from your local collection")
-            add("Keep your afternoon in steady rhythm")
+            if (trackCount > 0) add("$trackCount offline tracks ready")
+            if (hasLosslessTracks) add("Your lossless collection")
+            add("From your local library")
+            add("Steady afternoon rhythm")
         }
         in 17..20 -> buildList {
-            if (hasLosslessTracks) add("Dive back into your lossless library")
-            if (trackCount > 0) add("$trackCount offline tracks ready to spin")
-            add("Curated from your local collection")
-            add("Ease into the evening with your favorites")
+            if (hasLosslessTracks) add("Your lossless collection")
+            if (trackCount > 0) add("$trackCount offline tracks ready")
+            add("From your local library")
+            add("Ease into the evening")
         }
         else -> buildList {
-            add("Low-light listening, ready when you are")
-            add("Unwind with your late-night rotation")
-            if (hasLosslessTracks) add("Warm night acoustics in lossless detail")
-            else add("Soft grooves to close out the night")
+            add("Low-light listening")
+            add("Your late-night rotation")
+            if (hasLosslessTracks) add("Warm lossless acoustics")
+            else add("Soft grooves for tonight")
         }
     }
 }
@@ -391,7 +420,6 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onAddFolder: () -> Unit,
     onScanDevice: () -> Unit,
-    userDisplayName: String = "",
     progressFlow: StateFlow<PlaybackProgress> = IdleHomeProgressFlow,
     onSeek: (Float) -> Unit = {},
     onOpenSearch: () -> Unit = {},
@@ -405,12 +433,7 @@ fun HomeScreen(
     val emptyCardSurface = remember(colorScheme.surfaceContainerLow, bg) {
         colorScheme.surfaceContainerLow.opaqueOver(bg, 0.96f)
     }
-    val headerCircleSurface = remember(colorScheme.surfaceContainerHigh, bg) {
-        colorScheme.surfaceContainerHigh.opaqueOver(bg, 0.94f)
-    }
-    val headerCircleBorder = remember(colorScheme.outlineVariant) {
-        colorScheme.outlineVariant.copy(alpha = 0.40f)
-    }
+    val headerCircleSurface = colorScheme.surfaceContainerHigh
     val heroColors = remember(colorScheme) { resolveHomeHeroColors(colorScheme) }
     val bentoColors = remember(colorScheme) { resolveHomeLibraryGridColors(colorScheme) }
 
@@ -426,8 +449,15 @@ fun HomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val greetingText = remember(userDisplayName, currentHour) {
-        formatHomeGreeting(userDisplayName, hourOfDay = currentHour)
+    val greetingText = remember(currentHour) {
+        formatHomeGreeting(hourOfDay = currentHour)
+    }
+    val highlightedGreeting = remember(greetingText, colorScheme.onBackground, colorScheme.primary) {
+        formatHighlightedHomeGreeting(
+            greeting = greetingText,
+            baseColor = colorScheme.onBackground,
+            accentColor = colorScheme.primary
+        )
     }
     val sessionSeed = rememberSaveable {
         Random.nextInt(10_000)
@@ -455,11 +485,14 @@ fun HomeScreen(
     }
 
     val hasActiveTrack = currentTrack != null
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val bottomClearance = (if (hasActiveTrack) 168.dp else 104.dp) + navBarBottom
 
     Box(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("home_root"),
         contentAlignment = Alignment.TopCenter
     ) {
         LazyColumn(
@@ -469,7 +502,7 @@ fun HomeScreen(
                 .widthIn(max = 720.dp)
                 .testTag("home_list"),
             contentPadding = PaddingValues(
-                top = 8.dp,
+                top = statusBarTop + 8.dp,
                 bottom = bottomClearance
             ),
             verticalArrangement = Arrangement.spacedBy(22.dp)
@@ -490,24 +523,29 @@ fun HomeScreen(
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         Text(
-                            text = greetingText,
+                            text = highlightedGreeting,
                             style = MaterialTheme.typography.headlineMedium.copy(
                                 fontFamily = DisplayFontFamily,
                                 fontWeight = FontWeight.Bold
                             ),
-                            color = colorScheme.onSurface,
+                            color = colorScheme.onBackground,
                             maxLines = 1,
                             softWrap = false,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.testTag("home_header_title")
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("home_header_title")
                         )
                         Text(
                             text = sessionSubtitle,
                             style = MaterialTheme.typography.bodyMedium,
                             color = colorScheme.onSurfaceVariant,
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.testTag("home_header_subtitle")
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("home_header_subtitle")
                         )
                     }
 
@@ -519,7 +557,6 @@ fun HomeScreen(
                             icon = Icons.Rounded.Search,
                             contentDescription = stringResource(R.string.action_search),
                             containerColor = headerCircleSurface,
-                            borderColor = headerCircleBorder,
                             onClick = onOpenSearch,
                             testTag = "home_search_button"
                         )
@@ -527,7 +564,6 @@ fun HomeScreen(
                             icon = Icons.Rounded.Settings,
                             contentDescription = stringResource(R.string.action_settings),
                             containerColor = headerCircleSurface,
-                            borderColor = headerCircleBorder,
                             onClick = onOpenSettings,
                             testTag = "settings_button"
                         )
@@ -863,7 +899,6 @@ private fun HomeHeaderCircleButton(
     icon: ImageVector,
     contentDescription: String,
     containerColor: Color,
-    borderColor: Color,
     onClick: () -> Unit,
     testTag: String
 ) {
@@ -880,14 +915,13 @@ private fun HomeHeaderCircleButton(
         shape = CircleShape,
         color = containerColor,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(1.dp, borderColor),
         modifier = Modifier
             .testTag(testTag)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
-            .size(42.dp)
+            .size(44.dp)
             .clip(CircleShape)
             .clickable(
                 interactionSource = interaction,

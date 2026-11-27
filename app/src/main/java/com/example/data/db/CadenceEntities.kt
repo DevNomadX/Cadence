@@ -188,3 +188,83 @@ data class SavedFolderEntity(
     val displayName: String,
     val lastScannedAt: Long = System.currentTimeMillis()
 )
+
+/**
+ * Immutable calendar-day Daily Picks snapshot header keyed by `YYYY-MM-DD`.
+ * Generated once per calendar day so playback never mutates or reshuffles active Daily Picks.
+ */
+@Keep
+@Entity(tableName = "daily_picks_snapshots")
+data class DailyPicksSnapshotEntity(
+    @PrimaryKey val dateKey: String,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
+/**
+ * Ordered track ID entries (up to 6 distinct tracks) belonging to a locked Daily Picks snapshot.
+ * Deliberately does NOT cascade-delete on [TrackEntity] removal so the locked snapshot remains
+ * immutable while read queries filter deleted tracks via INNER JOIN against `tracks`.
+ */
+@Keep
+@Entity(
+    tableName = "daily_picks_snapshot_items",
+    primaryKeys = ["dateKey", "position"],
+    foreignKeys = [
+        ForeignKey(
+            entity = DailyPicksSnapshotEntity::class,
+            parentColumns = ["dateKey"],
+            childColumns = ["dateKey"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index(value = ["dateKey"], name = "index_daily_picks_snapshot_items_dateKey"),
+        Index(value = ["trackId"], name = "index_daily_picks_snapshot_items_trackId")
+    ]
+)
+data class DailyPicksSnapshotItemEntity(
+    val dateKey: String,
+    val position: Int,
+    val trackId: String
+)
+
+/**
+ * Immutable Context-Aware / Mood Session snapshot header keyed by `sessionId`.
+ * Locked for the duration of the session once triggered.
+ */
+@Keep
+@Entity(tableName = "session_snapshots")
+data class SessionSnapshotEntity(
+    @PrimaryKey val sessionId: String,
+    val contextKey: String,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
+/**
+ * Ordered track ID entries (up to 10 distinct tracks) belonging to a locked Session snapshot.
+ * Deliberately does NOT cascade-delete on [TrackEntity] removal so deleted tracks are filtered
+ * cleanly on read without mutating remaining tracks.
+ */
+@Keep
+@Entity(
+    tableName = "session_snapshot_items",
+    primaryKeys = ["sessionId", "position"],
+    foreignKeys = [
+        ForeignKey(
+            entity = SessionSnapshotEntity::class,
+            parentColumns = ["sessionId"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index(value = ["sessionId"], name = "index_session_snapshot_items_sessionId"),
+        Index(value = ["trackId"], name = "index_session_snapshot_items_trackId")
+    ]
+)
+data class SessionSnapshotItemEntity(
+    val sessionId: String,
+    val position: Int,
+    val trackId: String
+)
+

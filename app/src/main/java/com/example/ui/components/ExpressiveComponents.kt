@@ -20,7 +20,6 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -74,15 +73,12 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale as drawScopeScale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -96,7 +92,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Size as CoilSize
 import com.example.R
@@ -131,11 +126,22 @@ private fun rememberIsLifecycleResumed(): Boolean {
 
 internal const val SCRUBBER_UNPLAYED_TRACK_DP = 3f
 internal const val SCRUBBER_THUMB_CORE_DP = 14f
-internal const val SCRUBBER_THUMB_HALO_IDLE_DP = 24f
-internal const val SCRUBBER_THUMB_HALO_DRAG_DP = 30f
 internal const val SCRUBBER_THUMB_LOBE_COUNT = 8
 internal const val SCRUBBER_THUMB_ROTATION_DURATION_MS = 6000
 internal const val SCRUBBER_TOUCH_HEIGHT_DP = 48f
+
+// Wide, edgeless 5-stop exponential light bloom behind the 8-lobe rotating thumb (zero hard ring / solid disk)
+internal const val SCRUBBER_BLOOM_BASE_RADIUS_DP = 28f
+internal const val SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP = 26f
+internal const val SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP = 32f
+internal const val SCRUBBER_BLOOM_PAUSED_RADIUS_DP = 22f
+internal const val SCRUBBER_BLOOM_DRAG_MAX_RADIUS_DP = 34f
+internal const val SCRUBBER_BLOOM_BREATH_DURATION_MS = 1800
+internal const val SCRUBBER_BLOOM_STOP_0_ALPHA = 0.46f
+internal const val SCRUBBER_BLOOM_STOP_1_ALPHA = 0.24f
+internal const val SCRUBBER_BLOOM_STOP_2_ALPHA = 0.09f
+internal const val SCRUBBER_BLOOM_STOP_3_ALPHA = 0.02f
+internal const val SCRUBBER_BLOOM_PAUSED_PEAK_ALPHA = 0.22f
 
 /**
  * Builds an expressive multi-lobe scalloped/notched badge path centered at `(0f, 0f)` whose outer lobe
@@ -167,12 +173,12 @@ internal fun buildScallopedThumbPath(
 
 /**
  * Material 3 Expressive organic wavy progress scrubber with an 8-lobe rotating scalloped seek badge
- * and a luminous breathing radial glow aura layered behind the translucent halo during playback.
+ * floating over an edgeless, wide 5-stop exponential light bloom (no hard borders or solid disks).
  * Low-end optimized:
  * - Reads [progressProvider] and animation states strictly inside Canvas Draw phase (0 recompositions)
- * - Runs infinite rotation & glow breathing animations strictly when `isPlaying && isResumed && !performanceMode`,
- *   freezing the thumb's exact rotation angle with zero idle frames when paused
- * - Pre-builds the 8-lobe scalloped Path once per radius (0 per-frame Path allocations)
+ * - Runs infinite rotation & bloom breathing strictly when `isPlaying && isResumed && !performanceMode`,
+ *   freezing the thumb's exact rotation angle and settling to a calm 22.dp bloom when paused
+ * - Pre-builds the 8-lobe scalloped Path and 5-stop radial Brush once per radius/color (0 per-frame allocations)
  * - Preserves 48.dp touch hit-slop and crisp tap/drag-to-seek precision
  */
 @Composable
@@ -185,7 +191,6 @@ fun WavyExpressiveSlider(
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val unplayedTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)
-    val thumbHaloColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
     val performanceMode = LocalPerformanceMode.current
     val isResumed = rememberIsLifecycleResumed()
     val density = LocalDensity.current
@@ -211,29 +216,27 @@ fun WavyExpressiveSlider(
         )
     }
 
-    val haloDiameterDpState: State<Float> = if (performanceMode) {
-        remember(isDragging) {
-            mutableFloatStateOf(if (isDragging) SCRUBBER_THUMB_HALO_DRAG_DP else SCRUBBER_THUMB_HALO_IDLE_DP)
-        }
+    // Smooth play/pause transition between calm 22dp/0.22f bloom and active 26..32dp/0.46f breathing bloom
+    val playingBlendState: State<Float> = if (performanceMode) {
+        remember(isPlaying) { mutableFloatStateOf(if (isPlaying) 1f else 0f) }
     } else {
         animateFloatAsState(
-            targetValue = if (isDragging) SCRUBBER_THUMB_HALO_DRAG_DP else SCRUBBER_THUMB_HALO_IDLE_DP,
+            targetValue = if (isPlaying) 1f else 0f,
+            animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+            label = "scrubber_bloom_playing_blend"
+        )
+    }
+
+    val dragBoostDpState: State<Float> = if (performanceMode) {
+        remember(isDragging) { mutableFloatStateOf(if (isDragging) 3f else 0f) }
+    } else {
+        animateFloatAsState(
+            targetValue = if (isDragging) 3f else 0f,
             animationSpec = spring(
                 dampingRatio = Spring.DampingRatioMediumBouncy,
                 stiffness = Spring.StiffnessMedium
             ),
-            label = "scrubber_halo_diameter"
-        )
-    }
-
-    // Smoothly fades the luminous glow aura in when playing and settles cleanly back to static halo when paused
-    val glowVisibilityState: State<Float> = if (performanceMode) {
-        remember { mutableFloatStateOf(0f) }
-    } else {
-        animateFloatAsState(
-            targetValue = if (isPlaying) 1f else 0f,
-            animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
-            label = "scrubber_glow_visibility"
+            label = "scrubber_bloom_drag_boost"
         )
     }
 
@@ -252,12 +255,11 @@ fun WavyExpressiveSlider(
         remember { mutableFloatStateOf(0f) }
     }
 
-    // Smooth 6s/rev thumb rotation + breathing glow aura — active ONLY while playing, freezing angle when paused
+    // Smooth 6s/rev thumb rotation + gentle 1800ms 26..32dp breathing bloom — active ONLY while playing
     val frozenThumbAngleDeg = remember { mutableFloatStateOf(0f) }
     val rotationBaseAngleDeg = remember(shouldAnimateThumb) { frozenThumbAngleDeg.floatValue }
     val thumbRotationDeltaState: State<Float>
-    val glowPulseScaleState: State<Float>
-    val glowPulseAlphaState: State<Float>
+    val bloomBreathRadiusDpState: State<Float>
     if (shouldAnimateThumb) {
         val thumbTransition = rememberInfiniteTransition(label = "scrubber_thumb_motion")
         thumbRotationDeltaState = thumbTransition.animateFloat(
@@ -269,36 +271,39 @@ fun WavyExpressiveSlider(
             ),
             label = "thumb_rotation_deg"
         )
-        glowPulseScaleState = thumbTransition.animateFloat(
-            initialValue = 1.0f,
-            targetValue = 1.28f,
+        bloomBreathRadiusDpState = thumbTransition.animateFloat(
+            initialValue = SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP,
+            targetValue = SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP,
             animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1800, easing = FastOutSlowInEasing),
+                animation = tween(durationMillis = SCRUBBER_BLOOM_BREATH_DURATION_MS, easing = FastOutSlowInEasing),
                 repeatMode = RepeatMode.Reverse
             ),
-            label = "thumb_glow_scale"
-        )
-        glowPulseAlphaState = thumbTransition.animateFloat(
-            initialValue = 0.84f,
-            targetValue = 1.0f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1800, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "thumb_glow_alpha"
+            label = "thumb_bloom_radius_dp"
         )
     } else {
         thumbRotationDeltaState = remember { mutableFloatStateOf(0f) }
-        glowPulseScaleState = remember { mutableFloatStateOf(1.0f) }
-        glowPulseAlphaState = remember { mutableFloatStateOf(1.0f) }
+        bloomBreathRadiusDpState = remember { mutableFloatStateOf(SCRUBBER_BLOOM_BASE_RADIUS_DP) }
     }
 
     val wavePath = remember { Path() }
     val activeStrokePx = with(density) { 3.8.dp.toPx() }
     val unplayedStrokePx = with(density) { SCRUBBER_UNPLAYED_TRACK_DP.dp.toPx() }
     val coreRadiusPx = with(density) { (SCRUBBER_THUMB_CORE_DP / 2f).dp.toPx() }
+    val baseBloomRadiusPx = with(density) { SCRUBBER_BLOOM_BASE_RADIUS_DP.dp.toPx() }
     val scallopedThumbPath = remember(coreRadiusPx) {
         buildScallopedThumbPath(outerRadiusPx = coreRadiusPx, lobes = SCRUBBER_THUMB_LOBE_COUNT)
+    }
+    // Single cached 5-stop exponential radial gradient melting invisibly to transparent with zero outer ring edge
+    val cachedBloomBrush = remember(primaryColor, baseBloomRadiusPx) {
+        Brush.radialGradient(
+            0.00f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_0_ALPHA),
+            0.28f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_1_ALPHA),
+            0.55f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_2_ALPHA),
+            0.80f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_3_ALPHA),
+            1.00f to Color.Transparent,
+            center = Offset.Zero,
+            radius = baseBloomRadiusPx
+        )
     }
     val waveStroke = remember(activeStrokePx) {
         Stroke(
@@ -361,8 +366,6 @@ fun WavyExpressiveSlider(
             val activeEndX = startX + trackWidth * displayFraction
             val waveAmplitudeFactor = waveAmplitudeState.value
             val phase = phaseState.value
-            val haloRadiusPx = (haloDiameterDpState.value / 2f).dp.toPx()
-            val glowVisibility = glowVisibilityState.value
 
             // Unplayed straight 3dp track rail (right side of seek handle)
             if (activeEndX < endX) {
@@ -421,33 +424,29 @@ fun WavyExpressiveSlider(
 
             val thumbCenter = Offset(activeEndX, centerY)
 
-            // 1. Soft breathing radial glow aura layered around the translucent halo when playing
-            if (glowVisibility > 0.01f) {
-                val glowScale = glowPulseScaleState.value
-                val glowAlpha = glowVisibility * glowPulseAlphaState.value
-                val glowRadiusPx = (haloRadiusPx * 1.45f * glowScale).coerceAtLeast(haloRadiusPx + 1f)
-                val glowBrush = Brush.radialGradient(
-                    0.0f to primaryColor.copy(alpha = 0.42f * glowAlpha),
-                    0.52f to primaryColor.copy(alpha = 0.16f * glowAlpha),
-                    1.0f to Color.Transparent,
-                    center = thumbCenter,
-                    radius = glowRadiusPx
-                )
-                drawCircle(
-                    brush = glowBrush,
-                    radius = glowRadiusPx,
-                    center = thumbCenter
-                )
+            // 1. Wide, edgeless 5-stop exponential radial light bloom (no hard ring or solid disk)
+            val playingBlend = playingBlendState.value
+            val activeRadiusDp = bloomBreathRadiusDpState.value
+            val bloomRadiusDp = (
+                SCRUBBER_BLOOM_PAUSED_RADIUS_DP +
+                    (activeRadiusDp - SCRUBBER_BLOOM_PAUSED_RADIUS_DP) * playingBlend +
+                    dragBoostDpState.value
+                ).coerceAtMost(SCRUBBER_BLOOM_DRAG_MAX_RADIUS_DP)
+            val pausedAlphaScale = SCRUBBER_BLOOM_PAUSED_PEAK_ALPHA / SCRUBBER_BLOOM_STOP_0_ALPHA
+            val bloomAlphaScale = (pausedAlphaScale + (1f - pausedAlphaScale) * playingBlend).coerceIn(0f, 1f)
+            val bloomScale = bloomRadiusDp / SCRUBBER_BLOOM_BASE_RADIUS_DP
+            translate(left = thumbCenter.x, top = thumbCenter.y) {
+                drawScopeScale(scale = bloomScale, pivot = Offset.Zero) {
+                    drawCircle(
+                        brush = cachedBloomBrush,
+                        radius = baseBloomRadiusPx,
+                        center = Offset.Zero,
+                        alpha = bloomAlphaScale
+                    )
+                }
             }
 
-            // 2. Preserved translucent circular halo ring (24dp idle, expands to 30dp on drag)
-            drawCircle(
-                color = thumbHaloColor,
-                radius = haloRadiusPx,
-                center = thumbCenter
-            )
-
-            // 3. Rotating 8-lobe scalloped badge (6s/rev while playing, frozen angle when paused)
+            // 2. Crisp, unblurred rotating 8-lobe scalloped badge on top of the bloom (6s/rev playing, frozen paused)
             val currentAngleDeg = if (shouldAnimateThumb) {
                 val nextAngle = (rotationBaseAngleDeg + thumbRotationDeltaState.value) % 360f
                 frozenThumbAngleDeg.floatValue = nextAngle
@@ -648,9 +647,14 @@ fun ExpressiveArtworkFrame(
 
     val cd = stringResource(R.string.album_art_cd, track?.title ?: stringResource(R.string.app_name))
     val surfaceBg = MaterialTheme.colorScheme.surfaceContainerHigh
-    val placeholderPainter = remember(surfaceBg) { ColorPainter(surfaceBg) }
-
-    val hairlineBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+    val fallbackSeed = remember(track?.id, track?.album, track?.title) {
+        when {
+            track == null -> "cadence_empty"
+            track.album.isNotBlank() && !track.album.equals("Unknown Album", ignoreCase = true) -> track.album
+            track.id.isNotBlank() -> track.id
+            else -> track.title.ifBlank { "cadence_track" }
+        }
+    }
 
     Surface(
         shape = shape,
@@ -659,63 +663,17 @@ fun ExpressiveArtworkFrame(
         shadowElevation = if (shouldScale && isPlaying) 12.dp else if (shouldScale) 4.dp else 0.dp,
         modifier = if (shouldScale) modifier.scale(scale) else modifier
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            when {
-                track == null -> {
-                    ThemeReactiveBauhausArtwork(
-                        seed = 7,
-                        contentDescription = cd,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-
-                track.artworkResId != null -> {
-                    Image(
-                        painter = painterResource(id = track.artworkResId),
-                        contentDescription = cd,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-
-                !track.artworkPath.isNullOrBlank() -> {
-                    val context = LocalContext.current
-                    val enableCrossfade = decodeSizePx > 256 && !performanceMode
-                    val model = remember(context, track.artworkPath, decodeSizePx, enableCrossfade) {
-                        buildArtworkImageRequest(
-                            context = context,
-                            artworkPath = track.artworkPath,
-                            decodeSizePx = decodeSizePx,
-                            enableCrossfade = enableCrossfade
-                        )
-                    }
-                    AsyncImage(
-                        model = model,
-                        contentDescription = cd,
-                        placeholder = placeholderPainter,
-                        error = placeholderPainter,
-                        fallback = placeholderPainter,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-
-                else -> {
-                    ThemeReactiveBauhausArtwork(
-                        seed = track.id.hashCode(),
-                        contentDescription = cd,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
-            if (showHairlineBorder) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .border(1.dp, hairlineBorderColor, shape)
-                )
-            }
-        }
+        TrackArtwork(
+            artworkUri = track?.artworkPath,
+            seed = fallbackSeed,
+            contentDescription = cd,
+            shape = shape,
+            artworkResId = track?.artworkResId,
+            decodeSizePx = decodeSizePx,
+            showHairlineBorder = showHairlineBorder,
+            trackId = track?.id,
+            modifier = Modifier.fillMaxSize()
+        )
     }
 }
 

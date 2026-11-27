@@ -62,6 +62,7 @@ enum class AudioFocusBehavior(
 }
 
 enum class LibraryCategory(val id: String) {
+    OVERVIEW("overview"),
     SONGS("songs"),
     ALBUMS("albums"),
     ARTISTS("artists"),
@@ -122,7 +123,7 @@ data class Track(
     val skipCount: Int = 0,
     val lastPlayedAt: Long = 0L,
     val isFavorite: Boolean = false,
-    val suggestedPalette: ExpressivePalette = ExpressivePalette.TERRACOTTA,
+    val suggestedPalette: ExpressivePalette = ExpressivePalette.DEFAULT,
     val isUserImported: Boolean = true,
     val affinityScore: Float = 0f,
     val moodTags: StableList<SmartMoodTag> = StableList(),

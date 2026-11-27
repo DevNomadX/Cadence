@@ -253,3 +253,180 @@ interface FolderDao {
     @Query("DELETE FROM saved_folders WHERE treeUri = :treeUri")
     suspend fun deleteFolder(treeUri: String)
 }
+
+@Dao
+interface RecommendationSnapshotDao {
+
+    // --- Daily Picks Snapshot (YYYY-MM-DD key, max 6 distinct tracks) ---
+
+    @Query("SELECT EXISTS(SELECT 1 FROM daily_picks_snapshots WHERE dateKey = :dateKey)")
+    suspend fun hasDailyPicksSnapshot(dateKey: String): Boolean
+
+    @Query("SELECT * FROM daily_picks_snapshots WHERE dateKey = :dateKey LIMIT 1")
+    suspend fun getDailyPicksHeader(dateKey: String): DailyPicksSnapshotEntity?
+
+    @Query("SELECT trackId FROM daily_picks_snapshot_items WHERE dateKey = :dateKey ORDER BY position ASC")
+    suspend fun getRawDailyPicksTrackIds(dateKey: String): List<String>
+
+    /**
+     * Reads locked Daily Picks tracks filtered against the live `tracks` table so deleted audio
+     * files never surface as dead cards, while preserving exact locked ordering.
+     */
+    @Query(
+        """
+        SELECT t.* FROM tracks t
+        INNER JOIN daily_picks_snapshot_items i ON t.id = i.trackId
+        WHERE i.dateKey = :dateKey
+        ORDER BY i.position ASC
+        """
+    )
+    fun observeDailyPicksTracks(dateKey: String): Flow<List<TrackEntity>>
+
+    @Query(
+        """
+        SELECT t.* FROM tracks t
+        INNER JOIN daily_picks_snapshot_items i ON t.id = i.trackId
+        WHERE i.dateKey = :dateKey
+        ORDER BY i.position ASC
+        """
+    )
+    suspend fun getDailyPicksTracksOnce(dateKey: String): List<TrackEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertDailyPicksHeaderIgnore(header: DailyPicksSnapshotEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertDailyPicksItemsIgnore(items: List<DailyPicksSnapshotItemEntity>)
+
+    @Query("DELETE FROM daily_picks_snapshots WHERE dateKey != :keepDateKey")
+    suspend fun pruneDailyPicksExcept(keepDateKey: String)
+
+    /**
+     * Atomically locks up to 6 distinct track IDs for [dateKey] if and only if no snapshot already
+     * exists for that calendar day. Subsequent calls for the same [dateKey] are no-ops so active
+     * Daily Picks are never mutated or reshuffled during playback.
+     */
+    @Transaction
+    suspend fun lockDailyPicksIfAbsent(
+        dateKey: String,
+        trackIds: List<String>,
+        createdAtMs: Long = System.currentTimeMillis()
+    ): Boolean {
+        val insertedRowId = insertDailyPicksHeaderIgnore(
+            DailyPicksSnapshotEntity(dateKey = dateKey, createdAtMs = createdAtMs)
+        )
+        if (insertedRowId == -1L) return false
+        val bounded = trackIds
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .take(DAILY_PICKS_MAX_ITEMS)
+            .toList()
+        if (bounded.isNotEmpty()) {
+            insertDailyPicksItemsIgnore(
+                bounded.mapIndexed { index, trackId ->
+                    DailyPicksSnapshotItemEntity(
+                        dateKey = dateKey,
+                        position = index,
+                        trackId = trackId
+                    )
+                }
+            )
+        }
+        return true
+    }
+
+    // --- Context-Aware & Mood Session Snapshot (sessionId key, max 10 distinct tracks) ---
+
+    @Query("SELECT EXISTS(SELECT 1 FROM session_snapshots WHERE sessionId = :sessionId)")
+    suspend fun hasSessionSnapshot(sessionId: String): Boolean
+
+    @Query("SELECT * FROM session_snapshots WHERE sessionId = :sessionId LIMIT 1")
+    suspend fun getSessionHeader(sessionId: String): SessionSnapshotEntity?
+
+    @Query("SELECT trackId FROM session_snapshot_items WHERE sessionId = :sessionId ORDER BY position ASC")
+    suspend fun getRawSessionTrackIds(sessionId: String): List<String>
+
+    /**
+     * Reads locked Session snapshot tracks filtered against the live `tracks` table so deleted
+     * audio files are cleanly omitted without mutating or reshuffling remaining tracks.
+     */
+    @Query(
+        """
+        SELECT t.* FROM tracks t
+        INNER JOIN session_snapshot_items i ON t.id = i.trackId
+        WHERE i.sessionId = :sessionId
+        ORDER BY i.position ASC
+        """
+    )
+    fun observeSessionTracks(sessionId: String): Flow<List<TrackEntity>>
+
+    @Query(
+        """
+        SELECT t.* FROM tracks t
+        INNER JOIN session_snapshot_items i ON t.id = i.trackId
+        WHERE i.sessionId = :sessionId
+        ORDER BY i.position ASC
+        """
+    )
+    suspend fun getSessionTracksOnce(sessionId: String): List<TrackEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertSessionHeaderIgnore(header: SessionSnapshotEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertSessionItemsIgnore(items: List<SessionSnapshotItemEntity>)
+
+    @Query("DELETE FROM session_snapshots WHERE sessionId = :sessionId")
+    suspend fun deleteSessionSnapshot(sessionId: String)
+
+    @Query("DELETE FROM session_snapshots WHERE createdAtMs < :olderThanMs")
+    suspend fun pruneExpiredSessions(olderThanMs: Long)
+
+    /**
+     * Atomically locks up to 10 distinct track IDs for [sessionId] if and only if no snapshot
+     * already exists for that session key.
+     */
+    @Transaction
+    suspend fun lockSessionIfAbsent(
+        sessionId: String,
+        contextKey: String,
+        trackIds: List<String>,
+        createdAtMs: Long = System.currentTimeMillis()
+    ): Boolean {
+        val insertedRowId = insertSessionHeaderIgnore(
+            SessionSnapshotEntity(
+                sessionId = sessionId,
+                contextKey = contextKey,
+                createdAtMs = createdAtMs
+            )
+        )
+        if (insertedRowId == -1L) return false
+        val bounded = trackIds
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .take(SESSION_SNAPSHOT_MAX_ITEMS)
+            .toList()
+        if (bounded.isNotEmpty()) {
+            insertSessionItemsIgnore(
+                bounded.mapIndexed { index, trackId ->
+                    SessionSnapshotItemEntity(
+                        sessionId = sessionId,
+                        position = index,
+                        trackId = trackId
+                    )
+                }
+            )
+        }
+        return true
+    }
+
+    companion object {
+        const val DAILY_PICKS_MAX_ITEMS: Int = 6
+        const val SESSION_SNAPSHOT_MAX_ITEMS: Int = 10
+    }
+}
+

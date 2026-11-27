@@ -384,7 +384,7 @@ class LocalAiMoodAndAffinityTest {
 
         composeRule.setContent {
             CadenceTheme(
-                palette = ExpressivePalette.TERRACOTTA,
+                palette = ExpressivePalette.MATCHA,
                 appearanceMode = AppearanceMode.DARK
             ) {
                 LibraryScreen(
@@ -489,7 +489,7 @@ class LocalAiMoodAndAffinityTest {
 
         composeRule.setContent {
             CadenceTheme(
-                palette = ExpressivePalette.TERRACOTTA,
+                palette = ExpressivePalette.MATCHA,
                 appearanceMode = AppearanceMode.DARK
             ) {
                 DiscoverScreen(

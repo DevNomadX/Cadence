@@ -13,7 +13,6 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.abs
 
 /**
  * Context-aware listening routines paired with local time-of-day, day-of-week,
@@ -363,16 +362,17 @@ fun currentLocalDayOfWeek(nowMs: Long = System.currentTimeMillis()): Int {
  */
 object DailyPicksCurator {
 
-    const val DEFAULT_PICK_COUNT = 6
+    const val DEFAULT_PICK_COUNT = RecommendationCore.DAILY_PICKS_MAX_SIZE
     const val MIN_PICK_COUNT = 5
-    const val MAX_PICK_COUNT = 6
+    const val MAX_PICK_COUNT = RecommendationCore.DAILY_PICKS_MAX_SIZE
 
     fun generateDailyPicks(
         libraryTracks: List<Track>,
         epochDay: Long = currentLocalEpochDay(),
         nowMs: Long = System.currentTimeMillis(),
         targetCount: Int = DEFAULT_PICK_COUNT,
-        engine: MusicIntelligenceEngine = MusicIntelligenceEngine()
+        engine: MusicIntelligenceEngine = MusicIntelligenceEngine(),
+        signals: List<PlaybackSignal> = emptyList()
     ): StableList<Track> {
         val clean = libraryTracks
             .filter { it.id.isNotBlank() }
@@ -380,110 +380,23 @@ object DailyPicksCurator {
         if (clean.isEmpty()) return StableList()
 
         val desiredCount = minOf(clean.size, targetCount.coerceIn(MIN_PICK_COUNT, MAX_PICK_COUNT))
-        val snapshot = TrackIntelligenceCache.getOrBuildSnapshot(clean, engine)
-        val affinities = snapshot.getOrComputeAffinities(
+        TrackIntelligenceCache.getOrBuildSnapshot(clean, engine)
+        val result = RecommendationCore.generateDailyPicks(
             tracks = clean,
+            signals = signals,
             nowMs = nowMs,
-            localHourOfDay = 12 // Fixed midday anchor so picks stay locked for the whole calendar day
+            timeOfDay = TimeOfDayCategory.AFTERNOON,
+            epochDay = epochDay,
+            targetSize = desiredCount
         )
-
-        // Pre-compute deterministic date-seeded score per track before sorting (TimSort safe)
-        val scored = clean.map { track ->
-            val vec = snapshot.vectorsById[track.id]
-            val affinity = affinities[track.id]?.score?.toDouble() ?: 0.45
-            val qualityNudge = if (track.isHiFi) 0.04 else 0.0
-            val coldStartNudge = if (!snapshot.hasListeningHistory) {
-                val recency = if (track.dateAdded > 0L) 0.03 else 0.0
-                val moodRichness = if ((vec?.smartMoodTags?.isNotEmpty()) == true) 0.03 else 0.0
-                recency + moodRichness
-            } else {
-                0.0
-            }
-
-            // Strong deterministic daily rotation hash (0.0..1.0) so day D stays 100% locked
-            // while day D+1 rotates meaningfully across the user's taste pool.
-            val dailyRoll = deterministicUnitRoll(epochDay, track.id)
-            val skipDrag = if (track.skipCount > track.completedPlayCount + 2) -0.24 else 0.0
-
-            // Weight user taste affinity alongside date-seeded rotation:
-            // keeps picks aligned with taste while guaranteeing fresh picks on the next calendar day.
-            val tasteWeight = if (snapshot.hasListeningHistory) 0.46 else 0.22
-            val rotationWeight = 1.0 - tasteWeight
-            val rawScore = (affinity + qualityNudge + coldStartNudge + skipDrag) * tasteWeight +
-                dailyRoll * rotationWeight
-
-            val safeScore = if (rawScore.isFinite()) rawScore else dailyRoll
-            Triple(track, safeScore, vec?.primaryMood ?: "calm")
-        }.sortedWith(
-            compareByDescending<Triple<Track, Double, String>> { it.second }
-                .thenBy { it.first.id }
-        )
-
-        val picked = ArrayList<Track>(desiredCount)
-        val usedIds = HashSet<String>(desiredCount * 2)
-        val artistCounts = HashMap<String, Int>()
-        val moodCounts = HashMap<String, Int>()
-
-        // Pass 1: Respect artist diversity (max 2 per artist) and encourage mood variety
-        for ((track, _, mood) in scored) {
-            if (picked.size >= desiredCount) break
-            val artistKey = LocalMoodAndAffinityEngine.normalizedArtistKey(track.artist)
-            val artistCount = artistCounts[artistKey] ?: 0
-            val moodCount = moodCounts[mood] ?: 0
-            if (artistCount >= LocalMoodAndAffinityEngine.MAX_SONGS_PER_ARTIST) continue
-            if (clean.size >= 10 && moodCount >= 3) continue
-            if (usedIds.add(track.id)) {
-                artistCounts[artistKey] = artistCount + 1
-                moodCounts[mood] = moodCount + 1
-                picked.add(track)
-            }
-        }
-
-        // Pass 2: Relax mood variety cap while keeping artist cap = 2
-        if (picked.size < desiredCount) {
-            for ((track, _, _) in scored) {
-                if (picked.size >= desiredCount) break
-                if (track.id in usedIds) continue
-                val artistKey = LocalMoodAndAffinityEngine.normalizedArtistKey(track.artist)
-                val artistCount = artistCounts[artistKey] ?: 0
-                if (artistCount >= LocalMoodAndAffinityEngine.MAX_SONGS_PER_ARTIST) continue
-                if (usedIds.add(track.id)) {
-                    artistCounts[artistKey] = artistCount + 1
-                    picked.add(track)
-                }
-            }
-        }
-
-        // Pass 3: Cold-start / small single-artist library fallback so we never under-fill
-        if (picked.size < desiredCount) {
-            for ((track, _, _) in scored) {
-                if (picked.size >= desiredCount) break
-                if (usedIds.add(track.id)) {
-                    picked.add(track)
-                }
-            }
-        }
-
-        return picked.toStableList()
-    }
-
-    internal fun deterministicUnitRoll(epochDay: Long, trackId: String): Double {
-        var h = epochDay * -7046029254386353131L + 1442695040888963407L
-        for (ch in trackId) {
-            h = (h xor ch.code.toLong()) * 6364136223846793005L + 1442695040888963407L
-        }
-        // Final avalanche (SplitMix64)
-        h = (h xor (h ushr 30)) * -4658895280553007687L
-        h = (h xor (h ushr 27)) * -7723592293110705685L
-        h = h xor (h ushr 31)
-        val positive53 = (h ushr 11) and ((1L shl 53) - 1L)
-        return positive53.toDouble() / (1L shl 53).toDouble()
+        val byId = clean.associateBy { it.id }
+        return result.trackIds.mapNotNull { byId[it] }.toStableList()
     }
 }
 
 /**
  * Context-aware Time & Routine Mixes curator for Discover's "For This Moment" shelf.
- * Pairs user mood affinity weights, listening history, and local time-of-day / day-of-week.
+ * Delegates all mix generation and scoring to [RecommendationCore].
  */
 object RoutineMixCurator {
 
@@ -516,240 +429,31 @@ object RoutineMixCurator {
     }
 
     /**
-     * Builds the active routine mix FIRST alongside 3 complementary routine mixes (4 total).
-     * Cold-start safe: every routine mix returns non-empty tracks whenever [libraryTracks] is non-empty.
+     * Builds the active routine mix FIRST alongside 3 complementary routine mixes (4 total) via
+     * [RecommendationCore.buildRoutineMixes], capped at [maxTracksPerMix] (default 10).
      */
     fun buildRoutineMixes(
         libraryTracks: List<Track>,
         nowMs: Long = System.currentTimeMillis(),
         localHourOfDay: Int = LocalMoodAndAffinityEngine.currentLocalHour(nowMs),
         dayOfWeek: Int = currentLocalDayOfWeek(nowMs),
-        maxTracksPerMix: Int = 12,
-        engine: MusicIntelligenceEngine = MusicIntelligenceEngine()
+        maxTracksPerMix: Int = RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE,
+        engine: MusicIntelligenceEngine = MusicIntelligenceEngine(),
+        signals: List<PlaybackSignal> = emptyList()
     ): StableList<RoutineMix> {
         val clean = libraryTracks
             .filter { it.id.isNotBlank() }
             .distinctBy { it.id }
         if (clean.isEmpty()) return StableList()
 
-        val snapshot = TrackIntelligenceCache.getOrBuildSnapshot(clean, engine)
-        val affinities = snapshot.getOrComputeAffinities(clean, nowMs, localHourOfDay)
-        val activeType = resolveActiveRoutineType(localHourOfDay, dayOfWeek)
-        val orderedTypes = buildOrderedRoutineTypes(activeType)
-        val cap = minOf(clean.size, maxTracksPerMix.coerceIn(4, 18))
-
-        val mixes = orderedTypes.map { type ->
-            val tracks = curateTracksForRoutine(
-                type = type,
-                tracks = clean,
-                snapshot = snapshot,
-                affinities = affinities,
-                nowMs = nowMs,
-                targetSize = cap
-            )
-            RoutineMix(
-                type = type,
-                title = type.title,
-                subtitle = type.description,
-                timeWindowLabel = type.timeWindowLabel,
-                isActiveNow = type == activeType,
-                tracks = tracks,
-                tuneConfig = DiscoverTuneConfig(
-                    selectedMood = type.tuneMood,
-                    energyFilter = type.tuneEnergy,
-                    discoveryBalance = type.tuneDiscoveryBalance
-                )
-            )
-        }
-        return mixes.toStableList()
-    }
-
-    private fun buildOrderedRoutineTypes(active: RoutineMixType): List<RoutineMixType> {
-        val complements = when (active) {
-            RoutineMixType.MORNING_FOCUS -> listOf(
-                RoutineMixType.AFTERNOON_MOMENTUM,
-                RoutineMixType.EVENING_UNWIND,
-                RoutineMixType.LATE_NIGHT_WIND_DOWN
-            )
-            RoutineMixType.AFTERNOON_MOMENTUM -> listOf(
-                RoutineMixType.EVENING_UNWIND,
-                RoutineMixType.MORNING_FOCUS,
-                RoutineMixType.WEEKEND_ENERGY
-            )
-            RoutineMixType.EVENING_UNWIND -> listOf(
-                RoutineMixType.LATE_NIGHT_WIND_DOWN,
-                RoutineMixType.AFTERNOON_MOMENTUM,
-                RoutineMixType.WEEKEND_ENERGY
-            )
-            RoutineMixType.LATE_NIGHT_WIND_DOWN -> listOf(
-                RoutineMixType.EVENING_UNWIND,
-                RoutineMixType.MORNING_FOCUS,
-                RoutineMixType.WEEKEND_ENERGY
-            )
-            RoutineMixType.WEEKEND_ENERGY -> listOf(
-                RoutineMixType.AFTERNOON_MOMENTUM,
-                RoutineMixType.EVENING_UNWIND,
-                RoutineMixType.LATE_NIGHT_WIND_DOWN
-            )
-        }
-        return listOf(active) + complements
-    }
-
-    private fun curateTracksForRoutine(
-        type: RoutineMixType,
-        tracks: List<Track>,
-        snapshot: LibraryIntelligenceSnapshot,
-        affinities: Map<String, TrackAffinityBreakdown>,
-        nowMs: Long,
-        targetSize: Int
-    ): StableList<Track> {
-        val scored = tracks.map { track ->
-            val vec = snapshot.vectorsById[track.id]
-            val bpm = vec?.effectiveBpm ?: 96
-            val moodVec = vec?.moodVector ?: emptyMap()
-            val tags = vec?.smartMoodTags ?: StableList()
-            val affinity = affinities[track.id]?.score?.toDouble() ?: 0.45
-            val ageMs = if (track.lastPlayedAt > 0L) (nowMs - track.lastPlayedAt).coerceAtLeast(0L) else Long.MAX_VALUE
-
-            val routineFit = when (type) {
-                RoutineMixType.LATE_NIGHT_WIND_DOWN -> {
-                    val calmScore = (moodVec["calm"] ?: 0.35) * 0.42 +
-                        (moodVec["nocturnal"] ?: 0.35) * 0.33 +
-                        (moodVec["organic"] ?: 0.30) * 0.25
-                    val acousticBias = if (SmartMoodTag.ACOUSTIC in tags || SmartMoodTag.LATE_NIGHT in tags) 0.22 else 0.0
-                    val bpmBias = when {
-                        bpm <= 92 -> 0.30
-                        bpm <= 100 -> 0.22
-                        bpm <= 112 -> -0.06
-                        else -> -0.28
-                    }
-                    calmScore + acousticBias + bpmBias
-                }
-
-                RoutineMixType.MORNING_FOCUS -> {
-                    val focusScore = (moodVec["focused"] ?: 0.35) * 0.48 +
-                        (moodVec["minimal"] ?: 0.30) * 0.26 +
-                        (moodVec["organic"] ?: 0.30) * 0.26
-                    val grooveBias = when (bpm) {
-                        in 88..116 -> 0.24
-                        in 78..124 -> 0.10
-                        else -> -0.10
-                    }
-                    val lowVocalBias = if (vec?.isLowVocalFatigue == true) 0.22 else -0.04
-                    focusScore + grooveBias + lowVocalBias
-                }
-
-                RoutineMixType.AFTERNOON_MOMENTUM -> {
-                    val warmScore = (moodVec["warm"] ?: 0.35) * 0.40 +
-                        (moodVec["uplifting"] ?: 0.35) * 0.35 +
-                        (moodVec["focused"] ?: 0.30) * 0.25
-                    val midTempoBias = when (bpm) {
-                        in 96..122 -> 0.24
-                        in 86..130 -> 0.10
-                        else -> -0.08
-                    }
-                    val familiarity = when {
-                        track.isFavorite -> 0.16
-                        track.completedPlayCount >= 2 -> 0.12
-                        track.playCount == 0 -> 0.04
-                        else -> 0.06
-                    }
-                    warmScore + midTempoBias + familiarity
-                }
-
-                RoutineMixType.EVENING_UNWIND -> {
-                    val harmonicScore = (moodVec["warm"] ?: 0.35) * 0.44 +
-                        (moodVec["calm"] ?: 0.35) * 0.30 +
-                        (moodVec["organic"] ?: 0.30) * 0.26
-                    val soulfulBonus = if (SmartMoodTag.SOULFUL in tags || SmartMoodTag.ACOUSTIC in tags) 0.16 else 0.0
-                    val favoriteBonus = (if (track.isFavorite) 0.20 else 0.0) +
-                        (if (track.completedPlayCount >= 2) 0.10 else 0.0)
-                    val tempoBias = when (bpm) {
-                        in 74..108 -> 0.18
-                        in 109..118 -> 0.04
-                        else -> -0.14
-                    }
-                    harmonicScore + soulfulBonus + favoriteBonus + tempoBias
-                }
-
-                RoutineMixType.WEEKEND_ENERGY -> {
-                    val energyScore = (moodVec["energetic"] ?: 0.35) * 0.50 +
-                        (moodVec["uplifting"] ?: 0.35) * 0.35 +
-                        (moodVec["warm"] ?: 0.30) * 0.15
-                    val upbeatTagBonus = if (SmartMoodTag.UPBEAT in tags) 0.20 else 0.0
-                    val tempoBias = when {
-                        bpm >= 118 -> 0.28
-                        bpm >= 108 -> 0.16
-                        bpm >= 98 -> 0.02
-                        else -> -0.18
-                    }
-                    val rediscoveryBoost = when {
-                        track.playCount == 0 -> 0.18
-                        ageMs >= 7L * LocalMoodAndAffinityEngine.ONE_DAY_MS -> 0.15
-                        else -> 0.0
-                    }
-                    energyScore + upbeatTagBonus + tempoBias + rediscoveryBoost
-                }
-            }
-
-            val total = routineFit * 0.64 + affinity * 0.36
-            val safeTotal = if (total.isFinite()) total else 0.45
-            Triple(track, safeTotal, bpm)
-        }.sortedWith(
-            compareByDescending<Triple<Track, Double, Int>> { it.second }
-                .thenBy { it.first.id }
+        TrackIntelligenceCache.getOrBuildSnapshot(clean, engine)
+        return RecommendationCore.buildRoutineMixes(
+            tracks = clean,
+            signals = signals,
+            nowMs = nowMs,
+            localHourOfDay = localHourOfDay,
+            dayOfWeek = dayOfWeek,
+            maxTracksPerMix = maxTracksPerMix.coerceIn(1, RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE)
         )
-
-        val candidates = scored.map { it.first }
-        val capped = LocalMoodAndAffinityEngine.enforceArtistDiversityCap(
-            candidates = candidates,
-            maxPerArtist = LocalMoodAndAffinityEngine.MAX_SONGS_PER_ARTIST,
-            limit = targetSize
-        )
-
-        val filled = if (capped.size < targetSize) {
-            val seen = capped.mapTo(HashSet(targetSize * 2)) { it.id }
-            val extra = candidates.filter { it.id !in seen }.take(targetSize - capped.size)
-            capped + extra
-        } else {
-            capped
-        }
-
-        // For Evening Unwind, smooth tempo transitions by gentle BPM progression
-        val finalTracks = if (type == RoutineMixType.EVENING_UNWIND && filled.size >= 3) {
-            orderForSmoothTempoFlow(filled, snapshot)
-        } else {
-            filled
-        }
-
-        return finalTracks.toStableList()
-    }
-
-    private fun orderForSmoothTempoFlow(
-        tracks: List<Track>,
-        snapshot: LibraryIntelligenceSnapshot
-    ): List<Track> {
-        val remaining = ArrayList(tracks)
-        val ordered = ArrayList<Track>(tracks.size)
-        ordered.add(remaining.removeAt(0))
-        while (remaining.isNotEmpty()) {
-            val prev = ordered.last()
-            val prevBpm = snapshot.vectorsById[prev.id]?.effectiveBpm ?: 92
-            val prevArtist = LocalMoodAndAffinityEngine.normalizedArtistKey(prev.artist)
-            var bestIdx = 0
-            var bestCost = Int.MAX_VALUE
-            for (i in remaining.indices) {
-                val cand = remaining[i]
-                val bpm = snapshot.vectorsById[cand.id]?.effectiveBpm ?: 92
-                val artistPenalty = if (LocalMoodAndAffinityEngine.normalizedArtistKey(cand.artist) == prevArtist) 28 else 0
-                val cost = abs(bpm - prevBpm) + artistPenalty
-                if (cost < bestCost) {
-                    bestCost = cost
-                    bestIdx = i
-                }
-            }
-            ordered.add(remaining.removeAt(bestIdx))
-        }
-        return ordered
     }
 }

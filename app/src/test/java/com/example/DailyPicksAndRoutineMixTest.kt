@@ -244,7 +244,7 @@ class DailyPicksAndRoutineMixTest {
     }
 
     @Test
-    fun `HomeScreen renders PAUSED and HI-FI badge pair for MP3 track and places Daily Picks between Hero and Your Library without any refresh button`() {
+    fun `HomeScreen renders HI-FI badge above title without PAUSED label for MP3 track and places Daily Picks between Hero and Your Library without any refresh button`() {
         val mp3Track = Track(
             id = "mp3_1",
             title = "Midnight Skyline",
@@ -256,14 +256,16 @@ class DailyPicksAndRoutineMixTest {
             codec = "MP3",
             bitrateKbps = 320
         )
-        assertEquals("HI-FI AUDIO", resolveHomeHeroFormatBadge(mp3Track))
+        val aacTrack = mp3Track.copy(id = "aac_1", mimeType = "audio/mp4", codec = "AAC", bitrateKbps = 256)
+        assertEquals("HI-FI", resolveHomeHeroFormatBadge(mp3Track))
+        assertEquals("AAC", resolveHomeHeroFormatBadge(aacTrack))
         assertEquals("LOSSLESS", resolveHomeHeroFormatBadge(sampleRichLibrary().first()))
 
         val dailyPicks = sampleRichLibrary().take(6)
         var selectedPickId: String? = null
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.DARK) {
                 Box(modifier = Modifier.width(360.dp).height(800.dp)) {
                     HomeScreen(
                         uiState = HomeUiState(
@@ -292,21 +294,20 @@ class DailyPicksAndRoutineMixTest {
         }
         composeRule.waitForIdle()
 
-        // 1. Inline PAUSED status at top of metadata stack + HI-FI AUDIO tonal pill below artist (never raw "MP3")
-        val statusBounds = composeRule.onNodeWithTag("home_hero_status_badge", useUnmergedTree = true)
-            .assertIsDisplayed()
-            .getUnclippedBoundsInRoot()
-        val artistBounds = composeRule.onNodeWithTag("home_hero_artist", useUnmergedTree = true)
-            .assertIsDisplayed()
-            .getUnclippedBoundsInRoot()
+        // 1. Compact HI-FI badge above song title, with PAUSED/NOW PLAYING/MP3 completely absent
+        composeRule.onNodeWithTag("home_hero_status_badge", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithText("PAUSED", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithText("NOW PLAYING", useUnmergedTree = true).assertDoesNotExist()
+        composeRule.onNodeWithText("MP3", useUnmergedTree = true).assertDoesNotExist()
+
         val hifiBounds = composeRule.onNodeWithTag("home_hero_hifi_badge", useUnmergedTree = true)
             .assertIsDisplayed()
             .getUnclippedBoundsInRoot()
-        composeRule.onNodeWithText("PAUSED", useUnmergedTree = true).assertIsDisplayed()
-        composeRule.onNodeWithText("HI-FI AUDIO", useUnmergedTree = true).assertIsDisplayed()
-        composeRule.onNodeWithText("MP3", useUnmergedTree = true).assertDoesNotExist()
-        assertTrue("PAUSED must sit above artist", statusBounds.bottom.value < artistBounds.top.value)
-        assertTrue("HI-FI AUDIO pill must sit below artist", hifiBounds.top.value >= artistBounds.bottom.value - 1f)
+        val titleBounds = composeRule.onNodeWithTag("home_hero_title", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        composeRule.onNodeWithText("HI-FI", useUnmergedTree = true).assertIsDisplayed()
+        assertTrue("HI-FI badge must sit above song title", hifiBounds.bottom.value <= titleBounds.top.value + 1f)
 
         // 2. Daily Picks placed directly after Hero card and before Your Library
         val heroBounds = composeRule.onNodeWithTag("home_continue_card").getUnclippedBoundsInRoot()
@@ -359,7 +360,7 @@ class DailyPicksAndRoutineMixTest {
         var tunedEnergy: String? = null
 
         composeRule.setContent {
-            CadenceTheme(palette = ExpressivePalette.TERRACOTTA, appearanceMode = AppearanceMode.DARK) {
+            CadenceTheme(palette = ExpressivePalette.MATCHA, appearanceMode = AppearanceMode.DARK) {
                 Box(modifier = Modifier.width(360.dp).height(800.dp)) {
                     DiscoverScreen(
                         uiState = DiscoverUiState(
