@@ -1309,10 +1309,10 @@ class LocalLibraryScanner(
             ExpressivePalette.MATCHA,
             ExpressivePalette.COBALT,
             ExpressivePalette.CITRUS,
-            ExpressivePalette.ABYSSAL_TEAL,
-            ExpressivePalette.CRIMSON_EMBER,
-            ExpressivePalette.CYBER_VIOLET,
-            ExpressivePalette.DESERT_COPPER,
+            ExpressivePalette.ARCTIC_CYAN,
+            ExpressivePalette.PEACH_BLOSSOM,
+            ExpressivePalette.WISTERIA_MIST,
+            ExpressivePalette.SPEARMINT_FIZZ,
             ExpressivePalette.OBSIDIAN_MONO
         )
         return choices[(hash and 0x7FFFFFFF) % choices.size]

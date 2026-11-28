@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
@@ -1804,24 +1805,26 @@ class CadenceValidationTest {
     }
 
     @Test
-    fun `All 10 distinct palettes resolve hue-matched Light and Dark schemes fall back safely to Berry Velvet sync Bento summary and render unclipped at 360dp`() {
+    fun `All 10 distinct palettes resolve hue-matched Light and Dark schemes migrate legacy IDs safely sync Bento summary and render unclipped at 360dp`() {
         val expectedNames = listOf(
             "System",
             "Berry Velvet",
             "Matcha Grove",
             "Cobalt Pulse",
             "Citrus Pop",
-            "Abyssal Teal",
-            "Crimson Ember",
-            "Cyber Violet",
-            "Desert Copper",
+            "Arctic Cyan",
+            "Peach Blossom",
+            "Wisteria Mist",
+            "Spearmint Fizz",
             "Obsidian Mono"
         )
         assertEquals("Must have exactly 10 palettes (5 symmetrical rows of 2)", 10, ExpressivePalette.entries.size)
         assertEquals(expectedNames, ExpressivePalette.entries.map { it.displayName })
 
-        // Verify all overlapping/removed legacy palettes are gone and fall back safely to Berry Velvet
+        // Verify all removed legacy & repetitive palettes are gone and migrate safely to Matcha Grove
         val removedIds = listOf(
+            "abyssal_teal", "crimson_ember", "cyber_violet", "desert_copper",
+            "ABYSSAL_TEAL", "CRIMSON_EMBER",
             "sakura_coral", "amethyst_dusk", "glacier_mint",
             "nordic_slate", "solar_amber", "terracotta", "terracotta_sun",
             "TERRACOTTA", "unknown_corrupted_id"
@@ -1829,8 +1832,8 @@ class CadenceValidationTest {
         removedIds.forEach { legacyId ->
             assertTrue("Removed palette '$legacyId' must not exist", ExpressivePalette.entries.none { it.id == legacyId.lowercase() })
             assertEquals(
-                "Removed palette '$legacyId' must safely fall back to Berry Velvet",
-                ExpressivePalette.BERRY,
+                "Removed palette '$legacyId' must safely fall back to Matcha Grove",
+                ExpressivePalette.MATCHA,
                 ExpressivePalette.fromId(legacyId)
             )
         }
@@ -1838,9 +1841,9 @@ class CadenceValidationTest {
 
         val context = ApplicationProvider.getApplicationContext<Context>()
         val syncPrefs = context.getSharedPreferences(PreferencesRepository.SYNC_THEME_PREFS_NAME, Context.MODE_PRIVATE)
-        syncPrefs.edit().putString(PreferencesRepository.SYNC_KEY_PALETTE, "sakura_coral").commit()
+        syncPrefs.edit().putString(PreferencesRepository.SYNC_KEY_PALETTE, "abyssal_teal").commit()
         val upgradedSnapshot = PreferencesRepository.readStartupThemeSnapshot(context)
-        assertEquals(ExpressivePalette.BERRY, upgradedSnapshot.palette)
+        assertEquals(ExpressivePalette.MATCHA, upgradedSnapshot.palette)
 
         // Every curated palette provides distinct Light & Dark surfaces and accents
         val curatedPalettes = ExpressivePalette.entries.filter { it != ExpressivePalette.DYNAMIC }
@@ -1848,26 +1851,49 @@ class CadenceValidationTest {
         val distinctDarkBackgrounds = curatedPalettes.map { it.colorScheme(darkTheme = true).background }.toSet()
         val distinctLightPrimaries = curatedPalettes.map { it.colorScheme(darkTheme = false).primary }.toSet()
         val distinctDarkPrimaries = curatedPalettes.map { it.colorScheme(darkTheme = true).primary }.toSet()
-        assertEquals("All 9 curated light themes must have unique hue-tinted/achromatic backgrounds", 9, distinctLightBackgrounds.size)
-        assertEquals("All 9 curated dark themes must have unique hue-tinted/achromatic backgrounds", 9, distinctDarkBackgrounds.size)
+        assertEquals("All 9 curated light themes must have unique hue-tinted/monochrome backgrounds", 9, distinctLightBackgrounds.size)
+        assertEquals("All 9 curated dark themes must have unique hue-tinted/monochrome backgrounds", 9, distinctDarkBackgrounds.size)
         assertEquals("All 9 curated light themes must have unique primary colors", 9, distinctLightPrimaries.size)
         assertEquals("All 9 curated dark themes must have unique primary colors", 9, distinctDarkPrimaries.size)
 
-        // Verify Obsidian Mono is strictly achromatic (R == G == B across key surfaces and accents)
+        // Verify key anchors of the 4 new dual-accent palettes & 3 refreshed palettes
+        assertEquals(Color(0xFF67E8F9), ExpressivePalette.ARCTIC_CYAN.colorScheme(darkTheme = true).primary)
+        assertEquals(Color(0xFF006874), ExpressivePalette.ARCTIC_CYAN.colorScheme(darkTheme = false).primary)
+        assertEquals(Color(0xFFFF9E80), ExpressivePalette.PEACH_BLOSSOM.colorScheme(darkTheme = true).primary)
+        assertEquals(Color(0xFFB94324), ExpressivePalette.PEACH_BLOSSOM.colorScheme(darkTheme = false).primary)
+        assertEquals(Color(0xFFD8B4FE), ExpressivePalette.WISTERIA_MIST.colorScheme(darkTheme = true).primary)
+        assertEquals(Color(0xFF6D42B5), ExpressivePalette.WISTERIA_MIST.colorScheme(darkTheme = false).primary)
+        assertEquals(Color(0xFF5EEAD4), ExpressivePalette.SPEARMINT_FIZZ.colorScheme(darkTheme = true).primary)
+        assertEquals(Color(0xFF0F766E), ExpressivePalette.SPEARMINT_FIZZ.colorScheme(darkTheme = false).primary)
+        assertEquals(Color(0xFF5CD685), ExpressivePalette.MATCHA.colorScheme(darkTheme = true).primary)
+        assertEquals(Color(0xFF15803D), ExpressivePalette.MATCHA.colorScheme(darkTheme = false).primary)
+
+        // Verify Obsidian Mono stays crisp low-chroma onyx & platinum across Light and Dark modes
         val monoDark = ExpressivePalette.OBSIDIAN_MONO.colorScheme(darkTheme = true)
         val monoLight = ExpressivePalette.OBSIDIAN_MONO.colorScheme(darkTheme = false)
+        assertEquals(Color(0xFFF1F3F5), monoDark.primary)
+        assertEquals(Color(0xFF0C0D10), monoDark.surface)
+        assertEquals(Color(0xFF14161A), monoLight.primary)
+        assertEquals(Color(0xFFF8F9FA), monoLight.surface)
         listOf(
             monoDark.background, monoDark.surface, monoDark.surfaceContainerLow,
             monoDark.surfaceContainerHigh, monoDark.primary, monoDark.secondary,
             monoLight.background, monoLight.surface, monoLight.surfaceContainerLow,
             monoLight.surfaceContainerHigh, monoLight.primary, monoLight.secondary
         ).forEach { c ->
-            assertTrue("Obsidian Mono must be strictly achromatic (R==G==B), was $c", c.red == c.green && c.green == c.blue)
+            val maxChannel = maxOf(c.red, c.green, c.blue)
+            val minChannel = minOf(c.red, c.green, c.blue)
+            assertTrue(
+                "Obsidian Mono must remain crisp low-chroma onyx/platinum (spread <= 0.10f), was $c",
+                (maxChannel - minChannel) <= 0.10f
+            )
         }
 
-        // Verify Cobalt Pulse is pure sapphire blue (blue channel strictly dominant over red, zero purple)
+        // Verify Cobalt Pulse is crisp cobalt & aurora blue (blue channel strictly dominant over red)
         val cobaltLight = ExpressivePalette.COBALT.colorScheme(darkTheme = false)
         val cobaltDark = ExpressivePalette.COBALT.colorScheme(darkTheme = true)
+        assertEquals(Color(0xFF1D4ED8), cobaltLight.primary)
+        assertEquals(Color(0xFF60A5FA), cobaltDark.primary)
         assertTrue("Cobalt Pulse light primary must be pure blue", cobaltLight.primary.blue > cobaltLight.primary.red * 3f)
         assertTrue("Cobalt Pulse dark primary must be blue-dominant", cobaltDark.primary.blue > cobaltDark.primary.red)
 
@@ -1888,7 +1914,7 @@ class CadenceValidationTest {
         }
 
         // Render SettingsScreen at 360dp width with reactive palette state and verify Bento cards, search, pills, and live sync
-        var activePalette by mutableStateOf(ExpressivePalette.ABYSSAL_TEAL)
+        var activePalette by mutableStateOf(ExpressivePalette.ARCTIC_CYAN)
         composeRule.setContent {
             CadenceTheme(palette = activePalette, appearanceMode = AppearanceMode.DARK) {
                 Box(modifier = Modifier.width(360.dp).height(800.dp)) {
@@ -1928,7 +1954,7 @@ class CadenceValidationTest {
         assertEquals(0, composeRule.onAllNodesWithTag("settings_display_name_row").fetchSemanticsNodes().size)
         assertEquals(0, composeRule.onAllNodesWithText("Display Name", substring = true, ignoreCase = true).fetchSemanticsNodes().size)
         composeRule.onNodeWithTag("settings_appearance_card")
-            .assertTextContains("Abyssal Teal")
+            .assertTextContains("Arctic Cyan")
 
         // Verify pinned top bar sits cleanly above the scrolling list
         val topBarBounds = composeRule.onNodeWithTag("settings_top_bar").assertIsDisplayed().getUnclippedBoundsInRoot()

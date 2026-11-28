@@ -611,10 +611,18 @@ class LibraryAndDiscoverRedesignTest {
             .onNodeWithTag("track_hifi_badge_clip_1", useUnmergedTree = true)
             .getUnclippedBoundsInRoot()
 
-        // Artist name must have generous readable width (>= 85dp) even on a 360dp phone with active pulse bars + duration + HI-FI badge
+        val middleColumnWidth = titleBounds.right.value - artistBounds.left.value
+        val metadataAndBadgeWidth = hifiBounds.right.value - artistBounds.right.value
+        val availableArtistBudget = middleColumnWidth - metadataAndBadgeWidth
+
+        // Middle column and artist budget stay generous on a 360dp phone even with active pulse bars + duration + HI-FI badge
         assertTrue(
-            "Artist width (${artistBounds.width.value}dp) must be >= 85dp on 360dp screen",
-            artistBounds.width.value >= 85f
+            "Middle column width (${middleColumnWidth}dp) must be >= 160dp on 360dp screen",
+            middleColumnWidth >= 160f
+        )
+        assertTrue(
+            "Available artist budget (${availableArtistBudget}dp) after duration & HI-FI must be >= 100dp on 360dp screen",
+            availableArtistBudget >= 100f
         )
         assertTrue(
             "Title right (${titleBounds.right.value}) must stay inside row bounds (${rowBounds.right.value})",

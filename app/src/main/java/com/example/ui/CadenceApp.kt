@@ -1016,6 +1016,8 @@ private fun HomeTabHost(
     val homeState by viewModel.homeState.collectAsStateWithLifecycle()
     val onToggleFavorite = remember(viewModel) { viewModel::toggleFavorite }
     val onSeek = remember(viewModel) { viewModel::seekToFraction }
+    val onSkipNext = remember(viewModel) { { viewModel.nextTrack() } }
+    val onSkipPrevious = remember(viewModel) { { viewModel.previousTrack() } }
     HomeScreen(
         uiState = homeState,
         currentTrack = currentTrack,
@@ -1031,6 +1033,8 @@ private fun HomeTabHost(
         onScanDevice = onScanDevice,
         progressFlow = viewModel.progressState,
         onSeek = onSeek,
+        onSkipNext = onSkipNext,
+        onSkipPrevious = onSkipPrevious,
         onOpenSearch = onOpenLibrarySearch,
         onOpenLibraryShortcut = onOpenLibraryShortcut,
         isActiveTab = isActiveTab

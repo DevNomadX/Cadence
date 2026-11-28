@@ -554,8 +554,7 @@ internal fun LibrarySongsActionBar(
             )
             Surface(
                 shape = CircleShape,
-                color = countPillBg,
-                modifier = Modifier.testTag("library_songs_count_pill")
+                color = countPillBg
             ) {
                 Text(
                     text = trackCount.toString(),
@@ -566,7 +565,9 @@ internal fun LibrarySongsActionBar(
                     color = colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     softWrap = false,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                        .testTag("library_songs_count_pill")
                 )
             }
         }

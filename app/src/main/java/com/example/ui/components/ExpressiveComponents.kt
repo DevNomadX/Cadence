@@ -130,18 +130,23 @@ internal const val SCRUBBER_THUMB_LOBE_COUNT = 8
 internal const val SCRUBBER_THUMB_ROTATION_DURATION_MS = 6000
 internal const val SCRUBBER_TOUCH_HEIGHT_DP = 48f
 
-// Wide, edgeless 5-stop exponential light bloom behind the 8-lobe rotating thumb (zero hard ring / solid disk)
-internal const val SCRUBBER_BLOOM_BASE_RADIUS_DP = 28f
-internal const val SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP = 26f
-internal const val SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP = 32f
-internal const val SCRUBBER_BLOOM_PAUSED_RADIUS_DP = 22f
-internal const val SCRUBBER_BLOOM_DRAG_MAX_RADIUS_DP = 34f
-internal const val SCRUBBER_BLOOM_BREATH_DURATION_MS = 1800
-internal const val SCRUBBER_BLOOM_STOP_0_ALPHA = 0.46f
-internal const val SCRUBBER_BLOOM_STOP_1_ALPHA = 0.24f
-internal const val SCRUBBER_BLOOM_STOP_2_ALPHA = 0.09f
-internal const val SCRUBBER_BLOOM_STOP_3_ALPHA = 0.02f
-internal const val SCRUBBER_BLOOM_PAUSED_PEAK_ALPHA = 0.22f
+// Layer 1: Brighter, smooth-breathing 5-stop edgeless outer light bloom (playing only, fades completely off when paused)
+internal const val SCRUBBER_BLOOM_BASE_RADIUS_DP = 32f
+internal const val SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP = 30f
+internal const val SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP = 34f
+internal const val SCRUBBER_BLOOM_BREATH_DURATION_MS = 2000
+internal const val SCRUBBER_BLOOM_FADE_DURATION_MS = 400
+internal const val SCRUBBER_BLOOM_PEAK_MIN_ALPHA = 0.62f
+internal const val SCRUBBER_BLOOM_PEAK_MAX_ALPHA = 0.78f
+internal const val SCRUBBER_BLOOM_STOP_0_RATIO = 1.00f
+internal const val SCRUBBER_BLOOM_STOP_1_RATIO = 0.62f
+internal const val SCRUBBER_BLOOM_STOP_2_RATIO = 0.28f
+internal const val SCRUBBER_BLOOM_STOP_3_RATIO = 0.08f
+
+// Layer 2: Soft borderless translucent inner halo circle (always visible, expands gently while dragging)
+internal const val SCRUBBER_HALO_CIRCLE_RADIUS_DP = 13f
+internal const val SCRUBBER_HALO_CIRCLE_DRAG_RADIUS_DP = 15f
+internal const val SCRUBBER_HALO_CIRCLE_ALPHA = 0.22f
 
 /**
  * Builds an expressive multi-lobe scalloped/notched badge path centered at `(0f, 0f)` whose outer lobe
@@ -172,12 +177,14 @@ internal fun buildScallopedThumbPath(
 }
 
 /**
- * Material 3 Expressive organic wavy progress scrubber with an 8-lobe rotating scalloped seek badge
- * floating over an edgeless, wide 5-stop exponential light bloom (no hard borders or solid disks).
+ * Material 3 Expressive organic wavy progress scrubber with a 3-layer Canvas thumb composition:
+ * 1. Playing-only smooth-breathing 5-stop edgeless outer light bloom (30..34.dp, 0.62..0.78 alpha, fades completely off when paused)
+ * 2. Always-visible soft borderless translucent circle (13.dp radius, 15.dp while dragging, 0.22 alpha)
+ * 3. Crisp rotating 8-lobe scalloped seek thumb on top
  * Low-end optimized:
  * - Reads [progressProvider] and animation states strictly inside Canvas Draw phase (0 recompositions)
  * - Runs infinite rotation & bloom breathing strictly when `isPlaying && isResumed && !performanceMode`,
- *   freezing the thumb's exact rotation angle and settling to a calm 22.dp bloom when paused
+ *   freezing the thumb's exact rotation angle and fading the outer bloom completely off when paused
  * - Pre-builds the 8-lobe scalloped Path and 5-stop radial Brush once per radius/color (0 per-frame allocations)
  * - Preserves 48.dp touch hit-slop and crisp tap/drag-to-seek precision
  */
@@ -191,6 +198,7 @@ fun WavyExpressiveSlider(
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val unplayedTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)
+    val innerHaloColor = remember(primaryColor) { primaryColor.copy(alpha = SCRUBBER_HALO_CIRCLE_ALPHA) }
     val performanceMode = LocalPerformanceMode.current
     val isResumed = rememberIsLifecycleResumed()
     val density = LocalDensity.current
@@ -216,27 +224,30 @@ fun WavyExpressiveSlider(
         )
     }
 
-    // Smooth play/pause transition between calm 22dp/0.22f bloom and active 26..32dp/0.46f breathing bloom
-    val playingBlendState: State<Float> = if (performanceMode) {
+    // Smooth 400ms play-state multiplier: 1f while playing, fades completely to 0f when paused
+    val playingBloomMultiplierState: State<Float> = if (performanceMode) {
         remember(isPlaying) { mutableFloatStateOf(if (isPlaying) 1f else 0f) }
     } else {
         animateFloatAsState(
             targetValue = if (isPlaying) 1f else 0f,
-            animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
-            label = "scrubber_bloom_playing_blend"
+            animationSpec = tween(durationMillis = SCRUBBER_BLOOM_FADE_DURATION_MS, easing = FastOutSlowInEasing),
+            label = "scrubber_bloom_playing_multiplier"
         )
     }
 
-    val dragBoostDpState: State<Float> = if (performanceMode) {
-        remember(isDragging) { mutableFloatStateOf(if (isDragging) 3f else 0f) }
+    // Layer 2 inner translucent halo radius: 13.dp at rest, expanding gently to 15.dp while dragging
+    val innerHaloRadiusDpState: State<Float> = if (performanceMode) {
+        remember(isDragging) {
+            mutableFloatStateOf(if (isDragging) SCRUBBER_HALO_CIRCLE_DRAG_RADIUS_DP else SCRUBBER_HALO_CIRCLE_RADIUS_DP)
+        }
     } else {
         animateFloatAsState(
-            targetValue = if (isDragging) 3f else 0f,
+            targetValue = if (isDragging) SCRUBBER_HALO_CIRCLE_DRAG_RADIUS_DP else SCRUBBER_HALO_CIRCLE_RADIUS_DP,
             animationSpec = spring(
                 dampingRatio = Spring.DampingRatioMediumBouncy,
                 stiffness = Spring.StiffnessMedium
             ),
-            label = "scrubber_bloom_drag_boost"
+            label = "scrubber_inner_halo_radius_dp"
         )
     }
 
@@ -255,11 +266,12 @@ fun WavyExpressiveSlider(
         remember { mutableFloatStateOf(0f) }
     }
 
-    // Smooth 6s/rev thumb rotation + gentle 1800ms 26..32dp breathing bloom — active ONLY while playing
+    // Smooth 6s/rev thumb rotation + calm 2000ms breathing phase (30..34.dp, 0.62..0.78 peak alpha) — active ONLY while playing
     val frozenThumbAngleDeg = remember { mutableFloatStateOf(0f) }
+    val frozenBreathFraction = remember { mutableFloatStateOf(0.5f) }
     val rotationBaseAngleDeg = remember(shouldAnimateThumb) { frozenThumbAngleDeg.floatValue }
     val thumbRotationDeltaState: State<Float>
-    val bloomBreathRadiusDpState: State<Float>
+    val bloomBreathFractionState: State<Float>
     if (shouldAnimateThumb) {
         val thumbTransition = rememberInfiniteTransition(label = "scrubber_thumb_motion")
         thumbRotationDeltaState = thumbTransition.animateFloat(
@@ -271,18 +283,18 @@ fun WavyExpressiveSlider(
             ),
             label = "thumb_rotation_deg"
         )
-        bloomBreathRadiusDpState = thumbTransition.animateFloat(
-            initialValue = SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP,
-            targetValue = SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP,
+        bloomBreathFractionState = thumbTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
             animationSpec = infiniteRepeatable(
                 animation = tween(durationMillis = SCRUBBER_BLOOM_BREATH_DURATION_MS, easing = FastOutSlowInEasing),
                 repeatMode = RepeatMode.Reverse
             ),
-            label = "thumb_bloom_radius_dp"
+            label = "thumb_bloom_breath_fraction"
         )
     } else {
         thumbRotationDeltaState = remember { mutableFloatStateOf(0f) }
-        bloomBreathRadiusDpState = remember { mutableFloatStateOf(SCRUBBER_BLOOM_BASE_RADIUS_DP) }
+        bloomBreathFractionState = remember { mutableFloatStateOf(frozenBreathFraction.floatValue) }
     }
 
     val wavePath = remember { Path() }
@@ -293,13 +305,13 @@ fun WavyExpressiveSlider(
     val scallopedThumbPath = remember(coreRadiusPx) {
         buildScallopedThumbPath(outerRadiusPx = coreRadiusPx, lobes = SCRUBBER_THUMB_LOBE_COUNT)
     }
-    // Single cached 5-stop exponential radial gradient melting invisibly to transparent with zero outer ring edge
+    // Single cached 5-stop edgeless radial gradient; scaled at draw time by (peakAlpha * playMultiplier) with 0 allocations
     val cachedBloomBrush = remember(primaryColor, baseBloomRadiusPx) {
         Brush.radialGradient(
-            0.00f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_0_ALPHA),
-            0.28f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_1_ALPHA),
-            0.55f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_2_ALPHA),
-            0.80f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_3_ALPHA),
+            0.00f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_0_RATIO),
+            0.30f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_1_RATIO),
+            0.58f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_2_RATIO),
+            0.82f to primaryColor.copy(alpha = SCRUBBER_BLOOM_STOP_3_RATIO),
             1.00f to Color.Transparent,
             center = Offset.Zero,
             radius = baseBloomRadiusPx
@@ -424,29 +436,42 @@ fun WavyExpressiveSlider(
 
             val thumbCenter = Offset(activeEndX, centerY)
 
-            // 1. Wide, edgeless 5-stop exponential radial light bloom (no hard ring or solid disk)
-            val playingBlend = playingBlendState.value
-            val activeRadiusDp = bloomBreathRadiusDpState.value
-            val bloomRadiusDp = (
-                SCRUBBER_BLOOM_PAUSED_RADIUS_DP +
-                    (activeRadiusDp - SCRUBBER_BLOOM_PAUSED_RADIUS_DP) * playingBlend +
-                    dragBoostDpState.value
-                ).coerceAtMost(SCRUBBER_BLOOM_DRAG_MAX_RADIUS_DP)
-            val pausedAlphaScale = SCRUBBER_BLOOM_PAUSED_PEAK_ALPHA / SCRUBBER_BLOOM_STOP_0_ALPHA
-            val bloomAlphaScale = (pausedAlphaScale + (1f - pausedAlphaScale) * playingBlend).coerceIn(0f, 1f)
-            val bloomScale = bloomRadiusDp / SCRUBBER_BLOOM_BASE_RADIUS_DP
-            translate(left = thumbCenter.x, top = thumbCenter.y) {
-                drawScopeScale(scale = bloomScale, pivot = Offset.Zero) {
-                    drawCircle(
-                        brush = cachedBloomBrush,
-                        radius = baseBloomRadiusPx,
-                        center = Offset.Zero,
-                        alpha = bloomAlphaScale
-                    )
+            // Layer 1: Brighter, smooth-breathing 5-stop edgeless outer glow (playing only, fades completely off when paused)
+            val playMultiplier = playingBloomMultiplierState.value
+            val breathFraction = if (shouldAnimateThumb) {
+                val nextBreath = bloomBreathFractionState.value
+                frozenBreathFraction.floatValue = nextBreath
+                nextBreath
+            } else {
+                frozenBreathFraction.floatValue
+            }
+            val peakAlpha = SCRUBBER_BLOOM_PEAK_MIN_ALPHA +
+                (SCRUBBER_BLOOM_PEAK_MAX_ALPHA - SCRUBBER_BLOOM_PEAK_MIN_ALPHA) * breathFraction
+            val effectiveBloomAlpha = (peakAlpha * playMultiplier).coerceIn(0f, 1f)
+            if (effectiveBloomAlpha > 0.004f) {
+                val bloomRadiusDp = SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP +
+                    (SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP - SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP) * breathFraction
+                val bloomScale = bloomRadiusDp / SCRUBBER_BLOOM_BASE_RADIUS_DP
+                translate(left = thumbCenter.x, top = thumbCenter.y) {
+                    drawScopeScale(scale = bloomScale, pivot = Offset.Zero) {
+                        drawCircle(
+                            brush = cachedBloomBrush,
+                            radius = baseBloomRadiusPx,
+                            center = Offset.Zero,
+                            alpha = effectiveBloomAlpha
+                        )
+                    }
                 }
             }
 
-            // 2. Crisp, unblurred rotating 8-lobe scalloped badge on top of the bloom (6s/rev playing, frozen paused)
+            // Layer 2: Soft borderless translucent inner circle (always visible; 13.dp rest, 15.dp dragging, 0.22 alpha)
+            drawCircle(
+                color = innerHaloColor,
+                radius = innerHaloRadiusDpState.value.dp.toPx(),
+                center = thumbCenter
+            )
+
+            // Layer 3: Crisp, unblurred rotating 8-lobe scalloped thumb on top (6s/rev playing, frozen paused)
             val currentAngleDeg = if (shouldAnimateThumb) {
                 val nextAngle = (rotationBaseAngleDeg + thumbRotationDeltaState.value) % 360f
                 frozenThumbAngleDeg.floatValue = nextAngle

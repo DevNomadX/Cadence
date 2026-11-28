@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -909,6 +910,7 @@ private fun PaletteSwatchCard(
         MaterialTheme.colorScheme.surfaceContainerLow
     }
     val outlineBorderColor = MaterialTheme.colorScheme.outlineVariant.opaqueOver(bg, 0.50f)
+    val swatchDotBorderColor = MaterialTheme.colorScheme.outlineVariant.opaqueOver(cardBg, 0.35f)
 
     Surface(
         shape = RoundedCornerShape(22.dp),
@@ -939,18 +941,21 @@ private fun PaletteSwatchCard(
                             .size(20.dp)
                             .clip(CircleShape)
                             .background(swatchPrimary)
+                            .border(0.5.dp, swatchDotBorderColor, CircleShape)
                     )
                     Box(
                         modifier = Modifier
                             .size(20.dp)
                             .clip(CircleShape)
                             .background(swatchSecondary)
+                            .border(0.5.dp, swatchDotBorderColor, CircleShape)
                     )
                     Box(
                         modifier = Modifier
                             .size(20.dp)
                             .clip(CircleShape)
                             .background(swatchTertiary)
+                            .border(0.5.dp, swatchDotBorderColor, CircleShape)
                     )
                 }
 

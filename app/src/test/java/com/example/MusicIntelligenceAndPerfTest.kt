@@ -80,14 +80,18 @@ import com.example.ui.PersistentTabHost
 import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
 import com.example.ui.components.SCRUBBER_BLOOM_BASE_RADIUS_DP
 import com.example.ui.components.SCRUBBER_BLOOM_BREATH_DURATION_MS
-import com.example.ui.components.SCRUBBER_BLOOM_PAUSED_PEAK_ALPHA
-import com.example.ui.components.SCRUBBER_BLOOM_PAUSED_RADIUS_DP
+import com.example.ui.components.SCRUBBER_BLOOM_FADE_DURATION_MS
+import com.example.ui.components.SCRUBBER_BLOOM_PEAK_MAX_ALPHA
+import com.example.ui.components.SCRUBBER_BLOOM_PEAK_MIN_ALPHA
 import com.example.ui.components.SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP
 import com.example.ui.components.SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP
-import com.example.ui.components.SCRUBBER_BLOOM_STOP_0_ALPHA
-import com.example.ui.components.SCRUBBER_BLOOM_STOP_1_ALPHA
-import com.example.ui.components.SCRUBBER_BLOOM_STOP_2_ALPHA
-import com.example.ui.components.SCRUBBER_BLOOM_STOP_3_ALPHA
+import com.example.ui.components.SCRUBBER_BLOOM_STOP_0_RATIO
+import com.example.ui.components.SCRUBBER_BLOOM_STOP_1_RATIO
+import com.example.ui.components.SCRUBBER_BLOOM_STOP_2_RATIO
+import com.example.ui.components.SCRUBBER_BLOOM_STOP_3_RATIO
+import com.example.ui.components.SCRUBBER_HALO_CIRCLE_ALPHA
+import com.example.ui.components.SCRUBBER_HALO_CIRCLE_DRAG_RADIUS_DP
+import com.example.ui.components.SCRUBBER_HALO_CIRCLE_RADIUS_DP
 import com.example.ui.components.SCRUBBER_THUMB_CORE_DP
 import com.example.ui.components.SCRUBBER_THUMB_LOBE_COUNT
 import com.example.ui.components.SCRUBBER_THUMB_ROTATION_DURATION_MS
@@ -1096,11 +1100,13 @@ class MusicIntelligenceAndPerfTest {
         assertEquals(14f, (chevronBounds.right - chevronBounds.left).value, 1f)
         assertEquals(14f, (chevronBounds.bottom - chevronBounds.top).value, 1f)
 
-        // Verify 8-lobe rotating thumb + edgeless 5-stop light bloom scrubber specs, 48dp touch height, and drag seek
+        // Verify 3-layer thumb composition (outer glow + borderless translucent halo + 8-lobe rotating thumb), 48dp touch height, and drag seek
         assertEquals(3f, SCRUBBER_UNPLAYED_TRACK_DP, 0.01f)
         assertEquals(14f, SCRUBBER_THUMB_CORE_DP, 0.01f)
-        assertEquals(28f, SCRUBBER_BLOOM_BASE_RADIUS_DP, 0.01f)
-        assertEquals(22f, SCRUBBER_BLOOM_PAUSED_RADIUS_DP, 0.01f)
+        assertEquals(32f, SCRUBBER_BLOOM_BASE_RADIUS_DP, 0.01f)
+        assertEquals(13f, SCRUBBER_HALO_CIRCLE_RADIUS_DP, 0.01f)
+        assertEquals(15f, SCRUBBER_HALO_CIRCLE_DRAG_RADIUS_DP, 0.01f)
+        assertEquals(0.22f, SCRUBBER_HALO_CIRCLE_ALPHA, 0.001f)
         assertEquals(8, SCRUBBER_THUMB_LOBE_COUNT)
         assertEquals(6000, SCRUBBER_THUMB_ROTATION_DURATION_MS)
         assertEquals(48f, SCRUBBER_TOUCH_HEIGHT_DP, 0.01f)
@@ -1201,35 +1207,39 @@ class MusicIntelligenceAndPerfTest {
             }
         }
 
-        // Verify edgeless 5-stop exponential light bloom specs for both playing and paused states
-        assertEquals(28f, SCRUBBER_BLOOM_BASE_RADIUS_DP, 0.01f)
-        assertEquals(26f, SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP, 0.01f)
-        assertEquals(32f, SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP, 0.01f)
-        assertEquals(22f, SCRUBBER_BLOOM_PAUSED_RADIUS_DP, 0.01f)
-        assertEquals(1800, SCRUBBER_BLOOM_BREATH_DURATION_MS)
-        assertEquals(0.46f, SCRUBBER_BLOOM_STOP_0_ALPHA, 0.001f)
-        assertEquals(0.24f, SCRUBBER_BLOOM_STOP_1_ALPHA, 0.001f)
-        assertEquals(0.09f, SCRUBBER_BLOOM_STOP_2_ALPHA, 0.001f)
-        assertEquals(0.02f, SCRUBBER_BLOOM_STOP_3_ALPHA, 0.001f)
-        assertEquals(0.22f, SCRUBBER_BLOOM_PAUSED_PEAK_ALPHA, 0.001f)
+        // Verify 3-layer thumb specs: Layer 1 brighter playing-only 5-stop bloom + Layer 2 always-visible borderless circle
+        assertEquals(32f, SCRUBBER_BLOOM_BASE_RADIUS_DP, 0.01f)
+        assertEquals(30f, SCRUBBER_BLOOM_PLAYING_MIN_RADIUS_DP, 0.01f)
+        assertEquals(34f, SCRUBBER_BLOOM_PLAYING_MAX_RADIUS_DP, 0.01f)
+        assertEquals(2000, SCRUBBER_BLOOM_BREATH_DURATION_MS)
+        assertEquals(400, SCRUBBER_BLOOM_FADE_DURATION_MS)
+        assertEquals(0.62f, SCRUBBER_BLOOM_PEAK_MIN_ALPHA, 0.001f)
+        assertEquals(0.78f, SCRUBBER_BLOOM_PEAK_MAX_ALPHA, 0.001f)
+        assertEquals(1.00f, SCRUBBER_BLOOM_STOP_0_RATIO, 0.001f)
+        assertEquals(0.62f, SCRUBBER_BLOOM_STOP_1_RATIO, 0.001f)
+        assertEquals(0.28f, SCRUBBER_BLOOM_STOP_2_RATIO, 0.001f)
+        assertEquals(0.08f, SCRUBBER_BLOOM_STOP_3_RATIO, 0.001f)
+        assertEquals(13f, SCRUBBER_HALO_CIRCLE_RADIUS_DP, 0.01f)
+        assertEquals(15f, SCRUBBER_HALO_CIRCLE_DRAG_RADIUS_DP, 0.01f)
+        assertEquals(0.22f, SCRUBBER_HALO_CIRCLE_ALPHA, 0.001f)
         assertTrue(
-            "5-stop exponential bloom alphas must strictly decrease toward transparent",
-            SCRUBBER_BLOOM_STOP_0_ALPHA > SCRUBBER_BLOOM_STOP_1_ALPHA &&
-                SCRUBBER_BLOOM_STOP_1_ALPHA > SCRUBBER_BLOOM_STOP_2_ALPHA &&
-                SCRUBBER_BLOOM_STOP_2_ALPHA > SCRUBBER_BLOOM_STOP_3_ALPHA &&
-                SCRUBBER_BLOOM_STOP_3_ALPHA > 0f
+            "5-stop edgeless bloom stop ratios must strictly decrease toward transparent",
+            SCRUBBER_BLOOM_STOP_0_RATIO > SCRUBBER_BLOOM_STOP_1_RATIO &&
+                SCRUBBER_BLOOM_STOP_1_RATIO > SCRUBBER_BLOOM_STOP_2_RATIO &&
+                SCRUBBER_BLOOM_STOP_2_RATIO > SCRUBBER_BLOOM_STOP_3_RATIO &&
+                SCRUBBER_BLOOM_STOP_3_RATIO > 0f
         )
 
-        // Playing state: advance clock across rotation & 1800ms bloom breath frames cleanly
-        composeRule.mainClock.advanceTimeBy(1800L)
+        // Playing state: advance clock across rotation & 2000ms bloom breath frames cleanly
+        composeRule.mainClock.advanceTimeBy(2000L)
         composeRule.onNodeWithTag("playback_scrubber").assertIsDisplayed()
         composeRule.onNodeWithTag("playback_scrubber_canvas").assertIsDisplayed()
         val playingBounds = composeRule.onNodeWithTag("playback_scrubber").getUnclippedBoundsInRoot()
         assertEquals(48f, (playingBounds.bottom - playingBounds.top).value, 1.5f)
         composeRule.onNodeWithTag("playback_scrubber").performTouchInput { swipeRight() }
-        assertNotNull("Seek drag must work while playing with active rotation & edgeless light bloom", soughtFraction)
+        assertNotNull("Seek drag must work while playing with active rotation & outer light bloom", soughtFraction)
 
-        // Transition to paused state: settles calmly to 22dp radius / 0.22f peak alpha bloom
+        // Transition to paused state: 400ms fade completely turns off outer bloom while inner borderless translucent circle remains
         soughtFraction = null
         playing = false
         composeRule.mainClock.advanceTimeBy(500L)

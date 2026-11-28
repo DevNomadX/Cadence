@@ -422,6 +422,8 @@ fun HomeScreen(
     onScanDevice: () -> Unit,
     progressFlow: StateFlow<PlaybackProgress> = IdleHomeProgressFlow,
     onSeek: (Float) -> Unit = {},
+    onSkipNext: () -> Unit = {},
+    onSkipPrevious: () -> Unit = {},
     onOpenSearch: () -> Unit = {},
     onOpenLibraryShortcut: (LibraryCategory) -> Unit = {},
     isActiveTab: Boolean = true,

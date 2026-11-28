@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -244,6 +245,7 @@ private fun OnboardingPaletteCard(
     } else {
         colorScheme.outlineVariant.opaqueOver(bg, 0.50f)
     }
+    val swatchDotBorderColor = colorScheme.outlineVariant.opaqueOver(cardBg, 0.35f)
 
     Surface(
         onClick = onClick,
@@ -256,7 +258,7 @@ private fun OnboardingPaletteCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 11.dp),
-            verticalArrangement = Arrangement.spacedBy(9.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -269,18 +271,21 @@ private fun OnboardingPaletteCard(
                             .size(18.dp)
                             .clip(CircleShape)
                             .background(swatchPrimary)
+                            .border(0.5.dp, swatchDotBorderColor, CircleShape)
                     )
                     Box(
                         modifier = Modifier
                             .size(18.dp)
                             .clip(CircleShape)
                             .background(swatchSecondary)
+                            .border(0.5.dp, swatchDotBorderColor, CircleShape)
                     )
                     Box(
                         modifier = Modifier
                             .size(18.dp)
                             .clip(CircleShape)
                             .background(swatchTertiary)
+                            .border(0.5.dp, swatchDotBorderColor, CircleShape)
                     )
                 }
 
@@ -302,18 +307,39 @@ private fun OnboardingPaletteCard(
                 }
             }
 
-            Text(
-                text = palette.displayName,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = if (selected) colorScheme.onPrimaryContainer else colorScheme.onSurface,
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("onboarding_palette_title_${palette.id}")
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = palette.displayName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = if (selected) colorScheme.onPrimaryContainer else colorScheme.onSurface,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("onboarding_palette_title_${palette.id}")
+                )
+                Text(
+                    text = palette.tagline,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 10.5.sp,
+                        lineHeight = 14.sp,
+                        letterSpacing = (-0.1).sp
+                    ),
+                    color = if (selected) {
+                        colorScheme.onPrimaryContainer.opaqueOver(cardBg, 0.78f)
+                    } else {
+                        colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("onboarding_palette_tagline_${palette.id}")
+                )
+            }
         }
     }
 }

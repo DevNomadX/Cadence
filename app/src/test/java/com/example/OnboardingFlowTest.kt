@@ -154,27 +154,29 @@ class OnboardingFlowTest {
         composeRule.onNodeWithTag("onboarding_appearance_dark").performClick()
         composeRule.waitForIdle()
 
-        // Verify all 10 palettes render cleanly without clipping at 360dp and pick Cobalt Pulse live
+        // Verify all 10 synced palettes (titles + 1-line subtitles) render cleanly without clipping at 360dp
         for (palette in ExpressivePalette.entries) {
             composeRule.onNodeWithTag("onboarding_step_2")
                 .performScrollToNode(hasTestTag("onboarding_palette_${palette.id}"))
             composeRule.waitForIdle()
             composeRule.onNodeWithTag("onboarding_palette_title_${palette.id}", useUnmergedTree = true)
                 .assertSingleLineUnclipped("onboarding_palette_title_${palette.id}")
+            composeRule.onNodeWithTag("onboarding_palette_tagline_${palette.id}", useUnmergedTree = true)
+                .assertSingleLineUnclipped("onboarding_palette_tagline_${palette.id}")
         }
 
         composeRule.onNodeWithTag("onboarding_step_2")
-            .performScrollToNode(hasTestTag("onboarding_palette_cobalt"))
+            .performScrollToNode(hasTestTag("onboarding_palette_arctic_cyan"))
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("onboarding_palette_cobalt").performClick()
+        composeRule.onNodeWithTag("onboarding_palette_arctic_cyan").performClick()
         composeRule.waitForIdle()
 
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             Shadows.shadowOf(Looper.getMainLooper()).idle()
-            viewModel.themeState.value.palette == ExpressivePalette.COBALT &&
+            viewModel.themeState.value.palette == ExpressivePalette.ARCTIC_CYAN &&
                 viewModel.themeState.value.appearanceMode == AppearanceMode.DARK
         }
-        assertEquals(ExpressivePalette.COBALT, viewModel.themeState.value.palette)
+        assertEquals(ExpressivePalette.ARCTIC_CYAN, viewModel.themeState.value.palette)
         assertEquals(AppearanceMode.DARK, viewModel.themeState.value.appearanceMode)
 
         // Advance Step 2 -> Step 3

@@ -262,6 +262,7 @@ class DailyPicksAndRoutineMixTest {
         assertEquals("LOSSLESS", resolveHomeHeroFormatBadge(sampleRichLibrary().first()))
 
         val dailyPicks = sampleRichLibrary().take(6)
+        val losslessHeroTrack = dailyPicks.first()
         var selectedPickId: String? = null
 
         composeRule.setContent {
@@ -271,13 +272,13 @@ class DailyPicksAndRoutineMixTest {
                         uiState = HomeUiState(
                             allTracks = (listOf(mp3Track) + dailyPicks).toStableList(),
                             dailyPicks = dailyPicks.toStableList(),
-                            recentlyPlayed = listOf(mp3Track).toStableList(),
+                            recentlyPlayed = listOf(losslessHeroTrack).toStableList(),
                             recentlyAdded = dailyPicks.toStableList(),
-                            likedTracks = listOf(mp3Track).toStableList(),
+                            likedTracks = listOf(losslessHeroTrack).toStableList(),
                             mostPlayedTracks = dailyPicks.toStableList(),
                             isInitialLibraryLoaded = true
                         ),
-                        currentTrack = mp3Track,
+                        currentTrack = losslessHeroTrack,
                         isPlaying = false,
                         artworkShape = ExpressiveArtworkShape.SCALLOP,
                         onExpandNowPlaying = {},
@@ -294,7 +295,7 @@ class DailyPicksAndRoutineMixTest {
         }
         composeRule.waitForIdle()
 
-        // 1. Compact HI-FI badge above song title, with PAUSED/NOW PLAYING/MP3 completely absent
+        // 1. Compact HI-FI badge above song title for lossless/hi-res track, with PAUSED/NOW PLAYING/MP3 completely absent
         composeRule.onNodeWithTag("home_hero_status_badge", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithText("PAUSED", useUnmergedTree = true).assertDoesNotExist()
         composeRule.onNodeWithText("NOW PLAYING", useUnmergedTree = true).assertDoesNotExist()

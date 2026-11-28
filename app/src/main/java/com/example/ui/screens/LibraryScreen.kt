@@ -3,6 +3,8 @@ package com.example.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,12 +64,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -91,7 +97,6 @@ import com.example.ui.components.AudioPulseBars
 import com.example.ui.components.ExpressiveArtworkFrame
 import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
 import com.example.ui.components.FastListThumbnailShape
-import com.example.ui.components.HiFiQualityBadge
 import com.example.ui.components.ImportSourcesSheetContent
 import com.example.ui.components.PlaylistNameDialog
 import com.example.ui.components.TrackActionsSheetContent
@@ -118,6 +123,7 @@ private val GroupRowShape = RoundedCornerShape(22.dp)
 private val EmptyCardShape = RoundedCornerShape(28.dp)
 private val ScanBannerShape = RoundedCornerShape(20.dp)
 private val ModalSheetShape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
+private val CompactHiFiShape = RoundedCornerShape(5.dp)
 
 @OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
@@ -1348,8 +1354,7 @@ private fun LibraryTrackRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = 10.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            verticalAlignment = Alignment.CenterVertically
         ) {
             ExpressiveArtworkFrame(
                 track = track,
@@ -1361,6 +1366,8 @@ private fun LibraryTrackRow(
                 showHairlineBorder = true,
                 modifier = Modifier.size(48.dp)
             )
+
+            Spacer(modifier = Modifier.width(10.dp))
 
             Column(
                 modifier = Modifier.weight(1f),
@@ -1386,7 +1393,6 @@ private fun LibraryTrackRow(
                         ),
                         color = if (isCurrent) colorScheme.primary else colorScheme.onSurface,
                         maxLines = 1,
-                        softWrap = false,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .weight(1f)
@@ -1397,7 +1403,7 @@ private fun LibraryTrackRow(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
                         text = track.artist.ifBlank { "Unknown Artist" },
@@ -1408,7 +1414,6 @@ private fun LibraryTrackRow(
                             colorScheme.onSurfaceVariant
                         },
                         maxLines = 1,
-                        softWrap = false,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .weight(1f, fill = false)
@@ -1416,7 +1421,10 @@ private fun LibraryTrackRow(
                     )
                     Text(
                         text = "• ${formatDuration(track.durationMs)}",
-                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFontFamily),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = MonoFontFamily,
+                            fontSize = 10.5.sp
+                        ),
                         color = if (isCurrent) {
                             colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
                         } else {
@@ -1426,24 +1434,46 @@ private fun LibraryTrackRow(
                         softWrap = false
                     )
                     if (track.isHiFi) {
-                        HiFiQualityBadge(
-                            label = hiFiLabel,
-                            containerColor = hiFiBadgeColor,
-                            contentColor = hiFiBadgeTextColor,
-                            modifier = Modifier.testTag("track_hifi_badge_${track.id}")
-                        )
+                        val hifiCd = stringResource(R.string.badge_hifi_cd, hiFiLabel)
+                        Box(
+                            modifier = Modifier
+                                .background(color = hiFiBadgeColor, shape = CompactHiFiShape)
+                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                                .semantics(mergeDescendants = true) {
+                                    contentDescription = hifiCd
+                                }
+                                .testTag("track_hifi_badge_${track.id}"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = hiFiLabel,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 9.sp,
+                                    lineHeight = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.3.sp
+                                ),
+                                color = hiFiBadgeTextColor,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.width(4.dp))
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                IconButton(
-                    onClick = favAction,
+                Box(
+                    contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(width = 38.dp, height = 48.dp)
+                        .size(width = 36.dp, height = 48.dp)
+                        .clip(CircleShape)
+                        .clickable(role = Role.Button, onClick = favAction)
                         .testTag("track_favorite_${track.id}")
                 ) {
                     Icon(
@@ -1458,10 +1488,12 @@ private fun LibraryTrackRow(
                     )
                 }
 
-                IconButton(
-                    onClick = moreAction,
+                Box(
+                    contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(width = 36.dp, height = 48.dp)
+                        .size(width = 34.dp, height = 48.dp)
+                        .clip(CircleShape)
+                        .clickable(role = Role.Button, onClick = moreAction)
                         .testTag("track_more_${track.id}")
                 ) {
                     Icon(
