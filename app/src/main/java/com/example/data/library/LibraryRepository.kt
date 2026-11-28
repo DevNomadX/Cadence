@@ -12,15 +12,12 @@ import com.example.data.TrackGroup
 import com.example.data.db.CadenceDatabase
 import com.example.data.db.PlaylistEntity
 import com.example.data.db.PlaylistTrackEntity
-import com.example.data.intelligence.LocalMoodAndAffinityEngine
 import com.example.data.intelligence.PlaybackSignal
 import com.example.data.intelligence.RawPlaybackEvent
 import com.example.data.intelligence.RecommendationCore
 import com.example.data.intelligence.RecommendationSnapshotRepository
 import com.example.data.intelligence.SignalProcessor
 import com.example.data.intelligence.SignalType
-import com.example.data.intelligence.SmartMoodTag
-import com.example.data.intelligence.TimeOfDayCategory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -150,42 +147,6 @@ class LibraryRepository(
             trackDao.syncFolderTracks(upserts = emptyList(), deleteIds = toRemove)
         }
         toRemove.size
-    }
-
-    private suspend fun backfillMissingTrackIntelligence() = withContext(Dispatchers.IO) {
-        val allEntities = trackDao.getAllTracksOnce()
-        val pending = allEntities.filter { it.moodTags.isBlank() }
-        if (pending.isEmpty()) return@withContext
-        val nowMs = System.currentTimeMillis()
-        val timeOfDay = TimeOfDayCategory.fromHour(LocalMoodAndAffinityEngine.currentLocalHour(nowMs))
-        val maxPlays = allEntities.maxOfOrNull { it.playCount.coerceAtLeast(0) }?.coerceAtLeast(1) ?: 1
-
-        for (entity in pending) {
-            val colorArgb = if (entity.artworkColorArgb != 0) {
-                entity.artworkColorArgb
-            } else {
-                artworkCache.extractDominantColorFromPath(entity.artworkPath)
-            }
-            val (encodedTags, score) = withContext(Dispatchers.Default) {
-                val baseTrack = entity.toDomain().copy(artworkColorArgb = colorArgb)
-                val tags = LocalMoodAndAffinityEngine.classifyTrackMoods(baseTrack)
-                val encoded = SmartMoodTag.encode(tags)
-                val enriched = baseTrack.copy(moodTags = SmartMoodTag.decode(encoded))
-                val affinity = RecommendationCore.computeAffinityBreakdown(
-                    track = enriched,
-                    nowMs = nowMs,
-                    timeOfDay = timeOfDay,
-                    maxLibraryPlays = maxPlays
-                ).score
-                encoded to affinity
-            }
-            trackDao.updateTrackIntelligence(
-                trackId = entity.id,
-                affinityScore = score,
-                moodTags = encodedTags,
-                artworkColorArgb = colorArgb
-            )
-        }
     }
 
     private suspend fun recalculateAndCacheAffinity(trackId: String) {

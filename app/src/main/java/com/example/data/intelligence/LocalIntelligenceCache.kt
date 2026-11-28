@@ -439,7 +439,8 @@ object RoutineMixCurator {
         dayOfWeek: Int = currentLocalDayOfWeek(nowMs),
         maxTracksPerMix: Int = RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE,
         engine: MusicIntelligenceEngine = MusicIntelligenceEngine(),
-        signals: List<PlaybackSignal> = emptyList()
+        signals: List<PlaybackSignal> = emptyList(),
+        shuffleNonce: Int = 0
     ): StableList<RoutineMix> {
         val clean = libraryTracks
             .filter { it.id.isNotBlank() }
@@ -453,7 +454,8 @@ object RoutineMixCurator {
             nowMs = nowMs,
             localHourOfDay = localHourOfDay,
             dayOfWeek = dayOfWeek,
-            maxTracksPerMix = maxTracksPerMix.coerceIn(1, RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE)
+            maxTracksPerMix = maxTracksPerMix.coerceIn(1, RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE),
+            shuffleNonce = shuffleNonce
         )
     }
 }

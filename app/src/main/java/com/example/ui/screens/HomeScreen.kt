@@ -1458,6 +1458,7 @@ private fun HomeEmptyCard(
                 artworkShape = artworkShape,
                 isPlaying = false,
                 animateScale = false,
+                decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
                 modifier = Modifier.size(144.dp)
             )
             Text(

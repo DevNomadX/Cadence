@@ -930,7 +930,7 @@ internal fun DiscoverMadeForYouSection(
                             IconButton(
                                 onClick = { menuExpanded = true },
                                 modifier = Modifier
-                                    .size(32.dp)
+                                    .size(48.dp)
                                     .testTag("discover_daily_mix_menu")
                             ) {
                                 Icon(
@@ -1472,23 +1472,28 @@ internal fun DiscoverListeningInsightsSection(
                     .weight(1f)
                     .testTag("discover_listening_insights_header")
             )
-            Surface(
-                shape = CircleShape,
-                color = chevronBg,
-                contentColor = colorScheme.onSurfaceVariant,
-                border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.24f)),
+            Box(
                 modifier = Modifier
-                    .size(34.dp)
+                    .size(48.dp)
                     .clip(CircleShape)
                     .clickable(role = Role.Button, onClick = onExpandInsights)
-                    .testTag("discover_insights_expand_button")
+                    .testTag("discover_insights_expand_button"),
+                contentAlignment = Alignment.Center
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                        contentDescription = stringResource(R.string.discover_insights_details_title),
-                        modifier = Modifier.size(18.dp)
-                    )
+                Surface(
+                    shape = CircleShape,
+                    color = chevronBg,
+                    contentColor = colorScheme.onSurfaceVariant,
+                    border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.24f)),
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                            contentDescription = stringResource(R.string.discover_insights_details_title),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -1518,7 +1523,11 @@ internal fun DiscoverListeningInsightsSection(
                 EditorialInsightBentoTile(
                     label = "Top Artist",
                     value = insights.topArtist.ifBlank { "Various" },
-                    subvalue = "${insights.completedPlaysTotal} full listens",
+                    subvalue = if (insights.completedPlaysTotal == 1) {
+                        "1 full listen"
+                    } else {
+                        "${insights.completedPlaysTotal} full listens"
+                    },
                     tileSurface = artistTileSurface,
                     leadingBadge = {
                         Icon(
@@ -1540,7 +1549,11 @@ internal fun DiscoverListeningInsightsSection(
                 EditorialInsightBentoTile(
                     label = "Listening Time",
                     value = totalListeningFormatted,
-                    subvalue = "${insights.totalTrackCount} tracks",
+                    subvalue = if (insights.totalTrackCount == 1) {
+                        "1 track"
+                    } else {
+                        "${insights.totalTrackCount} tracks"
+                    },
                     tileSurface = timeTileSurface,
                     leadingBadge = {
                         Icon(
@@ -1557,7 +1570,11 @@ internal fun DiscoverListeningInsightsSection(
                 EditorialInsightBentoTile(
                     label = "Hi-Fi Library",
                     value = "${insights.hiFiPercentage}%",
-                    subvalue = "${insights.hiFiTrackCount}/${insights.totalTrackCount} lossless",
+                    subvalue = if (insights.totalTrackCount == 0) {
+                        "No tracks yet"
+                    } else {
+                        "${insights.hiFiTrackCount}/${insights.totalTrackCount} lossless"
+                    },
                     tileSurface = hifiTileSurface,
                     leadingBadge = {
                         Surface(

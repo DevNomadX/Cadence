@@ -4,6 +4,7 @@ import android.os.Build
 import com.example.data.Track
 import com.example.data.db.RecommendationSnapshotDao
 import com.example.data.db.TrackDao
+import com.example.data.toStableList
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -319,6 +320,34 @@ class RecommendationSnapshotRepository(
     }
 
     /**
+     * Locks every routine mix in Room under its own distinct date + routineId session key
+     * (`"${dateKey}_${routineId}"`, or `"${dateKey}_${routineId}_r${refreshNonce}"` on explicit refresh),
+     * preserving up to 10 distinct tracks per routine snapshot immutably off the UI thread.
+     */
+    suspend fun ensureRoutineMixesLocked(
+        dateKey: String,
+        routineMixes: List<RoutineMix>,
+        eligibleTrackIds: Set<String>? = null,
+        refreshNonce: Int = 0,
+        nowMs: Long = System.currentTimeMillis()
+    ): List<RoutineMix> = withContext(ioDispatcher) {
+        routineMixes.mapNotNull { mix ->
+            val lockedTracks = ensureSessionLocked(
+                sessionId = routineSessionId(
+                    dateKey = dateKey,
+                    routineId = mix.type.id,
+                    refreshNonce = refreshNonce
+                ),
+                contextKey = "routine_${mix.type.id}",
+                candidateTrackIds = mix.tracks.map { it.id },
+                eligibleTrackIds = eligibleTrackIds,
+                nowMs = nowMs
+            )
+            if (lockedTracks.isEmpty()) null else mix.copy(tracks = lockedTracks.toStableList())
+        }
+    }
+
+    /**
      * Reads the current live tracks for an already-locked Session snapshot without mutating it.
      */
     suspend fun loadSessionSnapshotOnce(sessionId: String): List<Track> = withContext(ioDispatcher) {
@@ -326,6 +355,24 @@ class RecommendationSnapshotRepository(
     }
 
     companion object {
+        /**
+         * Builds the locked Room `sessionId` key for a "For This Moment" routine mix,
+         * keyed by both calendar date and `routineId` (e.g., `"2026-11-28_weekend_energy"`).
+         */
+        fun routineSessionId(
+            dateKey: String,
+            routineId: String,
+            refreshNonce: Int = 0
+        ): String {
+            val cleanDate = dateKey.trim()
+            val cleanRoutine = routineId.trim()
+            return if (refreshNonce <= 0) {
+                "${cleanDate}_${cleanRoutine}"
+            } else {
+                "${cleanDate}_${cleanRoutine}_r$refreshNonce"
+            }
+        }
+
         /**
          * Formats [nowMs] into a deterministic local calendar key (`YYYY-MM-DD`).
          */

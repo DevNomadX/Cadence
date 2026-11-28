@@ -4,10 +4,12 @@ import android.app.ActivityManager
 import android.content.Context
 import androidx.annotation.Keep
 import androidx.compose.runtime.Immutable
+import androidx.datastore.core.CorruptionException
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
@@ -18,9 +20,11 @@ import com.example.ui.theme.AppearanceMode
 import com.example.ui.theme.ExpressiveArtworkShape
 import com.example.ui.theme.ExpressivePalette
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import java.io.IOException
 
 private val Context.cadenceDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "cadence_preferences"
@@ -127,9 +131,23 @@ class PreferencesRepository(private val context: Context) {
         val SCAN_ALL_FOLDERS = booleanPreferencesKey("scan_all_folders_enabled")
     }
 
-    val userProfileFlow: Flow<UserProfile> = context.cadenceDataStore.data.map { prefs ->
-        val rawDone = prefs[Keys.ONBOARDING_COMPLETED]
-        val resolvedDone = rawDone ?: syncThemePrefs.getBoolean(SYNC_KEY_ONBOARDING_COMPLETED, false)
+    private val safeDataFlow: Flow<Preferences> = context.cadenceDataStore.data.catch { error ->
+        if (error is IOException || error is CorruptionException) {
+            emit(emptyPreferences())
+        } else {
+            emit(emptyPreferences())
+        }
+    }
+
+    private fun <T> Preferences.safeGet(key: Preferences.Key<T>): T? =
+        runCatching { this[key] }.getOrNull()
+
+    val userProfileFlow: Flow<UserProfile> = safeDataFlow.map { prefs ->
+        val rawDone = prefs.safeGet(Keys.ONBOARDING_COMPLETED)
+        val syncDone = runCatching {
+            syncThemePrefs.getBoolean(SYNC_KEY_ONBOARDING_COMPLETED, false)
+        }.getOrDefault(false)
+        val resolvedDone = rawDone ?: syncDone
         if (rawDone != null && !syncThemePrefs.contains(SYNC_KEY_ONBOARDING_COMPLETED)) {
             syncThemePrefs.edit()
                 .putBoolean(SYNC_KEY_ONBOARDING_COMPLETED, resolvedDone)
@@ -142,15 +160,18 @@ class PreferencesRepository(private val context: Context) {
         .map { it.hasCompletedOnboarding }
         .distinctUntilChanged()
 
-    val themePreferencesFlow: Flow<ThemePreferences> = context.cadenceDataStore.data.map { prefs ->
-        val manualPerf = prefs[Keys.PERFORMANCE_MODE]
+    val themePreferencesFlow: Flow<ThemePreferences> = safeDataFlow.map { prefs ->
+        val manualPerf = prefs.safeGet(Keys.PERFORMANCE_MODE)
         val perfEnabled = manualPerf ?: deviceIsLowRam
         val resolved = ThemePreferences(
-            palette = ExpressivePalette.fromId(prefs[Keys.PALETTE]),
-            appearanceMode = AppearanceMode.fromId(prefs[Keys.APPEARANCE]),
-            artworkShape = ExpressiveArtworkShape.fromId(prefs[Keys.ARTWORK_SHAPE]),
-            wavyScrubberEnabled = prefs[Keys.WAVY_SCRUBBER] ?: true,
-            ambientAuraEnabled = prefs[Keys.AMBIENT_AURA] ?: true,
+            palette = runCatching { ExpressivePalette.fromId(prefs.safeGet(Keys.PALETTE)) }
+                .getOrDefault(ExpressivePalette.DEFAULT),
+            appearanceMode = runCatching { AppearanceMode.fromId(prefs.safeGet(Keys.APPEARANCE)) }
+                .getOrDefault(AppearanceMode.SYSTEM),
+            artworkShape = runCatching { ExpressiveArtworkShape.fromId(prefs.safeGet(Keys.ARTWORK_SHAPE)) }
+                .getOrDefault(ExpressiveArtworkShape.SCALLOP),
+            wavyScrubberEnabled = prefs.safeGet(Keys.WAVY_SCRUBBER) ?: true,
+            ambientAuraEnabled = prefs.safeGet(Keys.AMBIENT_AURA) ?: true,
             performanceModeEnabled = perfEnabled,
             isAutoPerformanceMode = manualPerf == null && deviceIsLowRam
         )
@@ -173,69 +194,82 @@ class PreferencesRepository(private val context: Context) {
         resolved
     }.distinctUntilChanged()
 
-    val audioSettingsFlow: Flow<AudioSettings> = context.cadenceDataStore.data.map { prefs ->
+    val audioSettingsFlow: Flow<AudioSettings> = safeDataFlow.map { prefs ->
         AudioSettings(
-            gaplessPlaybackEnabled = prefs[Keys.GAPLESS_PLAYBACK] ?: true,
-            crossfadeDurationSec = (prefs[Keys.CROSSFADE_SEC] ?: 0).coerceIn(0, 12),
-            pauseOnHeadphoneDisconnect = prefs[Keys.PAUSE_ON_HEADPHONE_DISCONNECT] ?: true,
-            audioFocusBehavior = AudioFocusBehavior.fromId(prefs[Keys.AUDIO_FOCUS_BEHAVIOR]),
-            acousticEnhanceEnabled = prefs[Keys.ACOUSTIC_ENHANCE] ?: false
+            gaplessPlaybackEnabled = prefs.safeGet(Keys.GAPLESS_PLAYBACK) ?: true,
+            crossfadeDurationSec = (prefs.safeGet(Keys.CROSSFADE_SEC) ?: 0).coerceIn(0, 12),
+            pauseOnHeadphoneDisconnect = prefs.safeGet(Keys.PAUSE_ON_HEADPHONE_DISCONNECT) ?: true,
+            audioFocusBehavior = runCatching { AudioFocusBehavior.fromId(prefs.safeGet(Keys.AUDIO_FOCUS_BEHAVIOR)) }
+                .getOrDefault(AudioFocusBehavior.DUCK),
+            acousticEnhanceEnabled = prefs.safeGet(Keys.ACOUSTIC_ENHANCE) ?: false
         )
     }.distinctUntilChanged()
 
-    val playbackPreferencesFlow: Flow<PlaybackPreferences> = context.cadenceDataStore.data.map { prefs ->
+    val playbackPreferencesFlow: Flow<PlaybackPreferences> = safeDataFlow.map { prefs ->
+        val rawSpeed = prefs.safeGet(Keys.PLAYBACK_SPEED) ?: 1.0f
+        val safeSpeed = if (rawSpeed.isFinite()) rawSpeed.coerceIn(0.5f, 2.0f) else 1.0f
         PlaybackPreferences(
-            shuffleEnabled = prefs[Keys.SHUFFLE] ?: false,
-            repeatMode = RepeatMode.fromId(prefs[Keys.REPEAT]),
-            playbackSpeed = (prefs[Keys.PLAYBACK_SPEED] ?: 1.0f).coerceIn(0.5f, 2.0f),
-            lastTrackId = prefs[Keys.LAST_TRACK_ID],
-            lastPositionMs = (prefs[Keys.LAST_POSITION_MS] ?: 0L).coerceAtLeast(0L),
-            sortOrder = LibrarySortOrder.fromId(prefs[Keys.SORT_ORDER]),
-            minTrackDurationSec = (prefs[Keys.MIN_TRACK_DURATION_SEC] ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300)
+            shuffleEnabled = prefs.safeGet(Keys.SHUFFLE) ?: false,
+            repeatMode = runCatching { RepeatMode.fromId(prefs.safeGet(Keys.REPEAT)) }
+                .getOrDefault(RepeatMode.ALL),
+            playbackSpeed = safeSpeed,
+            lastTrackId = prefs.safeGet(Keys.LAST_TRACK_ID),
+            lastPositionMs = (prefs.safeGet(Keys.LAST_POSITION_MS) ?: 0L).coerceAtLeast(0L),
+            sortOrder = runCatching { LibrarySortOrder.fromId(prefs.safeGet(Keys.SORT_ORDER)) }
+                .getOrDefault(LibrarySortOrder.DATE_ADDED_DESC),
+            minTrackDurationSec = (prefs.safeGet(Keys.MIN_TRACK_DURATION_SEC) ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300)
         )
     }.distinctUntilChanged()
 
-    val preferencesFlow: Flow<UserPreferences> = context.cadenceDataStore.data.map { prefs ->
+    val preferencesFlow: Flow<UserPreferences> = safeDataFlow.map { prefs ->
+        val rawSpeed = prefs.safeGet(Keys.PLAYBACK_SPEED) ?: 1.0f
+        val safeSpeed = if (rawSpeed.isFinite()) rawSpeed.coerceIn(0.5f, 2.0f) else 1.0f
         UserPreferences(
-            palette = ExpressivePalette.fromId(prefs[Keys.PALETTE]),
-            appearanceMode = AppearanceMode.fromId(prefs[Keys.APPEARANCE]),
-            artworkShape = ExpressiveArtworkShape.fromId(prefs[Keys.ARTWORK_SHAPE]),
-            wavyScrubberEnabled = prefs[Keys.WAVY_SCRUBBER] ?: true,
-            ambientAuraEnabled = prefs[Keys.AMBIENT_AURA] ?: true,
-            performanceModeEnabled = prefs[Keys.PERFORMANCE_MODE] ?: deviceIsLowRam,
-            shuffleEnabled = prefs[Keys.SHUFFLE] ?: false,
-            repeatMode = RepeatMode.fromId(prefs[Keys.REPEAT]),
-            playbackSpeed = (prefs[Keys.PLAYBACK_SPEED] ?: 1.0f).coerceIn(0.5f, 2.0f),
-            lastTrackId = prefs[Keys.LAST_TRACK_ID],
-            lastPositionMs = (prefs[Keys.LAST_POSITION_MS] ?: 0L).coerceAtLeast(0L),
-            sortOrder = LibrarySortOrder.fromId(prefs[Keys.SORT_ORDER]),
-            minTrackDurationSec = (prefs[Keys.MIN_TRACK_DURATION_SEC] ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300),
-            gaplessPlaybackEnabled = prefs[Keys.GAPLESS_PLAYBACK] ?: true,
-            crossfadeDurationSec = (prefs[Keys.CROSSFADE_SEC] ?: 0).coerceIn(0, 12),
-            pauseOnHeadphoneDisconnect = prefs[Keys.PAUSE_ON_HEADPHONE_DISCONNECT] ?: true,
-            audioFocusBehavior = AudioFocusBehavior.fromId(prefs[Keys.AUDIO_FOCUS_BEHAVIOR]),
-            acousticEnhanceEnabled = prefs[Keys.ACOUSTIC_ENHANCE] ?: false,
-            legacyFavoriteTrackIds = prefs[Keys.LEGACY_FAVORITES] ?: emptySet(),
-            legacyImportedTrackUris = prefs[Keys.LEGACY_IMPORTED_URIS] ?: emptySet()
+            palette = runCatching { ExpressivePalette.fromId(prefs.safeGet(Keys.PALETTE)) }
+                .getOrDefault(ExpressivePalette.DEFAULT),
+            appearanceMode = runCatching { AppearanceMode.fromId(prefs.safeGet(Keys.APPEARANCE)) }
+                .getOrDefault(AppearanceMode.SYSTEM),
+            artworkShape = runCatching { ExpressiveArtworkShape.fromId(prefs.safeGet(Keys.ARTWORK_SHAPE)) }
+                .getOrDefault(ExpressiveArtworkShape.SCALLOP),
+            wavyScrubberEnabled = prefs.safeGet(Keys.WAVY_SCRUBBER) ?: true,
+            ambientAuraEnabled = prefs.safeGet(Keys.AMBIENT_AURA) ?: true,
+            performanceModeEnabled = prefs.safeGet(Keys.PERFORMANCE_MODE) ?: deviceIsLowRam,
+            shuffleEnabled = prefs.safeGet(Keys.SHUFFLE) ?: false,
+            repeatMode = runCatching { RepeatMode.fromId(prefs.safeGet(Keys.REPEAT)) }
+                .getOrDefault(RepeatMode.ALL),
+            playbackSpeed = safeSpeed,
+            lastTrackId = prefs.safeGet(Keys.LAST_TRACK_ID),
+            lastPositionMs = (prefs.safeGet(Keys.LAST_POSITION_MS) ?: 0L).coerceAtLeast(0L),
+            sortOrder = runCatching { LibrarySortOrder.fromId(prefs.safeGet(Keys.SORT_ORDER)) }
+                .getOrDefault(LibrarySortOrder.DATE_ADDED_DESC),
+            minTrackDurationSec = (prefs.safeGet(Keys.MIN_TRACK_DURATION_SEC) ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300),
+            gaplessPlaybackEnabled = prefs.safeGet(Keys.GAPLESS_PLAYBACK) ?: true,
+            crossfadeDurationSec = (prefs.safeGet(Keys.CROSSFADE_SEC) ?: 0).coerceIn(0, 12),
+            pauseOnHeadphoneDisconnect = prefs.safeGet(Keys.PAUSE_ON_HEADPHONE_DISCONNECT) ?: true,
+            audioFocusBehavior = runCatching { AudioFocusBehavior.fromId(prefs.safeGet(Keys.AUDIO_FOCUS_BEHAVIOR)) }
+                .getOrDefault(AudioFocusBehavior.DUCK),
+            acousticEnhanceEnabled = prefs.safeGet(Keys.ACOUSTIC_ENHANCE) ?: false,
+            legacyFavoriteTrackIds = prefs.safeGet(Keys.LEGACY_FAVORITES) ?: emptySet(),
+            legacyImportedTrackUris = prefs.safeGet(Keys.LEGACY_IMPORTED_URIS) ?: emptySet()
         )
     }.distinctUntilChanged()
 
-    val scanAllFoldersFlow: Flow<Boolean> = context.cadenceDataStore.data
-        .map { prefs -> prefs[Keys.SCAN_ALL_FOLDERS] ?: false }
+    val scanAllFoldersFlow: Flow<Boolean> = safeDataFlow
+        .map { prefs -> prefs.safeGet(Keys.SCAN_ALL_FOLDERS) ?: false }
         .distinctUntilChanged()
 
     suspend fun isScanAllFoldersEnabled(): Boolean =
-        context.cadenceDataStore.data.first()[Keys.SCAN_ALL_FOLDERS] ?: false
+        safeDataFlow.first().safeGet(Keys.SCAN_ALL_FOLDERS) ?: false
 
     suspend fun setScanAllFoldersEnabled(enabled: Boolean) {
         context.cadenceDataStore.edit { it[Keys.SCAN_ALL_FOLDERS] = enabled }
     }
 
     suspend fun getMinTrackDurationSec(): Int =
-        (context.cadenceDataStore.data.first()[Keys.MIN_TRACK_DURATION_SEC] ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300)
+        (safeDataFlow.first().safeGet(Keys.MIN_TRACK_DURATION_SEC) ?: DEFAULT_MIN_TRACK_DURATION_SEC).coerceIn(0, 300)
 
     suspend fun isLegacyMigrationDone(): Boolean =
-        context.cadenceDataStore.data.first()[Keys.LEGACY_MIGRATED] ?: false
+        safeDataFlow.first().safeGet(Keys.LEGACY_MIGRATED) ?: false
 
     suspend fun markLegacyMigrationDone() {
         context.cadenceDataStore.edit { it[Keys.LEGACY_MIGRATED] = true }
@@ -355,42 +389,47 @@ class PreferencesRepository(private val context: Context) {
          * Reads the mirrored onboarding state synchronously from SharedPreferences so
          * cold start resolves the onboarding gate with zero frame-1 flicker.
          */
-        fun readStartupUserProfileSnapshot(context: Context): UserProfile {
+        fun readStartupUserProfileSnapshot(context: Context): UserProfile = runCatching {
             val prefs = context.applicationContext.getSharedPreferences(
                 SYNC_THEME_PREFS_NAME,
                 Context.MODE_PRIVATE
             )
-            return UserProfile(
-                hasCompletedOnboarding = prefs.getBoolean(SYNC_KEY_ONBOARDING_COMPLETED, false)
+            UserProfile(
+                hasCompletedOnboarding = runCatching {
+                    prefs.getBoolean(SYNC_KEY_ONBOARDING_COMPLETED, false)
+                }.getOrDefault(false)
             )
-        }
+        }.getOrDefault(UserProfile())
 
         /**
          * Reads the mirrored theme settings synchronously from SharedPreferences so
          * MainActivity.onCreate() and Compose frame 1 resolve the exact user theme
          * (Light/Dark/Auto + palette) immediately with zero dark-to-light startup flash.
          */
-        fun readStartupThemeSnapshot(context: Context): ThemePreferences {
+        fun readStartupThemeSnapshot(context: Context): ThemePreferences = runCatching {
             val prefs = context.applicationContext.getSharedPreferences(
                 SYNC_THEME_PREFS_NAME,
                 Context.MODE_PRIVATE
             )
             val lowRam = isDeviceLowRam(context)
-            val hasManualPerf = prefs.getBoolean(SYNC_KEY_HAS_MANUAL_PERF, false)
+            val hasManualPerf = runCatching { prefs.getBoolean(SYNC_KEY_HAS_MANUAL_PERF, false) }.getOrDefault(false)
             val perfEnabled = if (hasManualPerf) {
-                prefs.getBoolean(SYNC_KEY_PERFORMANCE_MODE, lowRam)
+                runCatching { prefs.getBoolean(SYNC_KEY_PERFORMANCE_MODE, lowRam) }.getOrDefault(lowRam)
             } else {
                 lowRam
             }
-            return ThemePreferences(
-                palette = ExpressivePalette.fromId(prefs.getString(SYNC_KEY_PALETTE, null)),
-                appearanceMode = AppearanceMode.fromId(prefs.getString(SYNC_KEY_APPEARANCE, null)),
-                artworkShape = ExpressiveArtworkShape.fromId(prefs.getString(SYNC_KEY_ARTWORK_SHAPE, null)),
-                wavyScrubberEnabled = prefs.getBoolean(SYNC_KEY_WAVY_SCRUBBER, true),
-                ambientAuraEnabled = prefs.getBoolean(SYNC_KEY_AMBIENT_AURA, true),
+            ThemePreferences(
+                palette = runCatching { ExpressivePalette.fromId(prefs.getString(SYNC_KEY_PALETTE, null)) }
+                    .getOrDefault(ExpressivePalette.DEFAULT),
+                appearanceMode = runCatching { AppearanceMode.fromId(prefs.getString(SYNC_KEY_APPEARANCE, null)) }
+                    .getOrDefault(AppearanceMode.SYSTEM),
+                artworkShape = runCatching { ExpressiveArtworkShape.fromId(prefs.getString(SYNC_KEY_ARTWORK_SHAPE, null)) }
+                    .getOrDefault(ExpressiveArtworkShape.SCALLOP),
+                wavyScrubberEnabled = runCatching { prefs.getBoolean(SYNC_KEY_WAVY_SCRUBBER, true) }.getOrDefault(true),
+                ambientAuraEnabled = runCatching { prefs.getBoolean(SYNC_KEY_AMBIENT_AURA, true) }.getOrDefault(true),
                 performanceModeEnabled = perfEnabled,
                 isAutoPerformanceMode = !hasManualPerf && lowRam
             )
-        }
+        }.getOrDefault(ThemePreferences())
     }
 }

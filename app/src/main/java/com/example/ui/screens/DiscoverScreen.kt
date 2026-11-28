@@ -453,7 +453,7 @@ private fun DiscoverSectionHeader(
                     onClick = onSavePlaylist,
                     enabled = section.tracks.isNotEmpty(),
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(48.dp)
                         .testTag("discover_save_${section.category.id}")
                 ) {
                     Icon(

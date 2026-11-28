@@ -84,7 +84,7 @@ private val AboutThirdPartyCredits = listOf(
     AboutCreditEntry("AndroidX Room & DataStore", "Apache License 2.0"),
     AboutCreditEntry("Coil Image Loading", "Apache License 2.0"),
     AboutCreditEntry("AndroidX Core, Activity & Lifecycle", "Apache License 2.0"),
-    AboutCreditEntry("Kotlin Coroutines & Serialization", "Apache License 2.0")
+    AboutCreditEntry("Kotlin Coroutines", "Apache License 2.0")
 )
 
 internal fun resolveAppVersionName(context: Context): String {

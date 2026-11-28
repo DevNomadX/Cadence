@@ -239,7 +239,7 @@ internal fun LibraryPersistentSearchBar(
                 IconButton(
                     onClick = onClear,
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(48.dp)
                         .testTag("library_search_clear_button")
                 ) {
                     Icon(

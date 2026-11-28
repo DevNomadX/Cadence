@@ -93,6 +93,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.request.ImageRequest
+import coil.size.Precision
 import coil.size.Size as CoilSize
 import com.example.R
 import com.example.data.AudioQualitySpec
@@ -629,6 +630,7 @@ internal fun buildArtworkImageRequest(
     return ImageRequest.Builder(context)
         .data(data)
         .size(CoilSize(decodeSizePx, decodeSizePx))
+        .precision(Precision.INEXACT)
         .allowHardware(true)
         .allowRgb565(true)
         .memoryCacheKey(cacheKey)

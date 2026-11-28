@@ -1241,7 +1241,7 @@ private fun DrillDownPinnedHeader(
             )
         }
         if (onRename != null) {
-            IconButton(onClick = onRename, modifier = Modifier.size(44.dp)) {
+            IconButton(onClick = onRename, modifier = Modifier.size(48.dp)) {
                 Icon(
                     imageVector = Icons.Outlined.Edit,
                     contentDescription = stringResource(R.string.action_rename_playlist),
@@ -1250,7 +1250,7 @@ private fun DrillDownPinnedHeader(
             }
         }
         if (onDelete != null) {
-            IconButton(onClick = onDelete, modifier = Modifier.size(44.dp)) {
+            IconButton(onClick = onDelete, modifier = Modifier.size(48.dp)) {
                 Icon(
                     imageVector = CadenceIcons.DeleteOutline,
                     contentDescription = stringResource(R.string.action_delete_playlist),
@@ -1677,28 +1677,30 @@ private fun PlaylistRowCard(
                 )
             }
 
-            IconButton(onClick = playClick, modifier = Modifier.size(40.dp)) {
-                Icon(
-                    imageVector = Icons.Rounded.PlayArrow,
-                    contentDescription = stringResource(R.string.action_play),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
-            IconButton(onClick = renameClick, modifier = Modifier.size(38.dp)) {
-                Icon(
-                    imageVector = Icons.Outlined.Edit,
-                    contentDescription = stringResource(R.string.action_rename_playlist),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(19.dp)
-                )
-            }
-            IconButton(onClick = deleteClick, modifier = Modifier.size(38.dp)) {
-                Icon(
-                    imageVector = CadenceIcons.DeleteOutline,
-                    contentDescription = stringResource(R.string.action_delete_playlist),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(19.dp)
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = playClick, modifier = Modifier.size(48.dp)) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
+                        contentDescription = stringResource(R.string.action_play),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                IconButton(onClick = renameClick, modifier = Modifier.size(48.dp)) {
+                    Icon(
+                        imageVector = Icons.Outlined.Edit,
+                        contentDescription = stringResource(R.string.action_rename_playlist),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+                IconButton(onClick = deleteClick, modifier = Modifier.size(48.dp)) {
+                    Icon(
+                        imageVector = CadenceIcons.DeleteOutline,
+                        contentDescription = stringResource(R.string.action_delete_playlist),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
             }
         }
     }

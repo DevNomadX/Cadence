@@ -402,11 +402,6 @@ fun CadenceApp(
         }
     }
 
-    // Back collapses the expanded Now Playing sheet first, returning to the exact tab & scroll position
-    BackHandler(enabled = isPlayerExpanded) {
-        isPlayerExpanded = false
-    }
-
     BackHandler(enabled = !isPlayerExpanded && !showSettings && activeTab != CadenceTab.HOME && !(activeTab == CadenceTab.LIBRARY && hasDrillDown)) {
         activeTab = CadenceTab.HOME
     }
@@ -847,6 +842,10 @@ internal fun ExpandableNowPlayingOverlay(
 
     val shouldCompose = isExpanded || expansionAnimatable.value > 0.001f
     if (!shouldCompose) return
+
+    // Registered inside the overlay (after PersistentTabHost) so LIFO BackHandler priority always
+    // collapses Now Playing before underlying Library/Settings/Tab back handlers run.
+    BackHandler(enabled = isExpanded, onBack = onCollapse)
 
     val dismissDragModifier = remember(onCollapse, dismissThresholdPx) {
         Modifier.pointerInput(onCollapse, dismissThresholdPx) {

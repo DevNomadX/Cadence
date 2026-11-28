@@ -17,6 +17,7 @@ import com.example.data.intelligence.PlaybackSignal
 import com.example.data.intelligence.RawPlaybackEvent
 import com.example.data.intelligence.RecommendationCore
 import com.example.data.intelligence.RecommendationSnapshotRepository
+import com.example.data.intelligence.RoutineMixType
 import com.example.data.intelligence.SignalProcessor
 import com.example.data.intelligence.SignalType
 import com.example.data.intelligence.SmartMoodTag
@@ -40,6 +41,7 @@ import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -49,6 +51,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.Calendar
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -907,6 +910,200 @@ class RecommendationCoreAndSnapshotTest {
             vm?.clearAndJoinForTest()
             Dispatchers.resetMain()
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // 10. For This Moment Routine Mixes — Distinct Mood/Tempo Profiles,
+    //     ${date}_${routineId} Room Snapshots, & Cross-Card Lead/Cover Diversity
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun routineMixes_weekendProfiles_distinctTenTrackRoomSnapshots_distinctLeadTracksAndCovers() = runTest {
+        val library = buildMultiMoodLargeLibrary(anchorNowMs).mapIndexed { idx, track ->
+            track.copy(artworkPath = "content://media/external/audio/albumart/${1000 + idx}")
+        }
+        db.trackDao().upsertTracks(library.map { TrackEntity.fromDomain(it) })
+
+        val mixesFirst = RecommendationCore.buildRoutineMixes(
+            tracks = library,
+            nowMs = anchorNowMs,
+            localHourOfDay = 14,
+            dayOfWeek = Calendar.SATURDAY
+        )
+        val mixesRepeat = RecommendationCore.buildRoutineMixes(
+            tracks = library,
+            nowMs = anchorNowMs,
+            localHourOfDay = 14,
+            dayOfWeek = Calendar.SATURDAY
+        )
+
+        val expectedTypes = listOf(
+            RoutineMixType.WEEKEND_ENERGY,
+            RoutineMixType.AFTERNOON_MOMENTUM,
+            RoutineMixType.EVENING_UNWIND,
+            RoutineMixType.LATE_NIGHT_WIND_DOWN
+        )
+        assertEquals(expectedTypes, mixesFirst.map { it.type })
+
+        // Verify deterministic repeatability for the same calendar day
+        assertEquals(
+            mixesFirst.map { it.type to it.tracks.map { t -> t.id } },
+            mixesRepeat.map { it.type to it.tracks.map { t -> t.id } }
+        )
+
+        // Verify distinct explicit mood/tempo profiles across the 4 routines
+        val weekendProfile = RecommendationCore.profileForRoutine(RoutineMixType.WEEKEND_ENERGY)
+        val afternoonProfile = RecommendationCore.profileForRoutine(RoutineMixType.AFTERNOON_MOMENTUM)
+        val eveningProfile = RecommendationCore.profileForRoutine(RoutineMixType.EVENING_UNWIND)
+        val lateNightProfile = RecommendationCore.profileForRoutine(RoutineMixType.LATE_NIGHT_WIND_DOWN)
+        assertTrue(weekendProfile.energyWeight > afternoonProfile.energyWeight)
+        assertTrue(weekendProfile.targetBpmMin > lateNightProfile.targetBpmMax)
+        assertTrue(eveningProfile.warmHarmonicWeight > lateNightProfile.warmHarmonicWeight)
+        assertTrue(lateNightProfile.acousticCalmWeight > weekendProfile.acousticCalmWeight)
+
+        // Verify 10 distinct tracks per routine, 4 distinct #1 lead tracks, and 4 distinct cover URIs
+        mixesFirst.forEach { mix ->
+            assertEquals("${mix.title} must contain 10 tracks", 10, mix.tracks.size)
+            assertEquals("${mix.title} must contain 10 unique tracks", 10, mix.tracks.map { it.id }.toSet().size)
+        }
+        val leadTrackIds = mixesFirst.map { it.tracks.first().id }
+        val leadArtworkPaths = mixesFirst.map { it.tracks.first().artworkPath }
+        assertEquals("All 4 routines must have distinct #1 lead tracks", 4, leadTrackIds.toSet().size)
+        assertEquals("All 4 routines must have distinct #1 cover artwork", 4, leadArtworkPaths.toSet().size)
+
+        // Verify mood/tempo separation on lead tracks
+        val weekendLead = mixesFirst.first { it.type == RoutineMixType.WEEKEND_ENERGY }.tracks.first()
+        val lateNightLead = mixesFirst.first { it.type == RoutineMixType.LATE_NIGHT_WIND_DOWN }.tracks.first()
+        assertTrue("Weekend Energy lead track should be high-BPM (was ${weekendLead.bpm})", weekendLead.bpm >= 112)
+        assertTrue("Late-Night Wind Down lead track should be calm/low-BPM (was ${lateNightLead.bpm})", lateNightLead.bpm <= 100)
+
+        // Verify no two routines share identical 10-track rankings
+        val rankingsByRoutine = mixesFirst.map { it.tracks.map { t -> t.id } }
+        assertEquals("All 4 routines must produce distinct 10-track rankings", 4, rankingsByRoutine.toSet().size)
+
+        // Lock all 4 routines in Room under "${date}_${routineId}" session IDs
+        val dateKey = "2026-11-28"
+        val lockedMixes = snapshotRepository.ensureRoutineMixesLocked(
+            dateKey = dateKey,
+            routineMixes = mixesFirst,
+            nowMs = anchorNowMs
+        )
+        assertEquals(4, lockedMixes.size)
+
+        val expectedSessionIds = mapOf(
+            RoutineMixType.WEEKEND_ENERGY to "2026-11-28_weekend_energy",
+            RoutineMixType.AFTERNOON_MOMENTUM to "2026-11-28_afternoon_momentum",
+            RoutineMixType.EVENING_UNWIND to "2026-11-28_evening_unwind",
+            RoutineMixType.LATE_NIGHT_WIND_DOWN to "2026-11-28_late_night_wind_down"
+        )
+
+        val persistedLeadIds = mutableSetOf<String>()
+        val persistedLeadArtwork = mutableSetOf<String?>()
+        val persistedRankings = mutableSetOf<List<String>>()
+        for ((type, expectedSessionId) in expectedSessionIds) {
+            assertEquals(expectedSessionId, RecommendationSnapshotRepository.routineSessionId(dateKey, type.id))
+            val storedTracks = db.recommendationSnapshotDao().getSessionTracksOnce(expectedSessionId)
+            assertEquals("$expectedSessionId must persist 10 tracks", 10, storedTracks.size)
+            assertEquals("$expectedSessionId must persist 10 unique tracks", 10, storedTracks.map { it.id }.toSet().size)
+            val expectedIds = mixesFirst.first { it.type == type }.tracks.map { it.id }
+            assertEquals(expectedIds, storedTracks.map { it.id })
+            persistedLeadIds += storedTracks.first().id
+            persistedLeadArtwork += storedTracks.first().artworkPath
+            persistedRankings += storedTracks.map { it.id }
+        }
+        assertEquals(4, persistedLeadIds.size)
+        assertEquals(4, persistedLeadArtwork.size)
+        assertEquals(4, persistedRankings.size)
+
+        // Subsequent ensureRoutineMixesLocked call with reversed candidates on the same date must NOT mutate snapshots
+        val alteredCandidates = mixesFirst.map { mix ->
+            mix.copy(tracks = mix.tracks.reversed().toStableList())
+        }
+        val reloadedMixes = snapshotRepository.ensureRoutineMixesLocked(
+            dateKey = dateKey,
+            routineMixes = alteredCandidates,
+            nowMs = anchorNowMs + 60_000L
+        )
+        reloadedMixes.forEach { reloaded ->
+            val originalIds = mixesFirst.first { it.type == reloaded.type }.tracks.map { it.id }
+            assertEquals(
+                "Locked Room snapshot for ${reloaded.type} must remain immutable on same date",
+                originalIds,
+                reloaded.tracks.map { it.id }
+            )
+        }
+    }
+
+    @Test
+    fun routineMixes_sharedArtworkAndUniformMetadata_stillSelectsDistinctLeadsAndCovers() {
+        // Case A: Multiple top favorites share identical album cover URI; other tracks have distinct artwork
+        val sharedArtworkLibrary = buildMultiMoodLargeLibrary(anchorNowMs).mapIndexed { idx, track ->
+            val sharedUri = if (idx % 12 < 4) {
+                "content://media/external/audio/albumart/shared_favorite_cover"
+            } else {
+                "content://media/external/audio/albumart/unique_$idx"
+            }
+            track.copy(artworkPath = sharedUri)
+        }
+        val sharedMixes = RecommendationCore.buildRoutineMixes(
+            tracks = sharedArtworkLibrary,
+            nowMs = anchorNowMs,
+            localHourOfDay = 14,
+            dayOfWeek = Calendar.SATURDAY
+        )
+        assertEquals(4, sharedMixes.size)
+        assertEquals(
+            "Shared-artwork library must still select 4 distinct #1 lead tracks",
+            4,
+            sharedMixes.map { it.tracks.first().id }.toSet().size
+        )
+        assertEquals(
+            "Shared-artwork library must still avoid duplicate side-by-side cover thumbnails",
+            4,
+            sharedMixes.map { it.tracks.first().artworkPath }.toSet().size
+        )
+
+        // Case B: Untagged / cold-start uniform metadata (bpm=0, genre="", playCount=0)
+        val uniformLibrary = (1..24).map { i ->
+            Track(
+                id = "uniform_$i",
+                title = "Untitled Cut $i",
+                artist = "Artist $i",
+                album = "Album $i",
+                genre = "",
+                durationMs = 200_000L,
+                bpm = 0,
+                playCount = 0,
+                completedPlayCount = 0,
+                skipCount = 0,
+                lastPlayedAt = 0L,
+                isFavorite = false,
+                artworkPath = "content://media/external/audio/albumart/uniform_$i"
+            )
+        }
+        val uniformRun1 = RecommendationCore.buildRoutineMixes(
+            tracks = uniformLibrary,
+            nowMs = anchorNowMs,
+            localHourOfDay = 14,
+            dayOfWeek = Calendar.SATURDAY
+        )
+        val uniformRun2 = RecommendationCore.buildRoutineMixes(
+            tracks = uniformLibrary,
+            nowMs = anchorNowMs,
+            localHourOfDay = 14,
+            dayOfWeek = Calendar.SATURDAY
+        )
+        assertEquals(
+            "Uniform cold-start routine mixes must be deterministic for the day",
+            uniformRun1.map { it.tracks.map { t -> t.id } },
+            uniformRun2.map { it.tracks.map { t -> t.id } }
+        )
+        assertEquals(4, uniformRun1.map { it.tracks.first().id }.toSet().size)
+        assertEquals(4, uniformRun1.map { it.tracks.first().artworkPath }.toSet().size)
+        assertNotEquals(
+            uniformRun1[0].tracks.map { it.id },
+            uniformRun1[1].tracks.map { it.id }
+        )
     }
 
     // -------------------------------------------------------------------------

@@ -140,7 +140,8 @@ internal class DiscoverFeedGenerator(
             localHourOfDay = localHourOfDay,
             dayOfWeek = currentLocalDayOfWeek(nowMs),
             maxTracksPerMix = minOf(cap, RecommendationCore.SESSION_SNAPSHOT_MAX_SIZE),
-            engine = engine
+            engine = engine,
+            shuffleNonce = shuffleNonce
         )
 
         // Compute adaptive per-section target so small libraries still spread cleanly with minimal overlap

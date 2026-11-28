@@ -667,7 +667,7 @@ private fun SmartMixPreviewTrackRow(
                         artworkShape = artworkShape,
                         isPlaying = false,
                         animateScale = false,
-                        decodeSizePx = 128,
+                        decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
                         shapeOverride = PreviewArtworkShape,
                         showHairlineBorder = false,
                         modifier = Modifier.fillMaxSize()

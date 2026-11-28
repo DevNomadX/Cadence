@@ -209,6 +209,27 @@ data class RecommendationResult(
 )
 
 /**
+ * Explicit routine scoring profile passed into [RecommendationCore] so every "For This Moment"
+ * routine mix scores tracks with its own target mood, tempo envelope, energy weighting, and
+ * deterministic [routineId]-seeded tie-breaker.
+ */
+@Keep
+@Immutable
+data class RoutineScoringProfile(
+    val routineId: String,
+    val timeOfDay: TimeOfDayCategory,
+    val preferredCategoryMask: Int,
+    val targetBpmMin: Int,
+    val targetBpmMax: Int,
+    val energyWeight: Float,
+    val warmHarmonicWeight: Float,
+    val acousticCalmWeight: Float,
+    val discoveryBalance: Float,
+    val tuneMood: String,
+    val tuneEnergy: String?
+)
+
+/**
  * Standalone, deterministic primitive-array recommendation engine — the single source of truth
  * for Cadence's affinity scoring, Daily Picks, Discover Routine Mixes, Mood Playlists, Made for You,
  * Smart Mix, Tune Mix, and Listening Insights. Completely isolated from Jetpack Compose UI,
@@ -418,7 +439,9 @@ object RecommendationCore {
         rotationSeed: Long? = null,
         rotationWeight: Float = 0f,
         maxPerArtist: Int = 0,
-        strictArtistCap: Boolean = false
+        strictArtistCap: Boolean = false,
+        routineProfile: RoutineScoringProfile? = null,
+        tieBreakSeed: Long = 0L
     ): RecommendationResult {
         val n = matrix.size
         val effectiveTarget = min(targetSize.coerceAtLeast(0), n)
@@ -433,27 +456,46 @@ object RecommendationCore {
             )
         }
 
+        val effectiveTimeOfDay = routineProfile?.timeOfDay ?: timeOfDay
+        val effectivePreferredMask = if (preferredCategoryMask != 0) {
+            preferredCategoryMask
+        } else {
+            routineProfile?.preferredCategoryMask ?: 0
+        }
+        val effectiveTieBreakSeed = if (tieBreakSeed != 0L) {
+            tieBreakSeed
+        } else {
+            routineProfile?.routineId?.hashCode()?.toLong() ?: 0L
+        }
+        val effectiveRotationSeed = rotationSeed ?: routineProfile?.routineId?.hashCode()?.toLong()
+        val effectiveRotationWeight = when {
+            rotationWeight > 0f -> rotationWeight
+            routineProfile != null -> 0.14f
+            else -> 0f
+        }
+
         val baseScores = computeAffinityScores(
             matrix = matrix,
             signals = signals,
             nowMs = nowMs,
-            timeOfDay = timeOfDay
+            timeOfDay = effectiveTimeOfDay
         )
 
-        // Apply optional contextual tuning, category preference, seed anchor, and deterministic rotation
+        // Apply optional contextual tuning, routine mood/tempo profile, category preference, seed anchor, and deterministic rotation
         val effectiveScores = if (
             tuneConfig == null &&
-            preferredCategoryMask == 0 &&
+            routineProfile == null &&
+            effectivePreferredMask == 0 &&
             seedTrackId == null &&
             excludedTrackIds.isEmpty() &&
-            rotationSeed == null
+            effectiveRotationSeed == null
         ) {
             baseScores
         } else {
             val tuned = FloatArray(n)
-            val tuneMoodMask = TrackFeatureMatrix.moodNameToCategoryBit(tuneConfig?.selectedMood)
-            val energyKey = tuneConfig?.energyFilter?.trim()?.lowercase(Locale.ROOT)
-            val cleanRotationWeight = rotationWeight.coerceIn(0f, 0.80f)
+            val tuneMoodMask = TrackFeatureMatrix.moodNameToCategoryBit(tuneConfig?.selectedMood ?: routineProfile?.tuneMood)
+            val energyKey = (tuneConfig?.energyFilter ?: routineProfile?.tuneEnergy)?.trim()?.lowercase(Locale.ROOT)
+            val cleanRotationWeight = effectiveRotationWeight.coerceIn(0f, 0.80f)
             val tasteWeight = 1f - cleanRotationWeight
             val seedIdx = if (seedTrackId != null) {
                 matrix.trackIds.indexOfFirst { it == seedTrackId }
@@ -468,8 +510,8 @@ object RecommendationCore {
                 val mask = matrix.categoryBitmasks[i]
                 val bpm = matrix.bpmValues[i]
 
-                if (preferredCategoryMask != 0) {
-                    val overlap = mask and preferredCategoryMask
+                if (effectivePreferredMask != 0) {
+                    val overlap = mask and effectivePreferredMask
                     s += if (overlap != 0) 0.16f else -0.07f
                 }
                 if (tuneMoodMask != 0) {
@@ -481,6 +523,30 @@ object RecommendationCore {
                         "high" -> if (bpm >= 114 || (mask and TrackFeatureMatrix.CATEGORY_UPBEAT_ENERGETIC) != 0) 0.18f else -0.14f
                         "medium" -> if (bpm in 88..118 || (mask and TrackFeatureMatrix.CATEGORY_WARM_SOULFUL) != 0) 0.12f else -0.05f
                         else -> 0f
+                    }
+                }
+                if (routineProfile != null) {
+                    val tempoBonus = when {
+                        bpm in routineProfile.targetBpmMin..routineProfile.targetBpmMax -> 0.16f
+                        bpm > 0 -> {
+                            val dist = if (bpm < routineProfile.targetBpmMin) {
+                                routineProfile.targetBpmMin - bpm
+                            } else {
+                                bpm - routineProfile.targetBpmMax
+                            }
+                            (0.08f - (dist / 45f) * 0.20f).coerceIn(-0.14f, 0.08f)
+                        }
+                        else -> 0f
+                    }
+                    s += tempoBonus
+                    if ((mask and TrackFeatureMatrix.CATEGORY_UPBEAT_ENERGETIC) != 0) {
+                        s += routineProfile.energyWeight
+                    }
+                    if ((mask and TrackFeatureMatrix.CATEGORY_WARM_SOULFUL) != 0) {
+                        s += routineProfile.warmHarmonicWeight
+                    }
+                    if ((mask and (TrackFeatureMatrix.CATEGORY_CALM_NOCTURNAL or TrackFeatureMatrix.CATEGORY_ACOUSTIC_FOCUS)) != 0) {
+                        s += routineProfile.acousticCalmWeight
                     }
                 }
                 if (seedIdx >= 0) {
@@ -495,8 +561,8 @@ object RecommendationCore {
                     s -= 0.24f
                 }
                 val clampedBase = if (s.isFinite()) s.coerceIn(0f, 1f) else BASE_PRIOR_SCORE
-                tuned[i] = if (rotationSeed != null && cleanRotationWeight > 0f && i != seedIdx) {
-                    val roll = deterministicUnitRoll(rotationSeed, matrix.trackIds[i])
+                tuned[i] = if (effectiveRotationSeed != null && cleanRotationWeight > 0f && i != seedIdx) {
+                    val roll = deterministicUnitRoll(effectiveRotationSeed, matrix.trackIds[i])
                     (clampedBase * tasteWeight + roll * cleanRotationWeight).coerceIn(0f, 1f)
                 } else {
                     clampedBase
@@ -521,9 +587,9 @@ object RecommendationCore {
             effectiveLastPlayed = effectiveLastPlayed
         )
 
-        // Build and sort master candidate index array deterministically (score DESC, trackId ASC)
+        // Build and sort master candidate index array deterministically (score DESC, routine tie-break / trackId ASC)
         val masterIndices = IntArray(n) { it }
-        sortIndicesByScoreDesc(masterIndices, effectiveScores, matrix.trackIds)
+        sortIndicesByScoreDesc(masterIndices, effectiveScores, matrix.trackIds, effectiveTieBreakSeed)
 
         // Partition indices into primitive bucket arrays while preserving sorted score order
         val favBucket = IntArray(n)
@@ -811,8 +877,95 @@ object RecommendationCore {
     }
 
     /**
+     * Returns the explicit mood, tempo, and energy [RoutineScoringProfile] for [type] so each
+     * "For This Moment" routine mix ranks tracks distinctly rather than sharing default weights.
+     */
+    fun profileForRoutine(type: RoutineMixType): RoutineScoringProfile = when (type) {
+        RoutineMixType.WEEKEND_ENERGY -> RoutineScoringProfile(
+            routineId = type.id,
+            timeOfDay = TimeOfDayCategory.AFTERNOON,
+            preferredCategoryMask = TrackFeatureMatrix.CATEGORY_UPBEAT_ENERGETIC,
+            targetBpmMin = 114,
+            targetBpmMax = 155,
+            energyWeight = 0.24f,
+            warmHarmonicWeight = 0.04f,
+            acousticCalmWeight = -0.10f,
+            discoveryBalance = type.tuneDiscoveryBalance,
+            tuneMood = type.tuneMood,
+            tuneEnergy = type.tuneEnergy
+        )
+        RoutineMixType.AFTERNOON_MOMENTUM -> RoutineScoringProfile(
+            routineId = type.id,
+            timeOfDay = TimeOfDayCategory.AFTERNOON,
+            preferredCategoryMask = TrackFeatureMatrix.CATEGORY_WARM_SOULFUL or TrackFeatureMatrix.CATEGORY_UPBEAT_ENERGETIC,
+            targetBpmMin = 96,
+            targetBpmMax = 120,
+            energyWeight = 0.10f,
+            warmHarmonicWeight = 0.12f,
+            acousticCalmWeight = -0.04f,
+            discoveryBalance = type.tuneDiscoveryBalance,
+            tuneMood = type.tuneMood,
+            tuneEnergy = type.tuneEnergy
+        )
+        RoutineMixType.EVENING_UNWIND -> RoutineScoringProfile(
+            routineId = type.id,
+            timeOfDay = TimeOfDayCategory.EVENING,
+            preferredCategoryMask = TrackFeatureMatrix.CATEGORY_WARM_SOULFUL or TrackFeatureMatrix.CATEGORY_ACOUSTIC_FOCUS,
+            targetBpmMin = 78,
+            targetBpmMax = 104,
+            energyWeight = -0.08f,
+            warmHarmonicWeight = 0.22f,
+            acousticCalmWeight = 0.10f,
+            discoveryBalance = type.tuneDiscoveryBalance,
+            tuneMood = type.tuneMood,
+            tuneEnergy = type.tuneEnergy
+        )
+        RoutineMixType.LATE_NIGHT_WIND_DOWN -> RoutineScoringProfile(
+            routineId = type.id,
+            timeOfDay = TimeOfDayCategory.LATE_NIGHT,
+            preferredCategoryMask = TrackFeatureMatrix.CATEGORY_CALM_NOCTURNAL or TrackFeatureMatrix.CATEGORY_ACOUSTIC_FOCUS,
+            targetBpmMin = 55,
+            targetBpmMax = 92,
+            energyWeight = -0.16f,
+            warmHarmonicWeight = 0.04f,
+            acousticCalmWeight = 0.24f,
+            discoveryBalance = type.tuneDiscoveryBalance,
+            tuneMood = type.tuneMood,
+            tuneEnergy = type.tuneEnergy
+        )
+        RoutineMixType.MORNING_FOCUS -> RoutineScoringProfile(
+            routineId = type.id,
+            timeOfDay = TimeOfDayCategory.MORNING,
+            preferredCategoryMask = TrackFeatureMatrix.CATEGORY_ACOUSTIC_FOCUS,
+            targetBpmMin = 86,
+            targetBpmMax = 110,
+            energyWeight = 0.04f,
+            warmHarmonicWeight = 0.06f,
+            acousticCalmWeight = 0.18f,
+            discoveryBalance = type.tuneDiscoveryBalance,
+            tuneMood = type.tuneMood,
+            tuneEnergy = type.tuneEnergy
+        )
+    }
+
+    /**
+     * Normalized cover artwork key used for cross-card cover diversity across Discover's
+     * "For This Moment" routine carousel.
+     */
+    internal fun routineArtworkKey(track: Track): String {
+        val path = track.artworkPath?.trim().orEmpty()
+        if (path.isNotEmpty()) return "path:$path"
+        if (track.artworkResId != null) return "res:${track.artworkResId}"
+        val album = track.album.trim().lowercase(Locale.ROOT)
+        if (album.isNotEmpty() && album != "unknown album") return "album:$album"
+        return "track:${track.id}"
+    }
+
+    /**
      * Builds Discover's context-aware "For This Moment" Routine Mixes through [RecommendationCore],
-     * placing the active routine first and capping each mix at [maxTracksPerMix] (default 10).
+     * placing the active routine first, scoring each routine with its own explicit mood/tempo/energy
+     * [RoutineScoringProfile] + `routineId.hashCode()`-seeded deterministic tie-breaking, and
+     * enforcing cross-card #1 lead-track & cover-artwork diversity across all routine cards.
      */
     fun buildRoutineMixes(
         tracks: List<Track>,
@@ -820,7 +973,8 @@ object RecommendationCore {
         nowMs: Long = System.currentTimeMillis(),
         localHourOfDay: Int = LocalMoodAndAffinityEngine.currentLocalHour(nowMs),
         dayOfWeek: Int = currentLocalDayOfWeek(nowMs),
-        maxTracksPerMix: Int = SESSION_SNAPSHOT_MAX_SIZE
+        maxTracksPerMix: Int = SESSION_SNAPSHOT_MAX_SIZE,
+        shuffleNonce: Int = 0
     ): StableList<RoutineMix> {
         val clean = tracks.filter { it.id.isNotBlank() }.distinctBy { it.id }
         if (clean.isEmpty()) return StableList()
@@ -830,45 +984,48 @@ object RecommendationCore {
         val activeType = RoutineMixCurator.resolveActiveRoutineType(localHourOfDay, dayOfWeek)
         val orderedTypes = buildOrderedRoutineTypes(activeType)
         val cap = min(clean.size, maxTracksPerMix.coerceIn(1, SESSION_SNAPSHOT_MAX_SIZE))
+        val epochDay = currentLocalEpochDay(nowMs)
+
+        val usedLeadTrackIds = HashSet<String>(orderedTypes.size * 2)
+        val usedLeadArtworkKeys = HashSet<String>(orderedTypes.size * 2)
 
         val mixes = orderedTypes.map { type ->
+            val profile = profileForRoutine(type)
             val routineTune = DiscoverTuneConfig(
-                selectedMood = type.tuneMood,
-                energyFilter = type.tuneEnergy,
-                discoveryBalance = type.tuneDiscoveryBalance
+                selectedMood = profile.tuneMood,
+                energyFilter = profile.tuneEnergy,
+                discoveryBalance = profile.discoveryBalance
             )
-            val routineTimeOfDay = when (type) {
-                RoutineMixType.LATE_NIGHT_WIND_DOWN -> TimeOfDayCategory.LATE_NIGHT
-                RoutineMixType.MORNING_FOCUS -> TimeOfDayCategory.MORNING
-                RoutineMixType.AFTERNOON_MOMENTUM -> TimeOfDayCategory.AFTERNOON
-                RoutineMixType.EVENING_UNWIND -> TimeOfDayCategory.EVENING
-                RoutineMixType.WEEKEND_ENERGY -> TimeOfDayCategory.AFTERNOON
-            }
-            val preferredMask = when (type) {
-                RoutineMixType.LATE_NIGHT_WIND_DOWN ->
-                    TrackFeatureMatrix.CATEGORY_CALM_NOCTURNAL or TrackFeatureMatrix.CATEGORY_ACOUSTIC_FOCUS
-                RoutineMixType.MORNING_FOCUS ->
-                    TrackFeatureMatrix.CATEGORY_ACOUSTIC_FOCUS
-                RoutineMixType.AFTERNOON_MOMENTUM ->
-                    TrackFeatureMatrix.CATEGORY_WARM_SOULFUL or TrackFeatureMatrix.CATEGORY_UPBEAT_ENERGETIC
-                RoutineMixType.EVENING_UNWIND ->
-                    TrackFeatureMatrix.CATEGORY_WARM_SOULFUL or TrackFeatureMatrix.CATEGORY_ACOUSTIC_FOCUS
-                RoutineMixType.WEEKEND_ENERGY ->
-                    TrackFeatureMatrix.CATEGORY_UPBEAT_ENERGETIC
-            }
+            val routineSeed = buildRoutineSeed(epochDay, profile.routineId, shuffleNonce)
             val rec = generateTunedPlaylist(
                 matrix = matrix,
                 targetSize = cap,
                 signals = signals,
                 nowMs = nowMs,
-                timeOfDay = routineTimeOfDay,
+                timeOfDay = profile.timeOfDay,
                 tuneConfig = routineTune,
-                preferredCategoryMask = preferredMask,
-                maxPerArtist = LocalMoodAndAffinityEngine.MAX_SONGS_PER_ARTIST
+                preferredCategoryMask = profile.preferredCategoryMask,
+                excludedTrackIds = usedLeadTrackIds,
+                rotationSeed = routineSeed,
+                rotationWeight = 0.14f,
+                maxPerArtist = LocalMoodAndAffinityEngine.MAX_SONGS_PER_ARTIST,
+                routineProfile = profile,
+                tieBreakSeed = profile.routineId.hashCode().toLong()
             )
             val orderedTracks = rec.trackIds.mapNotNull { trackById[it] }
-            // Ensure the lead track matches the routine's signature energy/tempo profile cleanly
-            val leadAligned = alignRoutineLeadTrack(type, orderedTracks)
+            val diverseOrdered = selectDiverseRoutineLeadTrack(
+                type = type,
+                orderedTracks = orderedTracks,
+                fullLibrary = clean,
+                routineSeed = routineSeed,
+                usedLeadTrackIds = usedLeadTrackIds,
+                usedLeadArtworkKeys = usedLeadArtworkKeys,
+                cap = cap
+            )
+            diverseOrdered.firstOrNull()?.let { lead ->
+                usedLeadTrackIds.add(lead.id)
+                usedLeadArtworkKeys.add(routineArtworkKey(lead))
+            }
 
             RoutineMix(
                 type = type,
@@ -876,7 +1033,7 @@ object RecommendationCore {
                 subtitle = type.description,
                 timeWindowLabel = type.timeWindowLabel,
                 isActiveNow = type == activeType,
-                tracks = leadAligned.toStableList(),
+                tracks = diverseOrdered.toStableList(),
                 tuneConfig = routineTune
             )
         }
@@ -1297,28 +1454,122 @@ object RecommendationCore {
         return listOf(active) + complements
     }
 
-    private fun alignRoutineLeadTrack(type: RoutineMixType, tracks: List<Track>): List<Track> {
-        if (tracks.size <= 1) return tracks
-        val preferredIdx = when (type) {
-            RoutineMixType.LATE_NIGHT_WIND_DOWN -> tracks.indexOfFirst { it.bpm in 1..100 }
-            RoutineMixType.WEEKEND_ENERGY -> tracks.indexOfFirst { it.bpm >= 112 }
-            else -> 0
-        }
-        if (preferredIdx <= 0) return tracks
-        val mutable = ArrayList(tracks)
-        val lead = mutable.removeAt(preferredIdx)
-        mutable.add(0, lead)
-        return mutable
+    private fun buildRoutineSeed(epochDay: Long, routineId: String, shuffleNonce: Int): Long {
+        val idHash = routineId.hashCode().toLong()
+        return (epochDay * 1_000_003L) xor (idHash * -7046029254386353131L) xor (shuffleNonce.toLong() * 2654435761L)
     }
 
-    private fun deterministicUnitRoll(seed: Long, trackId: String): Float {
+    private fun matchesRoutineLeadSignature(type: RoutineMixType, track: Track): Boolean = when (type) {
+        RoutineMixType.LATE_NIGHT_WIND_DOWN -> track.bpm in 1..100
+        RoutineMixType.WEEKEND_ENERGY -> track.bpm >= 112
+        RoutineMixType.EVENING_UNWIND -> track.bpm in 1..108 ||
+            SmartMoodTag.SOULFUL in track.resolvedMoodTags() ||
+            SmartMoodTag.ACOUSTIC in track.resolvedMoodTags()
+        RoutineMixType.AFTERNOON_MOMENTUM -> track.bpm in 90..124 ||
+            SmartMoodTag.SOULFUL in track.resolvedMoodTags() ||
+            SmartMoodTag.UPBEAT in track.resolvedMoodTags()
+        RoutineMixType.MORNING_FOCUS -> track.bpm in 1..114 ||
+            SmartMoodTag.ACOUSTIC in track.resolvedMoodTags()
+    }
+
+    /**
+     * Selects a #1 lead track for [type] that enforces cross-card lead-track and cover-artwork
+     * diversity while preserving the routine's signature tempo/mood profile whenever available.
+     */
+    private fun selectDiverseRoutineLeadTrack(
+        type: RoutineMixType,
+        orderedTracks: List<Track>,
+        fullLibrary: List<Track>,
+        routineSeed: Long,
+        usedLeadTrackIds: Set<String>,
+        usedLeadArtworkKeys: Set<String>,
+        cap: Int
+    ): List<Track> {
+        if (orderedTracks.isEmpty()) return orderedTracks
+
+        fun promoteFromOrdered(idx: Int): List<Track> {
+            if (idx <= 0) return orderedTracks
+            val mutable = ArrayList(orderedTracks)
+            val lead = mutable.removeAt(idx)
+            mutable.add(0, lead)
+            return mutable
+        }
+
+        fun promoteExternal(candidate: Track): List<Track> {
+            val existingIdx = orderedTracks.indexOfFirst { it.id == candidate.id }
+            if (existingIdx >= 0) return promoteFromOrdered(existingIdx)
+            val mutable = ArrayList<Track>(min(cap, orderedTracks.size + 1))
+            mutable.add(candidate)
+            for (t in orderedTracks) {
+                if (mutable.size >= cap) break
+                if (t.id != candidate.id) mutable.add(t)
+            }
+            return mutable
+        }
+
+        // Priority 1: Signature match + unused lead track + unused cover artwork inside current mix
+        val sigFreshArtIdx = orderedTracks.indexOfFirst {
+            matchesRoutineLeadSignature(type, it) &&
+                it.id !in usedLeadTrackIds &&
+                routineArtworkKey(it) !in usedLeadArtworkKeys
+        }
+        if (sigFreshArtIdx >= 0) return promoteFromOrdered(sigFreshArtIdx)
+
+        // Priority 2: Signature match + unused lead track + unused cover artwork from full library
+        val externalSigFreshArt = fullLibrary
+            .filter {
+                matchesRoutineLeadSignature(type, it) &&
+                    it.id !in usedLeadTrackIds &&
+                    routineArtworkKey(it) !in usedLeadArtworkKeys
+            }
+            .maxWithOrNull(
+                compareBy<Track> { deterministicUnitRoll(routineSeed, it.id) }
+                    .thenBy { it.id }
+            )
+        if (externalSigFreshArt != null) return promoteExternal(externalSigFreshArt)
+
+        // Priority 3: Any unused lead track + unused cover artwork inside current mix
+        val anyFreshArtIdx = orderedTracks.indexOfFirst {
+            it.id !in usedLeadTrackIds && routineArtworkKey(it) !in usedLeadArtworkKeys
+        }
+        if (anyFreshArtIdx >= 0) return promoteFromOrdered(anyFreshArtIdx)
+
+        // Priority 4: Any unused lead track + unused cover artwork from full library
+        val externalFreshArt = fullLibrary
+            .filter { it.id !in usedLeadTrackIds && routineArtworkKey(it) !in usedLeadArtworkKeys }
+            .maxWithOrNull(
+                compareBy<Track> { deterministicUnitRoll(routineSeed, it.id) }
+                    .thenBy { it.id }
+            )
+        if (externalFreshArt != null) return promoteExternal(externalFreshArt)
+
+        // Priority 5: Signature match + unused lead track (when library shares single album art)
+        val sigFreshIdIdx = orderedTracks.indexOfFirst {
+            matchesRoutineLeadSignature(type, it) && it.id !in usedLeadTrackIds
+        }
+        if (sigFreshIdIdx >= 0) return promoteFromOrdered(sigFreshIdIdx)
+
+        // Priority 6: Any unused lead track inside current mix
+        val anyFreshIdIdx = orderedTracks.indexOfFirst { it.id !in usedLeadTrackIds }
+        if (anyFreshIdIdx >= 0) return promoteFromOrdered(anyFreshIdIdx)
+
+        // Priority 7: Tiny-library fallback (< 4 tracks total) — prefer routine signature
+        val sigFallbackIdx = orderedTracks.indexOfFirst { matchesRoutineLeadSignature(type, it) }
+        return if (sigFallbackIdx > 0) promoteFromOrdered(sigFallbackIdx) else orderedTracks
+    }
+
+    private fun deterministicTieHash(seed: Long, trackId: String): Long {
         var h = seed * -7046029254386353131L + 1442695040888963407L
         for (i in trackId.indices) {
             h = (h xor trackId[i].code.toLong()) * 6364136223846793005L + 1442695040888963407L
         }
         h = (h xor (h ushr 30)) * -4658895280553007687L
         h = (h xor (h ushr 27)) * -7723592293110705685L
-        h = h xor (h ushr 31)
+        return h xor (h ushr 31)
+    }
+
+    private fun deterministicUnitRoll(seed: Long, trackId: String): Float {
+        val h = deterministicTieHash(seed, trackId)
         val positive24 = (h ushr 40) and ((1L shl 24) - 1L)
         return positive24.toFloat() / (1L shl 24).toFloat()
     }
@@ -1388,17 +1639,19 @@ object RecommendationCore {
 
     /**
      * Allocation-light, deterministic O(N log N) top-down merge sort over primitive [IntArray] indices.
-     * Sorts by score descending, with deterministic tie-break by trackId lexicographically ascending.
+     * Sorts by score descending, with optional [tieBreakSeed]-seeded deterministic hash tie-break
+     * (falling back to trackId lexicographically ascending).
      */
     private fun sortIndicesByScoreDesc(
         indices: IntArray,
         scores: FloatArray,
-        trackIds: Array<String>
+        trackIds: Array<String>,
+        tieBreakSeed: Long = 0L
     ) {
         val n = indices.size
         if (n <= 1) return
         val scratch = IntArray(n)
-        mergeSort(indices, scratch, 0, n, scores, trackIds)
+        mergeSort(indices, scratch, 0, n, scores, trackIds, tieBreakSeed)
     }
 
     private fun mergeSort(
@@ -1407,14 +1660,15 @@ object RecommendationCore {
         left: Int,
         right: Int,
         scores: FloatArray,
-        trackIds: Array<String>
+        trackIds: Array<String>,
+        tieBreakSeed: Long
     ) {
         val len = right - left
         if (len <= 16) {
             for (i in (left + 1) until right) {
                 val key = arr[i]
                 var j = i - 1
-                while (j >= left && compareTrackIndex(key, arr[j], scores, trackIds) < 0) {
+                while (j >= left && compareTrackIndex(key, arr[j], scores, trackIds, tieBreakSeed) < 0) {
                     arr[j + 1] = arr[j]
                     j--
                 }
@@ -1423,14 +1677,14 @@ object RecommendationCore {
             return
         }
         val mid = left + (len ushr 1)
-        mergeSort(arr, scratch, left, mid, scores, trackIds)
-        mergeSort(arr, scratch, mid, right, scores, trackIds)
+        mergeSort(arr, scratch, left, mid, scores, trackIds, tieBreakSeed)
+        mergeSort(arr, scratch, mid, right, scores, trackIds, tieBreakSeed)
 
         var i = left
         var j = mid
         var k = left
         while (i < mid && j < right) {
-            if (compareTrackIndex(arr[i], arr[j], scores, trackIds) <= 0) {
+            if (compareTrackIndex(arr[i], arr[j], scores, trackIds, tieBreakSeed) <= 0) {
                 scratch[k++] = arr[i++]
             } else {
                 scratch[k++] = arr[j++]
@@ -1445,12 +1699,20 @@ object RecommendationCore {
         a: Int,
         b: Int,
         scores: FloatArray,
-        trackIds: Array<String>
+        trackIds: Array<String>,
+        tieBreakSeed: Long
     ): Int {
         val sa = scores[a]
         val sb = scores[b]
         if (sa != sb) {
             return if (sa > sb) -1 else 1
+        }
+        if (tieBreakSeed != 0L) {
+            val ha = deterministicTieHash(tieBreakSeed, trackIds[a])
+            val hb = deterministicTieHash(tieBreakSeed, trackIds[b])
+            if (ha != hb) {
+                return if (ha < hb) -1 else 1
+            }
         }
         return trackIds[a].compareTo(trackIds[b])
     }

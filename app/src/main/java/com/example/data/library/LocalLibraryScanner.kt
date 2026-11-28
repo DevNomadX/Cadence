@@ -218,7 +218,6 @@ class LocalLibraryScanner(
                 val coveredLowerPaths = HashSet<String>()
                 val seenMediaStoreUris = HashSet<String>()
                 val pendingUpserts = LinkedHashMap<String, TrackEntity>()
-                val chunkBuffer = ArrayList<TrackEntity>(BATCH_SIZE)
 
                 val mediaStoreQueried = queryMediaStoreStage1(
                     normalizedFolders = normalizedFolders,
@@ -238,11 +237,6 @@ class LocalLibraryScanner(
                             added++
                         } else {
                             duplicates++
-                        }
-                        chunkBuffer += entity
-                        if (chunkBuffer.size >= BATCH_SIZE) {
-                            trackDao.upsertTracksAtomic(chunkBuffer.toList())
-                            chunkBuffer.clear()
                         }
                     },
                     onRowFailed = { failed++ }
@@ -325,14 +319,8 @@ class LocalLibraryScanner(
                 )
                 pruned = idsToPrune.size
 
-                // Commit remaining upserts and deletions in a single Room @Transaction
-                val finalUpserts = if (chunkBuffer.isNotEmpty()) {
-                    chunkBuffer.toList()
-                } else {
-                    emptyList()
-                }
-                val unsavedPending = pendingUpserts.values.filter { it.id !in finalUpserts.mapTo(HashSet()) { u -> u.id } }
-                val atomicUpserts = (finalUpserts + unsavedPending).distinctBy { it.id }
+                // Commit all upserts and deletions in a single Room @Transaction (zero mid-scan flicker or double writes)
+                val atomicUpserts = pendingUpserts.values.toList()
                 if (atomicUpserts.isNotEmpty() || idsToPrune.isNotEmpty()) {
                     trackDao.syncFolderTracks(upserts = atomicUpserts, deleteIds = idsToPrune)
                 }

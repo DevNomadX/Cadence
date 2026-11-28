@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 
 @Immutable
 data class PlaybackState(
@@ -73,12 +74,14 @@ class PlaybackController(
 ) {
     private val mapper = MediaItemMapper(context)
     private val queueMutex = Mutex()
+    private val queueGeneration = AtomicLong(0L)
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private var progressJob: Job? = null
     private var pendingAction: (suspend () -> Unit)? = null
     private var lastRecordedPlayTrackId: String? = null
     private var lastCheckpointTimeMs: Long = 0L
+    private var consecutiveErrorCount: Int = 0
 
     // Per-playback-session active listening tracker (scrub jumps never inflate active play time)
     private var sessionTrackId: String? = null
@@ -96,6 +99,9 @@ class PlaybackController(
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) {
+                consecutiveErrorCount = 0
+            }
             syncFromPlayer()
             if (isPlaying) {
                 val activeId = controller?.currentMediaItem?.mediaId
@@ -119,6 +125,9 @@ class PlaybackController(
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_READY) {
+                consecutiveErrorCount = 0
+            }
             syncFromPlayer()
             if (playbackState == Player.STATE_ENDED) {
                 accumulateActivePlayDelta()
@@ -183,17 +192,36 @@ class PlaybackController(
 
         override fun onPlayerError(error: PlaybackException) {
             val player = controller
-            val msg = "Skipped unplayable audio (${error.errorCodeName})"
-            _playbackState.value = _playbackState.value.copy(
-                isPlaying = false,
-                isPreparing = false,
-                errorMessage = msg
-            )
-            onPlaybackError(msg)
-            if (player != null && player.hasNextMediaItem()) {
+            consecutiveErrorCount++
+            val itemCount = player?.mediaItemCount ?: 0
+            val canAutoSkip = player != null &&
+                itemCount > 1 &&
+                consecutiveErrorCount < itemCount &&
+                player.hasNextMediaItem()
+
+            if (canAutoSkip) {
+                val msg = "Skipped unplayable audio (${error.errorCodeName})"
+                _playbackState.value = _playbackState.value.copy(
+                    isPlaying = false,
+                    isPreparing = false,
+                    errorMessage = msg
+                )
+                onPlaybackError(msg)
                 player.seekToNextMediaItem()
                 player.prepare()
                 player.play()
+            } else {
+                // Prevent infinite error loops under RepeatMode.ALL when all queued files are unavailable.
+                consecutiveErrorCount = 0
+                stopProgressPolling()
+                player?.stop()
+                val msg = "Playback stopped: audio files unavailable"
+                _playbackState.value = _playbackState.value.copy(
+                    isPlaying = false,
+                    isPreparing = false,
+                    errorMessage = msg
+                )
+                onPlaybackError(msg)
             }
         }
     }
@@ -219,6 +247,10 @@ class PlaybackController(
                         scope.launch { pending() }
                     }
                 } catch (e: Exception) {
+                    // Reset future so subsequent user actions can reconnect cleanly.
+                    if (controllerFuture === future) {
+                        controllerFuture = null
+                    }
                     onPlaybackError(e.localizedMessage ?: "Playback service unavailable")
                 }
             },
@@ -239,48 +271,57 @@ class PlaybackController(
         startIndex: Int = 0,
         startPositionMs: Long = 0L,
         autoPlay: Boolean = true
-    ): Unit = queueMutex.withLock {
-        if (tracks.isEmpty()) return@withLock
-        val mc = withContext(Dispatchers.Main.immediate) {
-            val current = controller
-            if (current == null) {
-                pendingAction = { setQueue(tracks, startIndex, startPositionMs, autoPlay) }
-                connect()
+    ) {
+        if (tracks.isEmpty()) return
+        val generation = queueGeneration.incrementAndGet()
+        queueMutex.withLock {
+            if (generation != queueGeneration.get()) return@withLock
+            val mc = withContext(Dispatchers.Main.immediate) {
+                val current = controller
+                if (current == null) {
+                    pendingAction = { setQueue(tracks, startIndex, startPositionMs, autoPlay) }
+                    connect()
+                }
+                current
+            } ?: return@withLock
+
+            _playbackState.value = _playbackState.value.copy(isPreparing = true, errorMessage = null)
+
+            // Map all items concurrently off the main thread so multi-core devices synthesize/prepare quickly
+            val mapped = withContext(Dispatchers.Default) {
+                coroutineScope {
+                    tracks.map { track ->
+                        async { mapper.toMediaItem(track) }
+                    }.awaitAll().filterNotNull()
+                }
             }
-            current
-        } ?: return@withLock
-
-        _playbackState.value = _playbackState.value.copy(isPreparing = true, errorMessage = null)
-
-        // Map all items concurrently off the main thread so multi-core devices synthesize/prepare quickly
-        val mapped = withContext(Dispatchers.Default) {
-            coroutineScope {
-                tracks.map { track ->
-                    async { mapper.toMediaItem(track) }
-                }.awaitAll().filterNotNull()
+            if (generation != queueGeneration.get()) return@withLock
+            if (mapped.isEmpty()) {
+                _playbackState.value = _playbackState.value.copy(isPreparing = false)
+                onPlaybackError("No playable tracks found")
+                return@withLock
             }
-        }
-        if (mapped.isEmpty()) {
-            _playbackState.value = _playbackState.value.copy(isPreparing = false)
-            onPlaybackError("No playable tracks found")
-            return@withLock
-        }
 
-        val targetId = tracks.getOrNull(startIndex)?.id
-        val safeIndex = targetId?.let { id -> mapped.indexOfFirst { it.mediaId == id }.takeIf { it >= 0 } }
-            ?: startIndex.coerceIn(0, mapped.lastIndex)
+            val targetId = tracks.getOrNull(startIndex)?.id
+            val safeIndex = targetId?.let { id -> mapped.indexOfFirst { it.mediaId == id }.takeIf { it >= 0 } }
+                ?: startIndex.coerceIn(0, mapped.lastIndex)
 
-        withContext(Dispatchers.Main) {
-            if (!autoPlay) {
-                // Prevent restored paused track from triggering spurious playCount increment
-                lastRecordedPlayTrackId = null
+            withContext(Dispatchers.Main) {
+                if (generation != queueGeneration.get()) return@withContext
+                consecutiveErrorCount = 0
+                if (!autoPlay) {
+                    // Prevent restored paused track from triggering spurious playCount increment or auto-start
+                    lastRecordedPlayTrackId = null
+                    stopProgressPolling()
+                    mc.playWhenReady = false
+                }
+                mc.setMediaItems(mapped, safeIndex, startPositionMs.coerceAtLeast(0L))
+                mc.prepare()
+                mc.playWhenReady = autoPlay
+                val ids = mapped.map { it.mediaId }
+                onQueueChanged(ids)
+                syncFromPlayer()
             }
-            mc.setMediaItems(mapped, safeIndex, startPositionMs.coerceAtLeast(0L))
-            mc.prepare()
-            mc.playWhenReady = autoPlay
-            val ids = mapped.map { it.mediaId }
-            onQueueChanged(ids)
-            syncFromPlayer()
         }
     }
 
@@ -315,12 +356,15 @@ class PlaybackController(
 
     fun next() {
         val mc = controller ?: return
+        if (mc.mediaItemCount <= 0) return
+        consecutiveErrorCount = 0
         captureOutgoingSignalSnapshot(mc)
+        _progressState.value = _progressState.value.copy(positionMs = 0L)
         if (mc.hasNextMediaItem()) {
             mc.seekToNextMediaItem()
             mc.prepare()
             mc.play()
-        } else if (mc.mediaItemCount > 0) {
+        } else {
             mc.seekTo(0, 0L)
             mc.prepare()
             mc.play()
@@ -329,6 +373,9 @@ class PlaybackController(
 
     fun previous() {
         val mc = controller ?: return
+        if (mc.mediaItemCount <= 0) return
+        consecutiveErrorCount = 0
+        _progressState.value = _progressState.value.copy(positionMs = 0L)
         if (mc.currentPosition > 3_000L) {
             mc.seekTo(0L)
         } else if (mc.hasPreviousMediaItem()) {

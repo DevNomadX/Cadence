@@ -207,7 +207,7 @@ fun QueueSheetContent(
                                 if (index > 0) {
                                     IconButton(
                                         onClick = moveUpClick,
-                                        modifier = Modifier.size(34.dp)
+                                        modifier = Modifier.size(width = 40.dp, height = 48.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Rounded.KeyboardArrowUp,
@@ -220,7 +220,7 @@ fun QueueSheetContent(
                                 if (index < queueTracks.lastIndex) {
                                     IconButton(
                                         onClick = moveDownClick,
-                                        modifier = Modifier.size(34.dp)
+                                        modifier = Modifier.size(width = 40.dp, height = 48.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Rounded.KeyboardArrowDown,
@@ -232,7 +232,7 @@ fun QueueSheetContent(
                                 }
                                 IconButton(
                                     onClick = removeClick,
-                                    modifier = Modifier.size(34.dp)
+                                    modifier = Modifier.size(width = 40.dp, height = 48.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.Close,

@@ -89,6 +89,7 @@ import com.example.ui.components.AudioOutputSheetContent
 import com.example.ui.components.AudioPulseBars
 import com.example.ui.components.ExpandableAudioQualityBadge
 import com.example.ui.components.ExpressiveArtworkFrame
+import com.example.ui.components.FAST_THUMBNAIL_DECODE_PX
 import com.example.ui.components.LyricsSheetContent
 import com.example.ui.components.MorphingPlayPauseButton
 import com.example.ui.components.audioOutputIconFor
@@ -186,6 +187,7 @@ fun NowPlayingScreen(
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isWide = maxWidth >= 640.dp
         val isUltraShortPortrait = maxHeight < 560.dp
+        val heroDecodeSizePx = if (themePrefs.performanceModeEnabled) 512 else 768
 
         if (currentTrack == null && !uiState.isInitialLibraryLoaded) {
             Box(
@@ -229,7 +231,7 @@ fun NowPlayingScreen(
                             track = currentTrack,
                             artworkShape = themePrefs.artworkShape,
                             isPlaying = uiState.isPlaying,
-                            decodeSizePx = 768,
+                            decodeSizePx = heroDecodeSizePx,
                             modifier = Modifier
                                 .widthIn(max = 320.dp)
                                 .fillMaxWidth(0.86f)
@@ -320,7 +322,7 @@ fun NowPlayingScreen(
                         track = currentTrack,
                         artworkShape = themePrefs.artworkShape,
                         isPlaying = uiState.isPlaying,
-                        decodeSizePx = 768,
+                        decodeSizePx = heroDecodeSizePx,
                         modifier = Modifier
                             .size(176.dp)
                             .aspectRatio(1f)
@@ -396,7 +398,7 @@ fun NowPlayingScreen(
                         track = currentTrack,
                         artworkShape = themePrefs.artworkShape,
                         isPlaying = uiState.isPlaying,
-                        decodeSizePx = 768,
+                        decodeSizePx = heroDecodeSizePx,
                         modifier = Modifier
                             .size(artworkSize)
                             .aspectRatio(1f)
@@ -666,6 +668,7 @@ private fun EmptyNowPlayingContent(
                     artworkShape = artworkShape,
                     isPlaying = false,
                     animateScale = false,
+                    decodeSizePx = FAST_THUMBNAIL_DECODE_PX,
                     modifier = Modifier
                         .size(if (isUltraShort) 152.dp else 196.dp)
                         .testTag("empty_now_playing_art")
@@ -979,7 +982,7 @@ private fun TrackIdentityBlock(
                 IconButton(
                     onClick = onOpenTrackMenu,
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(48.dp)
                         .testTag("now_playing_more_button")
                 ) {
                     Icon(

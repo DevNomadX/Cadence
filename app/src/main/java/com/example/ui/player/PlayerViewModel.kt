@@ -662,17 +662,14 @@ class PlayerViewModel private constructor(
                 tuneConfig = tuneConfig
             )
 
-            // Lock all Context-Aware Routine Mixes in Room (up to 10 distinct tracks per sessionId)
-            val lockedRoutineMixes = feed.routineMixes.mapNotNull { mix ->
-                val lockedTracks = libraryRepo.recommendationSnapshots.ensureSessionLocked(
-                    sessionId = "routine:${mix.type.id}:$dateKey:r$nonce",
-                    contextKey = "routine_${mix.type.id}",
-                    candidateTrackIds = mix.tracks.map { it.id },
-                    eligibleTrackIds = eligibleIds,
-                    nowMs = nowMs
-                )
-                if (lockedTracks.isEmpty()) null else mix.copy(tracks = lockedTracks.toStableList())
-            }.toStableList()
+            // Lock all Context-Aware Routine Mixes in Room under distinct "${dateKey}_${routineId}" session keys
+            val lockedRoutineMixes = libraryRepo.recommendationSnapshots.ensureRoutineMixesLocked(
+                dateKey = dateKey,
+                routineMixes = feed.routineMixes,
+                eligibleTrackIds = eligibleIds,
+                refreshNonce = nonce,
+                nowMs = nowMs
+            ).toStableList()
 
             // Lock all Mood Playlists in Room (up to 10 distinct tracks per sessionId)
             val lockedMoodPlaylists = feed.moodPlaylists.mapNotNull { moodPl ->

@@ -46,7 +46,9 @@ interface TrackDao {
     @Transaction
     suspend fun syncFolderTracks(upserts: List<TrackEntity>, deleteIds: List<String>) {
         if (upserts.isNotEmpty()) {
-            upsertTracksAtomic(upserts)
+            upserts.chunked(250).forEach { chunk ->
+                upsertTracksAtomic(chunk)
+            }
         }
         if (deleteIds.isNotEmpty()) {
             deleteIds.chunked(500).forEach { chunk ->
